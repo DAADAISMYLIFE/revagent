@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Installs Temurin JDK 21 and the latest Ghidra release under ~/tools (no sudo),
-# then verifies headless analysis + DumpFunctions.java on /bin/ls.
+# then verifies headless analysis + DumpFunctions.java on a small binary.
 set -euo pipefail
 TOOLS="$HOME/tools"
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -37,10 +37,22 @@ fi
 GH="$(ls -d "$TOOLS"/ghidra_*_PUBLIC | tail -1)"
 echo "Ghidra: $GH"
 
-echo "[3/3] verify on /bin/ls"
-export JAVA_HOME="$JDK" PATH="$JDK/bin:$PATH"
 T="$(mktemp -d)"
-"$GH/support/analyzeHeadless" "$T" verify -import /bin/ls \
+if command -v gcc >/dev/null 2>&1; then
+  cat > "$T/hello.c" <<'C'
+#include <stdio.h>
+int main(void){puts("hi");return 0;}
+C
+  gcc -O1 -o "$T/hello" "$T/hello.c"
+  TARGET="$T/hello"
+elif [ -e /usr/bin/gnutrue ]; then
+  TARGET=/usr/bin/gnutrue
+else
+  TARGET=/bin/true
+fi
+echo "[3/3] verify on $TARGET"
+export JAVA_HOME="$JDK" PATH="$JDK/bin:$PATH"
+timeout 600 "$GH/support/analyzeHeadless" "$T" verify -import "$TARGET" \
   -scriptPath "$SCRIPTS" -postScript DumpFunctions.java "$T/functions.json" -deleteProject \
   > "$T/log.txt" 2>&1 || true
 python3 - "$T/functions.json" "$T/log.txt" <<'PY'
