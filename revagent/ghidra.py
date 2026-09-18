@@ -29,24 +29,37 @@ def analyze(binary: Path, cache_dir: Path, timeout: int = 1200) -> Path:
     digest = hashlib.sha256(binary.read_bytes()).hexdigest()[:16]
     out = cache_dir / f"{binary.name}.{digest}.functions.json"
     if out.exists():
-        return out
+        try:
+            json.loads(out.read_text(encoding="utf-8"))
+            return out
+        except json.JSONDecodeError:
+            out.unlink()
     head, jdk = find_ghidra()
     proj = cache_dir / f"proj_{digest}"
     shutil.rmtree(proj, ignore_errors=True)
     proj.mkdir()
+    tmp = cache_dir / f"{out.name}.tmp"
+    tmp.unlink(missing_ok=True)
     env = dict(os.environ, JAVA_HOME=str(jdk), PATH=f"{jdk}/bin:{os.environ.get('PATH', '')}")
     cmd = [str(head), str(proj), "proj", "-import", str(binary),
-           "-scriptPath", str(SCRIPT_DIR), "-postScript", "DumpFunctions.java", str(out),
+           "-scriptPath", str(SCRIPT_DIR), "-postScript", "DumpFunctions.java", str(tmp),
            "-deleteProject"]
     try:
         r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
+        tmp.unlink(missing_ok=True)
         raise GhidraError(f"headless analysis timed out after {timeout}s")
     log = cache_dir / f"headless_{digest}.log"
     log.write_text(r.stdout + r.stderr, encoding="utf-8")
-    if not out.exists():
+    if not tmp.exists():
         raise GhidraError(f"analysis produced no output (exit {r.returncode}); log: {log}\n"
                           + (r.stdout + r.stderr)[-2000:])
+    try:
+        json.loads(tmp.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        tmp.unlink()
+        raise GhidraError(f"analysis output was not valid JSON (killed mid-write?); log: {log}")
+    os.replace(tmp, out)
     return out
 
 

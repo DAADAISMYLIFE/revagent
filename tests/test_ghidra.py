@@ -1,10 +1,36 @@
+import hashlib
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from revagent import ghidra
 from revagent.ghidra import FunctionDB, GhidraError, find_ghidra
 
 FIX = Path(__file__).parent / "fixtures" / "functions.json"
+
+
+def _fake_run(content, calls):
+    def run(cmd, env=None, capture_output=None, text=None, timeout=None):
+        calls.append(cmd)
+        idx = cmd.index("DumpFunctions.java")
+        tmp_path = Path(cmd[idx + 1])
+        tmp_path.write_text(content, encoding="utf-8")
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    return run
+
+
+def _make_binary(tmp_path):
+    binary = tmp_path / "bin"
+    binary.write_bytes(b"fake-binary-bytes")
+    return binary
+
+
+def _expected_out(binary, cache_dir):
+    digest = hashlib.sha256(binary.read_bytes()).hexdigest()[:16]
+    return cache_dir / f"{binary.name}.{digest}.functions.json"
 
 
 def test_list_sorted_by_size_with_counts():
@@ -43,3 +69,48 @@ def test_find_ghidra_missing(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     with pytest.raises(GhidraError):
         find_ghidra()
+
+
+def test_analyze_rejects_truncated_output(tmp_path, monkeypatch):
+    monkeypatch.setattr(ghidra, "find_ghidra", lambda: (tmp_path / "fake_headless", tmp_path / "jdk"))
+    calls = []
+    monkeypatch.setattr(ghidra.subprocess, "run", _fake_run('[{"name": "a"', calls))
+    binary = _make_binary(tmp_path)
+    cache_dir = tmp_path / "cache"
+    with pytest.raises(GhidraError, match="not valid JSON"):
+        ghidra.analyze(binary, cache_dir)
+    assert not list(cache_dir.glob("*.functions.json"))
+    assert not list(cache_dir.glob("*.tmp"))
+
+
+def test_analyze_atomic_and_cached(tmp_path, monkeypatch):
+    monkeypatch.setattr(ghidra, "find_ghidra", lambda: (tmp_path / "fake_headless", tmp_path / "jdk"))
+    calls = []
+    monkeypatch.setattr(ghidra.subprocess, "run", _fake_run("[]", calls))
+    binary = _make_binary(tmp_path)
+    cache_dir = tmp_path / "cache"
+
+    out = ghidra.analyze(binary, cache_dir)
+    assert out.name.endswith(".functions.json")
+    assert not list(cache_dir.glob("*.tmp"))
+    assert len(calls) == 1
+
+    out2 = ghidra.analyze(binary, cache_dir)
+    assert out2 == out
+    assert len(calls) == 1
+
+
+def test_analyze_invalidates_corrupt_cache_hit(tmp_path, monkeypatch):
+    monkeypatch.setattr(ghidra, "find_ghidra", lambda: (tmp_path / "fake_headless", tmp_path / "jdk"))
+    calls = []
+    monkeypatch.setattr(ghidra.subprocess, "run", _fake_run("[]", calls))
+    binary = _make_binary(tmp_path)
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir(parents=True)
+    out_path = _expected_out(binary, cache_dir)
+    out_path.write_text("{bad", encoding="utf-8")
+
+    out = ghidra.analyze(binary, cache_dir)
+    assert len(calls) == 1
+    assert out == out_path
+    json.loads(out.read_text(encoding="utf-8"))
