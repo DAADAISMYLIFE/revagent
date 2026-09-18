@@ -2,7 +2,7 @@ import os
 import shlex
 import subprocess
 
-from .bash import run_cmd
+from .bash import MAX_TIMEOUT, run_cmd
 
 SCHEMA = {
     "type": "function",
@@ -19,7 +19,7 @@ SCHEMA = {
                 "path": {"type": "string", "description": "path relative to the challenge directory"},
                 "args": {"type": "array", "items": {"type": "string"}, "description": "argv (default [])"},
                 "stdin": {"type": "string", "description": "text fed to stdin (default empty)"},
-                "timeout": {"type": "integer", "description": "seconds (default 10)"},
+                "timeout": {"type": "integer", "description": "seconds (default 10, max 900)"},
             },
             "required": ["path"],
         },
@@ -49,4 +49,5 @@ def run(ctx, path: str, args: list[str] | None = None, stdin: str = "", timeout:
     if not os.access(p, os.X_OK):
         p.chmod(p.stat().st_mode | 0o111)
     cmd = " ".join(shlex.quote(x) for x in [str(p), *(args or [])])
-    return run_cmd(cmd, cwd=ctx.problem_dir, timeout=int(timeout), stdin_text=stdin)
+    timeout = max(1, min(int(timeout), MAX_TIMEOUT))
+    return run_cmd(cmd, cwd=ctx.problem_dir, timeout=timeout, stdin_text=stdin)

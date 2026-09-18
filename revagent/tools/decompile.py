@@ -17,6 +17,11 @@ SCHEMA = {
                 "action": {"type": "string", "enum": ["list", "get", "xrefs"]},
                 "target": {"type": "string", "description": "function name or 0x address (get/xrefs)"},
                 "binary": {"type": "string", "description": "path relative to challenge dir (required on first call)"},
+                "limit": {"type": "integer",
+                          "description": "action=list: max functions to show, sorted by size desc (default 200)"},
+                "filter": {"type": "string",
+                           "description": "action=list: only include functions whose name contains this "
+                                          "substring (case-insensitive)"},
             },
             "required": ["action"],
         },
@@ -30,16 +35,28 @@ def _get_db(ctx, binary: str) -> FunctionDB:
         if not p.is_file():
             raise GhidraError(f"no such file: {binary}")
         key = str(p.resolve())
-        if key not in ctx.function_dbs:
-            json_path = analyze(p, ctx.work_dir / "ghidra")
+        cached = ctx.function_dbs.get(key)
+        if isinstance(cached, GhidraError):
+            raise GhidraError(f"previous analysis failed; not retrying: {cached}")
+        if cached is None:
+            try:
+                json_path = analyze(p, ctx.work_dir / "ghidra")
+            except GhidraError as e:
+                # Negative cache: never re-run analysis on a binary that already
+                # failed (e.g. timed out) within this session.
+                ctx.function_dbs[key] = e
+                raise
             ctx.function_dbs[key] = FunctionDB.load(json_path)
         ctx.current_binary = key
     if not ctx.current_binary:
         raise GhidraError("no binary analyzed yet; call decompile with binary=<path> first")
-    return ctx.function_dbs[ctx.current_binary]
+    db = ctx.function_dbs[ctx.current_binary]
+    if isinstance(db, GhidraError):
+        raise GhidraError(f"previous analysis failed; not retrying: {db}")
+    return db
 
 
-def run(ctx, action: str, target: str = "", binary: str = "") -> str:
+def run(ctx, action: str, target: str = "", binary: str = "", limit: int = 200, filter: str = "") -> str:
     if binary:
         problem_dir = ctx.problem_dir.resolve()
         p = (ctx.problem_dir / binary).resolve()
@@ -51,7 +68,7 @@ def run(ctx, action: str, target: str = "", binary: str = "") -> str:
         return (f"[decompile unavailable] {e}\n"
                 f"Fallback: bash `objdump -d -M intel <bin> > dis.txt` and read the assembly in ranges.")
     if action == "list":
-        return db.list_text()
+        return db.list_text(limit=limit, name_filter=filter)
     if action == "get":
         return db.get_text(target)
     if action == "xrefs":

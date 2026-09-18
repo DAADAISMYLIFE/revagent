@@ -3,6 +3,8 @@ import signal
 import subprocess
 from pathlib import Path
 
+MAX_TIMEOUT = 900
+
 SCHEMA = {
     "type": "function",
     "function": {
@@ -18,7 +20,7 @@ SCHEMA = {
             "type": "object",
             "properties": {
                 "cmd": {"type": "string", "description": "bash command line"},
-                "timeout": {"type": "integer", "description": "seconds (default 120)"},
+                "timeout": {"type": "integer", "description": "seconds (default 120, max 900)"},
             },
             "required": ["cmd"],
         },
@@ -36,10 +38,14 @@ def run_cmd(cmd: str, cwd: Path, timeout: int, stdin_text: str | None = None) ->
         out, _ = p.communicate(input=(stdin_text or "").encode(), timeout=timeout)
         return f"[exit {p.returncode}]\n" + out.decode("utf-8", errors="replace")
     except subprocess.TimeoutExpired:
-        os.killpg(p.pid, signal.SIGKILL)
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         out, _ = p.communicate()
         return f"[timeout after {timeout}s]\n" + (out or b"").decode("utf-8", errors="replace")
 
 
 def run(ctx, cmd: str, timeout: int = 120) -> str:
-    return run_cmd(cmd, cwd=ctx.problem_dir, timeout=int(timeout))
+    timeout = max(1, min(int(timeout), MAX_TIMEOUT))
+    return run_cmd(cmd, cwd=ctx.problem_dir, timeout=timeout)

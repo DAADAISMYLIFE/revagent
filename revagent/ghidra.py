@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import tempfile
 from pathlib import Path
@@ -38,6 +39,7 @@ def analyze(binary: Path, cache_dir: Path, timeout: int = 1200) -> Path:
     tmp = cache_dir / f"{out.name}.tmp"
     tmp.unlink(missing_ok=True)
     env = dict(os.environ, JAVA_HOME=str(jdk), PATH=f"{jdk}/bin:{os.environ.get('PATH', '')}")
+    log = cache_dir / f"headless_{digest}.log"
     # The Ghidra project directory must live outside cache_dir: Ghidra's
     # ProjectLocator rejects any path with a component starting with '.', and
     # cache_dir is typically under a hidden .revagent/ directory. Use a plain
@@ -48,16 +50,29 @@ def analyze(binary: Path, cache_dir: Path, timeout: int = 1200) -> Path:
         cmd = [str(head), str(proj), "proj", "-import", str(binary),
                "-scriptPath", str(SCRIPT_DIR), "-postScript", "DumpFunctions.java", str(tmp),
                "-deleteProject"]
+        # start_new_session=True puts the JVM (and any children it spawns) in its own
+        # process group, so a timeout can kill the whole group instead of orphaning it.
+        p = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              text=True, start_new_session=True)
         try:
-            r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=timeout)
+            combined, _ = p.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                combined, _ = p.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                combined = ""
             tmp.unlink(missing_ok=True)
+            log.write_text(combined or "", encoding="utf-8")
             raise GhidraError(f"headless analysis timed out after {timeout}s")
-    log = cache_dir / f"headless_{digest}.log"
-    log.write_text(r.stdout + r.stderr, encoding="utf-8")
+        returncode = p.returncode
+    log.write_text(combined, encoding="utf-8")
     if not tmp.exists():
-        raise GhidraError(f"analysis produced no output (exit {r.returncode}); log: {log}\n"
-                          + (r.stdout + r.stderr)[-2000:])
+        raise GhidraError(f"analysis produced no output (exit {returncode}); log: {log}\n"
+                          + combined[-2000:])
     try:
         json.loads(tmp.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
@@ -71,7 +86,12 @@ class FunctionDB:
     def __init__(self, funcs: list[dict]):
         self.funcs = funcs
         self.by_name = {f["name"]: f for f in funcs}
-        self.by_addr = {int(f["entry"], 16): f for f in funcs}
+        self.by_addr = {}
+        for f in funcs:
+            try:
+                self.by_addr[int(f["entry"], 16)] = f
+            except ValueError:
+                continue  # unparsable address (e.g. "ram:00401000"); skip, keep by-name lookup
 
     @classmethod
     def load(cls, path: Path) -> "FunctionDB":
@@ -86,9 +106,14 @@ class FunctionDB:
         except ValueError:
             return None
 
-    def list_text(self, limit: int = 200) -> str:
-        rows = sorted(self.funcs, key=lambda f: -f["size"])[:limit]
-        lines = [f"{len(self.funcs)} functions (showing {len(rows)}, sorted by size desc). "
+    def list_text(self, limit: int = 200, name_filter: str = "") -> str:
+        funcs = self.funcs
+        if name_filter:
+            nf = name_filter.lower()
+            funcs = [f for f in funcs if nf in f["name"].lower()]
+        rows = sorted(funcs, key=lambda f: -f["size"])[:limit]
+        filter_note = f" filter={name_filter!r}" if name_filter else ""
+        lines = [f"{len(funcs)} functions (showing {len(rows)}, sorted by size desc){filter_note}. "
                  f"Format: name @entry size strs=<string refs> calls=<callees>"]
         for f in rows:
             lines.append(f'{f["name"]} @{f["entry"]} {f["size"]} strs={len(f["string_refs"])} '
