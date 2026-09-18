@@ -17,7 +17,7 @@ def ctx_for(tmp_path, interactive=True):
 def test_registry_has_all_tools():
     schemas, handlers = load_tools()
     names = {s["function"]["name"] for s in schemas}
-    assert names == {"bash", "run_binary", "notes", "ask_user", "submit_flag"}
+    assert names == {"bash", "run_binary", "notes", "decompile", "summarize", "ask_user", "submit_flag"}
     assert set(handlers) == names
     for s in schemas:
         assert s["type"] == "function" and "parameters" in s["function"]
@@ -114,3 +114,45 @@ def test_submit_flag_format(tmp_path):
     assert submit_flag.run(c, flag="DH{x}", how_verified="").startswith("[rejected]")
     assert submit_flag.run(c, flag=" DH{x} ", how_verified="run_binary printed Correct").startswith("[accepted]")
     assert c.flag == "DH{x}" and c.how_verified == "run_binary printed Correct"
+
+
+from revagent.tools import decompile, summarize
+import revagent.tools.decompile as decompile_mod
+
+
+class FakeLLM:
+    def __init__(self):
+        self.prompts = []
+
+    def complete(self, prompt, system=None):
+        self.prompts.append(prompt)
+        return "SUMMARY"
+
+
+def test_decompile_needs_binary_first(tmp_path):
+    assert decompile.run(ctx_for(tmp_path), action="list").startswith("[decompile unavailable]")
+
+
+def test_decompile_uses_cached_db(tmp_path, monkeypatch):
+    fix = Path(__file__).parent / "fixtures" / "functions.json"
+    (tmp_path / "prog").write_bytes(b"\x7fELF")
+    monkeypatch.setattr(decompile_mod, "analyze", lambda binary, cache_dir: fix)
+    c = ctx_for(tmp_path)
+    out = decompile.run(c, action="list", binary="prog")
+    assert out.startswith("4 functions")
+    assert "s[i]^0x5a" in decompile.run(c, action="get", target="check")
+    assert "callers: _start" in decompile.run(c, action="xrefs", target="main")
+    assert decompile.run(c, action="bogus").startswith("[tool error]")
+    assert decompile.run(c, action="get", target="nope", binary="missing").startswith("[decompile unavailable]")
+
+
+def test_summarize_caps_and_calls_llm(tmp_path):
+    c = ctx_for(tmp_path)
+    c.llm = FakeLLM()
+    big = tmp_path / "big.txt"
+    big.write_text("A" * 50_000)
+    out = summarize.run(c, file="big.txt", question="what?")
+    assert out.startswith("SUMMARY")
+    assert "only the first 40000" in out
+    assert "what?" in c.llm.prompts[0] and c.llm.prompts[0].count("A") <= 40_000 + 100
+    assert summarize.run(c, file="nope.txt", question="q").startswith("[tool error]")
