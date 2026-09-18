@@ -1,5 +1,7 @@
 """Context compaction: summarize the middle of the conversation into the case file and rebuild."""
 
+from .casefile import SECTIONS
+
 THRESHOLD = 44_000
 KEEP_RECENT = 4
 PER_MSG_CAP = 1_500
@@ -56,17 +58,33 @@ def serialize(middle: list[dict]) -> str:
     return s
 
 
+def sanitize_summary(text: str) -> str:
+    """Demote any line that exactly matches a canonical section header (## Facts, etc.)
+    to a level-3 heading, so it doesn't get mistaken for a real section boundary."""
+    headers = set(SECTIONS.values())
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped in headers:
+            indent = line[:len(line) - len(line.lstrip())]
+            lines[i] = indent + "### " + stripped[3:]
+    return "\n".join(lines)
+
+
 def compact(messages: list[dict], llm, casefile, n: int) -> list[dict]:
     head, middle, tail = split_messages(messages)
     if middle:
         summary = llm.complete(SUMMARY_PROMPT + serialize(middle))
-        casefile.add("log", f"### compaction {n}\n{summary.strip()}", bullet=False)
+        summary = sanitize_summary(summary.strip())
+        casefile.add("log", f"### compaction {n}\n{summary}", bullet=False)
     reset = {"role": "user", "content": RESET_TEXT + "\n\n" + casefile.read()}
     return head + [reset] + tail
 
 
-def shrink_casefile(casefile, llm) -> None:
+def shrink_casefile(casefile, llm) -> bool:
     text = casefile.read()
     new = llm.complete(SHRINK_PROMPT + text).strip()
     if new.startswith("# Case:") and "## Facts" in new and "## Todo" in new:
         casefile.write(new + "\n")
+        return True
+    return False

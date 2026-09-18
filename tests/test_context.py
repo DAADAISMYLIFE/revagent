@@ -81,3 +81,32 @@ def test_shrink_casefile_rewrites(tmp_path):
     shrink_casefile(cf, llm)
     assert cf.read().count("a" * 100) == 0 and "- short" in cf.read()
     assert "a" * 3000 in llm.prompts[0]
+
+
+def test_compact_sanitizes_header_lines(tmp_path):
+    cf = CaseFile(tmp_path / "case.md", "p", "d")
+    llm = FakeLLM(reply="## Facts\n- a\n## Todo\n- b")
+    compact(build(10), llm, cf, n=1)
+    text = cf.read()
+    lines = text.split("\n")
+    assert lines.count("## Facts") == 1 and lines.count("## Todo") == 1
+    log = text.split("## Log")[1]
+    assert "### Facts" in log and "### Todo" in log
+    cf.add("facts", "later")
+    facts_section = cf.read().split("## Facts")[1].split("## Hypotheses")[0]
+    assert "- later" in facts_section
+
+
+def test_shrink_casefile_returns_bool(tmp_path):
+    cf = CaseFile(tmp_path / "case.md", "p", "d")
+    cf.add("facts", "x")
+    before = cf.read()
+    llm = FakeLLM(reply="# Case: p\n\n## Facts\n- short\n\n## Hypotheses\n\n## Todo\n\n## Log\n")
+    assert shrink_casefile(cf, llm) is True
+    assert cf.read() != before
+
+    cf2 = CaseFile(tmp_path / "case2.md", "p", "d")
+    before2 = cf2.read()
+    llm2 = FakeLLM(reply="garbage")
+    assert shrink_casefile(cf2, llm2) is False
+    assert cf2.read() == before2
