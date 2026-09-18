@@ -5,3 +5,4 @@ __pycache__/
 .revagent/
 bench/mini/*/build/
 *.egg-info/
+.superpowers/
