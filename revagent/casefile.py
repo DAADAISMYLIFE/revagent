@@ -33,9 +33,13 @@ class CaseFile:
             raise ValueError(f"unknown section {section!r}; use one of {list(SECTIONS)}")
         header = SECTIONS[section]
         lines = self.read().split("\n")
-        start = lines.index(header)
+        try:
+            start = lines.index(header)
+        except ValueError:
+            raise ValueError(f"{self.path} has no {header!r} section")
+        valid_headers = set(SECTIONS.values())
         end = next(
-            (i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")),
+            (i for i in range(start + 1, len(lines)) if lines[i].strip() in valid_headers),
             len(lines),
         )
         while end - 1 > start and lines[end - 1].strip() == "":

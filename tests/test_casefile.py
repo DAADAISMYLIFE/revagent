@@ -54,3 +54,22 @@ def test_write_replaces(tmp_path):
     cf = CaseFile(tmp_path / "case.md", "p", "d")
     cf.write("# Case: p\n\n## Facts\n- only\n\n## Hypotheses\n\n## Todo\n\n## Log\n")
     assert cf.read().count("only") == 1
+
+
+def test_raw_log_block_with_fake_header_does_not_break_boundaries(tmp_path):
+    cf = CaseFile(tmp_path / "case.md", "p", "d")
+    cf.add("log", "### compaction 1\n## Not a real section\n- x", bullet=False)
+    cf.add("facts", "after")
+    text = cf.read()
+    facts = text.split("## Facts")[1].split("## Hypotheses")[0]
+    log = text.split("## Log")[1]
+    assert "- after" in facts
+    assert "## Not a real section" in log
+
+
+def test_missing_header_raises_clear_error(tmp_path):
+    p = tmp_path / "case.md"
+    p.write_text("# Case: p\n\n## Facts\n\n## Hypotheses\n\n## Log\n")
+    cf = CaseFile(p, "p", "d")
+    with pytest.raises(ValueError, match="Todo"):
+        cf.add("todo", "x")
