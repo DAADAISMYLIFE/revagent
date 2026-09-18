@@ -12,11 +12,17 @@ running the binary, and submits a `DH{...}` flag — or reports how far it got.
 ## Setup (WSL / Linux, no sudo needed)
 ```bash
 python3 -m venv --without-pip --system-site-packages ~/.revagent-venv   # ensurepip may be unavailable; pip comes from the system site
-echo "$HOME/.local/lib/python3.14/site-packages" > ~/.revagent-venv/lib/python3.14/site-packages/usersite.pth   # only if angr/z3 are installed with pip --user
+PYVER=$(~/.revagent-venv/bin/python -c 'import sys;print(f"python{sys.version_info[0]}.{sys.version_info[1]}")')
+echo "$HOME/.local/lib/$PYVER/site-packages" > ~/.revagent-venv/lib/$PYVER/site-packages/usersite.pth   # only if angr/z3 are installed with pip --user
 ~/.revagent-venv/bin/python -m pip install -e .
 bash scripts/install_ghidra.sh                             # JDK 21 + Ghidra under ~/tools (~600 MB)
-cp .secure.example .secure && $EDITOR .secure              # QWEN / URL / MODEL
+mkdir -p ~/.revagent && cp .secure.example ~/.revagent/.secure && $EDITOR ~/.revagent/.secure   # QWEN / URL / MODEL
 ```
+`~/.revagent/.secure` is the recommended location (it's outside any challenge directory, so it can never
+be picked up or leaked from a challenge's own `.secure`/cwd search). The repo root also works
+(`load_secure` checks `$REVAGENT_SECURE`, then `./.secure`, then the repo root, then `~/.revagent/.secure`)
+but keep the key out of individual challenge directories.
+
 There is no `pytest` shim in the venv; run tests with `~/.revagent-venv/bin/python -m pytest`.
 
 The model server is a separate repo: [qwen3.8-vllm-runpod](https://github.com/DAADAISMYLIFE/qwen3.8-vllm-runpod)
@@ -28,6 +34,16 @@ The model server is a separate repo: [qwen3.8-vllm-runpod](https://github.com/DA
 ~/.revagent-venv/bin/revagent solve path/to/challenge --no-ask   # fully unattended
 ~/.revagent-venv/bin/revagent bench chal1 chal2 ...              # batch, prints a table
 ```
+`solve` flags:
+- `--desc FILE` — description file (default `<dir>/desc.txt`)
+- `--max-steps N` — step budget per run (default 300)
+- `--max-minutes N` — wall-clock budget per run (default 120)
+- `--no-ask` — never block on `ask_user`; fail forward instead of prompting
+- `--show-thinking` — print the model's reasoning as it runs
+- `--secure PATH` — path to `.secure` (default: the search order above)
+
+`bench` shares `--max-steps`, `--max-minutes`, `--show-thinking` and `--secure`; it always runs
+non-interactively (as if `--no-ask`) and reads each challenge's own `<dir>/desc.txt`.
 Artifacts land in `<challenge>/.revagent/`: `case.md` (the agent's notes), `transcript.jsonl`,
 `out/NNN.txt` (full tool outputs), `ghidra/` (cached decompilation), `result.json`.
 

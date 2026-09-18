@@ -24,6 +24,15 @@ def test_load_secure_env_var(tmp_path, monkeypatch):
     assert load_secure().key == "a"
 
 
+def test_load_secure_missing_key_raises_value_error(tmp_path):
+    f = tmp_path / ".secure"
+    f.write_text("QWEN=a\nURL=https://u\n")  # MODEL missing
+    with pytest.raises(ValueError) as exc:
+        load_secure(f)
+    assert str(f) in str(exc.value)
+    assert "MODEL" in str(exc.value)
+
+
 def test_load_secure_missing(tmp_path, monkeypatch):
     monkeypatch.delenv("REVAGENT_SECURE", raising=False)
     monkeypatch.chdir(tmp_path)

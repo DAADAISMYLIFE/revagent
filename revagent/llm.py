@@ -41,7 +41,10 @@ def load_secure(explicit: Path | None = None) -> Secure:
                     continue
                 k, v = line.split("=", 1)
                 kv[k.strip()] = v.strip().strip('"').strip("'")
-            return Secure(key=kv["QWEN"], url=kv["URL"].rstrip("/"), model=kv["MODEL"])
+            try:
+                return Secure(key=kv["QWEN"], url=kv["URL"].rstrip("/"), model=kv["MODEL"])
+            except KeyError as e:
+                raise ValueError(f"{p} is missing key {e.args[0]}") from e
     raise FileNotFoundError("no .secure found; tried: " + ", ".join(map(str, candidates)))
 
 
