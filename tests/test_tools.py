@@ -156,3 +156,17 @@ def test_summarize_caps_and_calls_llm(tmp_path):
     assert "only the first 40000" in out
     assert "what?" in c.llm.prompts[0] and c.llm.prompts[0].count("A") <= 40_000 + 100
     assert summarize.run(c, file="nope.txt", question="q").startswith("[tool error]")
+
+
+def test_decompile_rejects_escape(tmp_path):
+    c = ctx_for(tmp_path)
+    assert decompile.run(c, action="list", binary="/bin/true").startswith("[tool error] path escapes")
+    assert decompile.run(c, action="list", binary="../x").startswith("[tool error] path escapes")
+
+
+def test_summarize_rejects_escape(tmp_path):
+    c = ctx_for(tmp_path)
+    c.llm = FakeLLM()
+    assert summarize.run(c, file="/etc/hostname", question="q").startswith("[tool error] path escapes")
+    assert summarize.run(c, file="../x", question="q").startswith("[tool error] path escapes")
+    assert c.llm.prompts == []

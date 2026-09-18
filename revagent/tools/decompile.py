@@ -40,6 +40,11 @@ def _get_db(ctx, binary: str) -> FunctionDB:
 
 
 def run(ctx, action: str, target: str = "", binary: str = "") -> str:
+    if binary:
+        problem_dir = ctx.problem_dir.resolve()
+        p = (ctx.problem_dir / binary).resolve()
+        if not p.is_relative_to(problem_dir):
+            return f"[tool error] path escapes the challenge directory: {binary}"
     try:
         db = _get_db(ctx, binary)
     except GhidraError as e:

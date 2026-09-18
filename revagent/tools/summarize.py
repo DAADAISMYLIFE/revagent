@@ -30,7 +30,10 @@ PROMPT = (
 
 
 def run(ctx, file: str, question: str) -> str:
-    p = ctx.problem_dir / file
+    problem_dir = ctx.problem_dir.resolve()
+    p = (ctx.problem_dir / file).resolve()
+    if not p.is_relative_to(problem_dir):
+        return f"[tool error] path escapes the challenge directory: {file}"
     if not p.is_file():
         return f"[tool error] no such file: {file}"
     text = p.read_text(encoding="utf-8", errors="replace")
