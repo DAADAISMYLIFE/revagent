@@ -1,7 +1,7 @@
 # revagent 설계 스펙
 
 - 날짜: 2026-09-19
-- 상태: 설계 승인 대기
+- 상태: 승인됨 (2026-09-19)
 - 대상 독자: 이 프로젝트를 구현할 사람(또는 에이전트). 구현 계획은 이 문서를 근거로 별도 작성한다.
 
 ## 1. 목표
@@ -27,7 +27,7 @@
 | 실행 환경 | 로컬 WSL, `~/.ctf-venv` 재사용 | objdump/gdb/angr/capstone/pwntools/unicorn 이미 있음 |
 | 디컴파일러 | Ghidra headless (`~/tools/`, sudo 불필요) | 레벨 7~8은 디컴파일 없이는 27B가 못 버팀 |
 | 자율성 | 완전 자율, 막힐 때만 `ask_user` | 사용자는 파일과 설명만 던짐 |
-| thinking | 유지, `reasoning_effort=medium` (서버 기본값) | 끄지 않는다. 사용자 결정 |
+| thinking | 유지, 매 요청에 `reasoning_effort=medium` 전달 (서버 기본값 xhigh는 안 건드림) | 끄지 않는다. 사용자 결정 |
 | 컨텍스트 | 64k. 44k 초과 시 자동 컴팩션 | 서버 `--max-model-len 65536` |
 | 저장소 | `qwen3.8-vllm-runpod`와 별도 public 저장소 `revagent` | 각각 독립 관리 |
 | 아키텍처 | 단일 루프 + 케이스 파일 + 컴팩션 + `summarize` 안전밸브 | 고정 파이프라인은 레벨 7~8의 되돌아가기를 못 따라감 |
