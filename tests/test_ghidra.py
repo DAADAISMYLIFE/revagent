@@ -100,6 +100,27 @@ def test_analyze_atomic_and_cached(tmp_path, monkeypatch):
     assert len(calls) == 1
 
 
+def test_analyze_project_dir_has_no_dot_components(tmp_path, monkeypatch):
+    # Regression: cache_dir is normally <problem_dir>/.revagent/ghidra. Ghidra's
+    # ProjectLocator raises IllegalArgumentException on any path component
+    # starting with '.', so the ephemeral project directory passed to
+    # analyzeHeadless must live outside cache_dir rather than nested under it.
+    monkeypatch.setattr(ghidra, "find_ghidra", lambda: (tmp_path / "fake_headless", tmp_path / "jdk"))
+    calls = []
+    monkeypatch.setattr(ghidra.subprocess, "run", _fake_run("[]", calls))
+    binary = _make_binary(tmp_path)
+    cache_dir = tmp_path / ".revagent" / "ghidra"
+
+    out = ghidra.analyze(binary, cache_dir)
+
+    assert out.exists()
+    project_location = Path(calls[0][1])
+    assert not any(part.startswith(".") for part in project_location.parts), (
+        f"project location {project_location} has a dot-prefixed component; "
+        "Ghidra's ProjectLocator will reject it"
+    )
+
+
 def test_analyze_invalidates_corrupt_cache_hit(tmp_path, monkeypatch):
     monkeypatch.setattr(ghidra, "find_ghidra", lambda: (tmp_path / "fake_headless", tmp_path / "jdk"))
     calls = []

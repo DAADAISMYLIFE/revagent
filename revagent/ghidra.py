@@ -2,8 +2,8 @@
 import hashlib
 import json
 import os
-import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent / "ghidra_scripts"
@@ -35,20 +35,24 @@ def analyze(binary: Path, cache_dir: Path, timeout: int = 1200) -> Path:
         except json.JSONDecodeError:
             out.unlink()
     head, jdk = find_ghidra()
-    proj = cache_dir / f"proj_{digest}"
-    shutil.rmtree(proj, ignore_errors=True)
-    proj.mkdir()
     tmp = cache_dir / f"{out.name}.tmp"
     tmp.unlink(missing_ok=True)
     env = dict(os.environ, JAVA_HOME=str(jdk), PATH=f"{jdk}/bin:{os.environ.get('PATH', '')}")
-    cmd = [str(head), str(proj), "proj", "-import", str(binary),
-           "-scriptPath", str(SCRIPT_DIR), "-postScript", "DumpFunctions.java", str(tmp),
-           "-deleteProject"]
-    try:
-        r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        tmp.unlink(missing_ok=True)
-        raise GhidraError(f"headless analysis timed out after {timeout}s")
+    # The Ghidra project directory must live outside cache_dir: Ghidra's
+    # ProjectLocator rejects any path with a component starting with '.', and
+    # cache_dir is typically under a hidden .revagent/ directory. Use a plain
+    # system temp dir for the ephemeral project instead.
+    with tempfile.TemporaryDirectory(prefix="revagent_ghidra_") as proj_parent:
+        proj = Path(proj_parent) / "proj"
+        proj.mkdir()
+        cmd = [str(head), str(proj), "proj", "-import", str(binary),
+               "-scriptPath", str(SCRIPT_DIR), "-postScript", "DumpFunctions.java", str(tmp),
+               "-deleteProject"]
+        try:
+            r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            tmp.unlink(missing_ok=True)
+            raise GhidraError(f"headless analysis timed out after {timeout}s")
     log = cache_dir / f"headless_{digest}.log"
     log.write_text(r.stdout + r.stderr, encoding="utf-8")
     if not tmp.exists():

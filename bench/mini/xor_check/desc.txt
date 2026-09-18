@@ -1,0 +1,2 @@
+Find the input that makes the program print "Correct!".
+The flag is that input (it already has the form DH{...}).
