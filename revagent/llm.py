@@ -94,6 +94,16 @@ def parse_assistant(m) -> tuple[str, str, list[ToolCall], dict]:
     return content, reasoning, calls, msg
 
 
+def _retryable(e: Exception) -> bool:
+    """Connection errors and 5xx/429 are transient and worth a retry; any other
+    APIStatusError (401/403/404/409/422/...) is a real failure and must not be retried."""
+    if isinstance(e, APIConnectionError):
+        return True
+    if isinstance(e, APIStatusError):
+        return e.status_code >= 500 or e.status_code == 429
+    return False
+
+
 class LLM:
     def __init__(self, secure: Secure, reasoning_effort: str = "medium", temperature: float = 0.6,
                  max_tokens: int = 8192, retries: int = 3):
@@ -123,8 +133,8 @@ class LLM:
                 if "context length" in text or "maximum context" in text or "too long" in text:
                     raise ContextOverflow(text) from e
                 raise
-            except (APIConnectionError, APIStatusError):
-                if attempt == self.retries:
+            except (APIConnectionError, APIStatusError) as e:
+                if not _retryable(e) or attempt == self.retries:
                     raise
                 time.sleep(delay)
                 delay *= 2

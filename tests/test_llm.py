@@ -2,9 +2,11 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from openai import APIStatusError, BadRequestError
 
-from revagent.llm import load_secure, parse_assistant, Secure
+from revagent.llm import ContextOverflow, LLM, Secure, load_secure, parse_assistant
 
 
 def test_load_secure_parses_and_strips_slash(tmp_path, monkeypatch):
@@ -78,3 +80,113 @@ def test_parse_assistant_reads_reasoning_key():
     )
     assert reasoning == "via-model-extra"
     assert "reasoning" not in msg and "reasoning_content" not in msg
+
+
+def _resp(content, prompt_tokens, completion_tokens):
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=_msg(content))],
+        usage=SimpleNamespace(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens),
+    )
+
+
+def _status_error(cls, status, message="boom"):
+    resp = httpx.Response(status, request=httpx.Request("POST", "https://h"))
+    return cls(message, response=resp, body=None)
+
+
+def _llm(monkeypatch):
+    monkeypatch.setattr("revagent.llm.time.sleep", lambda s: None)
+    return LLM(Secure(key="k", url="https://h", model="m"))
+
+
+def test_retries_on_5xx_then_succeeds(monkeypatch):
+    llm = _llm(monkeypatch)
+    good = _resp("pong", 10, 5)
+    calls = {"n": 0}
+
+    def fake_create(**kw):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise _status_error(APIStatusError, 503)
+        return good
+
+    monkeypatch.setattr(llm.client.chat.completions, "create", fake_create)
+    r = llm.chat([{"role": "user", "content": "hi"}])
+    assert r.content == "pong"
+    assert calls["n"] == 3
+
+
+def test_does_not_retry_on_401(monkeypatch):
+    llm = _llm(monkeypatch)
+    calls = {"n": 0}
+
+    def fake_create(**kw):
+        calls["n"] += 1
+        raise _status_error(APIStatusError, 401)
+
+    monkeypatch.setattr(llm.client.chat.completions, "create", fake_create)
+    with pytest.raises(APIStatusError):
+        llm.chat([{"role": "user", "content": "hi"}])
+    assert calls["n"] == 1
+
+
+def test_retries_on_429(monkeypatch):
+    llm = _llm(monkeypatch)
+    good = _resp("pong", 1, 1)
+    calls = {"n": 0}
+
+    def fake_create(**kw):
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise _status_error(APIStatusError, 429)
+        return good
+
+    monkeypatch.setattr(llm.client.chat.completions, "create", fake_create)
+    r = llm.chat([{"role": "user", "content": "hi"}])
+    assert r.content == "pong"
+    assert calls["n"] == 2
+
+
+def test_context_overflow(monkeypatch):
+    llm = _llm(monkeypatch)
+
+    def fake_create_overflow(**kw):
+        raise _status_error(
+            BadRequestError, 400,
+            "This model's maximum context length is 65536 tokens. However, you requested 70000 tokens",
+        )
+
+    monkeypatch.setattr(llm.client.chat.completions, "create", fake_create_overflow)
+    with pytest.raises(ContextOverflow):
+        llm.chat([{"role": "user", "content": "hi"}])
+
+    def fake_create_other(**kw):
+        raise _status_error(BadRequestError, 400, "invalid parameter")
+
+    monkeypatch.setattr(llm.client.chat.completions, "create", fake_create_other)
+    with pytest.raises(BadRequestError):
+        llm.chat([{"role": "user", "content": "hi"}])
+
+
+def test_usage_accounting(monkeypatch):
+    llm = _llm(monkeypatch)
+    responses = [_resp("pong", 10, 5), _resp("ok", 3, 2)]
+    captured_kwargs = []
+
+    def fake_create(**kw):
+        captured_kwargs.append(kw)
+        return responses.pop(0)
+
+    monkeypatch.setattr(llm.client.chat.completions, "create", fake_create)
+    r = llm.chat([{"role": "user", "content": "hi"}], tools=[{"type": "function", "function": {"name": "x"}}])
+    llm.complete("say ok")
+
+    assert llm.last_prompt_tokens == r.prompt_tokens == 10
+    assert llm.total_prompt_tokens == 13
+    assert llm.total_completion_tokens == 7
+
+    kw0 = captured_kwargs[0]
+    assert kw0["extra_body"] == {"reasoning_effort": "medium"}
+    assert kw0["temperature"] == 0.6
+    assert kw0["max_tokens"] == 8192
+    assert kw0["tool_choice"] == "auto"
