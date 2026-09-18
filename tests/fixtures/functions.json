@@ -1,0 +1,12 @@
+[
+ {"name":"main","entry":"0x00401136","size":120,"is_thunk":false,
+  "callers":["_start"],"callees":["check","printf","fgets"],"string_refs":["Input: ","Correct!","Wrong"],
+  "decompiled_c":"int main(void)\n{\n  fgets(buf,64,stdin);\n  if (check(buf) == 0) puts(\"Wrong\"); else puts(\"Correct!\");\n  return 0;\n}\n"},
+ {"name":"check","entry":"0x004011a0","size":60,"is_thunk":false,
+  "callers":["main"],"callees":[],"string_refs":[],
+  "decompiled_c":"int check(char *s)\n{\n  for (i=0;i<18;i++) if ((s[i]^0x5a)!=expected[i]) return 0;\n  return 1;\n}\n"},
+ {"name":"_start","entry":"0x00401020","size":40,"is_thunk":false,
+  "callers":[],"callees":["main"],"string_refs":[],"decompiled_c":""},
+ {"name":"printf","entry":"0x00401030","size":6,"is_thunk":true,
+  "callers":["main"],"callees":[],"string_refs":[],"decompiled_c":""}
+]
