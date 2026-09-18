@@ -59,12 +59,15 @@ def test_write_replaces(tmp_path):
 def test_raw_log_block_with_fake_header_does_not_break_boundaries(tmp_path):
     cf = CaseFile(tmp_path / "case.md", "p", "d")
     cf.add("log", "### compaction 1\n## Not a real section\n- x", bullet=False)
-    cf.add("facts", "after")
+    cf.add("log", "### compaction 2\n- y", bullet=False)
     text = cf.read()
-    facts = text.split("## Facts")[1].split("## Hypotheses")[0]
     log = text.split("## Log")[1]
-    assert "- after" in facts
     assert "## Not a real section" in log
+    # Verify second block landed after first block (not inserted between fake header and content)
+    idx_compaction1 = log.index("### compaction 1")
+    idx_x = log.index("- x")
+    idx_compaction2 = log.index("### compaction 2")
+    assert idx_compaction1 < idx_x < idx_compaction2
 
 
 def test_missing_header_raises_clear_error(tmp_path):
