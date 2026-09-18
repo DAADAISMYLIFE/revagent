@@ -31,12 +31,18 @@ def test_load_secure_missing(tmp_path, monkeypatch):
         load_secure(tmp_path / "nope")
 
 
-def _msg(content=None, reasoning=None, calls=()):
+def _msg(content=None, reasoning=None, calls=(), reasoning_attr="reasoning_content"):
     tcs = [
         SimpleNamespace(id=i, function=SimpleNamespace(name=n, arguments=a))
         for i, n, a in calls
     ] or None
-    return SimpleNamespace(content=content, reasoning_content=reasoning, tool_calls=tcs, model_extra={})
+    kwargs = {"content": content, "tool_calls": tcs, "model_extra": {}}
+    if reasoning is not None:
+        if reasoning_attr == "model_extra":
+            kwargs["model_extra"] = {"reasoning": reasoning}
+        else:
+            kwargs[reasoning_attr] = reasoning
+    return SimpleNamespace(**kwargs)
 
 
 def test_parse_assistant_plain():
@@ -56,3 +62,19 @@ def test_parse_assistant_tool_calls_strip_reasoning():
     assert msg["tool_calls"][0] == {
         "id": "c1", "type": "function", "function": {"name": "bash", "arguments": '{"cmd": "ls"}'}
     }
+
+
+def test_parse_assistant_reads_reasoning_key():
+    # reasoning under a `.reasoning` attribute, `reasoning_content` absent
+    content, reasoning, calls, msg = parse_assistant(
+        _msg("hi", "via-attr", reasoning_attr="reasoning")
+    )
+    assert reasoning == "via-attr"
+    assert "reasoning" not in msg and "reasoning_content" not in msg
+
+    # reasoning under model_extra["reasoning"], reasoning_content absent
+    content, reasoning, calls, msg = parse_assistant(
+        _msg("hi", "via-model-extra", reasoning_attr="model_extra")
+    )
+    assert reasoning == "via-model-extra"
+    assert "reasoning" not in msg and "reasoning_content" not in msg

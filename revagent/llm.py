@@ -68,7 +68,14 @@ def parse_assistant(m) -> tuple[str, str, list[ToolCall], dict]:
     """Split a ChatCompletionMessage into (content, reasoning, tool_calls, message-to-append).
     The message-to-append never carries reasoning: the chat template drops old thinking anyway."""
     content = m.content or ""
-    reasoning = getattr(m, "reasoning_content", None) or (getattr(m, "model_extra", None) or {}).get("reasoning_content") or ""
+    me = getattr(m, "model_extra", None) or {}
+    reasoning = (
+        getattr(m, "reasoning_content", None)
+        or me.get("reasoning_content")
+        or getattr(m, "reasoning", None)
+        or me.get("reasoning")
+        or ""
+    )
     calls: list[ToolCall] = []
     msg: dict = {"role": "assistant", "content": content}
     if m.tool_calls:
