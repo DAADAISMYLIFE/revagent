@@ -63,7 +63,9 @@ def test_solves_and_writes_result(tmp_path):
     assert res["flag"] == "DH{abc}"
     assert "chal is a shell script" in (d / ".revagent" / "case.md").read_text()
     lines = (d / ".revagent" / "transcript.jsonl").read_text().splitlines()
-    assert json.loads(lines[0])["role"] == "system"
+    first = json.loads(lines[0])
+    assert first["role"] == "_meta" and first["event"] == "session_start"
+    assert json.loads(lines[1])["role"] == "system"
     assert any(json.loads(l).get("role") == "tool" and "Correct" in json.loads(l)["content"] for l in lines)
     # system prompt and task message were sent
     first = llm.seen[0]
@@ -187,6 +189,40 @@ def test_solve_rejects_non_directory(tmp_path, monkeypatch):
     rc = main_mod.main(["solve", str(tmp_path / "nope")])
     assert rc == 2
     assert called["load_secure"] is False
+
+
+def test_load_system_prompt_failure_still_writes_result(tmp_path, monkeypatch):
+    d = make_problem(tmp_path)
+    monkeypatch.setattr("revagent.agent.load_system_prompt",
+                         lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    llm = ScriptedLLM([])
+    r = Agent(d, "", llm, max_steps=10, interactive=False).run()
+    assert r["status"] == "unsolved"
+    assert r["reason"].startswith("error: RuntimeError")
+    assert (d / ".revagent" / "result.json").exists()
+    res = json.loads((d / ".revagent" / "result.json").read_text())
+    assert res["status"] == "unsolved"
+
+
+def test_session_start_logged_first(tmp_path):
+    d = make_problem(tmp_path)
+    llm = ScriptedLLM([[("submit_flag", {"flag": "DH{x}", "how_verified": "v"})]])
+    Agent(d, "desc", llm, max_steps=10, max_minutes=5, interactive=False).run()
+    lines = (d / ".revagent" / "transcript.jsonl").read_text().splitlines()
+    first = json.loads(lines[0])
+    assert first["role"] == "_meta" and first["event"] == "session_start"
+    assert first["max_steps"] == 10 and first["max_minutes"] == 5
+    assert "problem_dir" in first and "time" in first
+
+
+def test_task_message_truncates_huge_listing(tmp_path, monkeypatch):
+    d = make_problem(tmp_path)
+    monkeypatch.setattr("revagent.agent.run_cmd", lambda *a, **kw: "X" * 10_000)
+    llm = ScriptedLLM([[("submit_flag", {"flag": "DH{x}", "how_verified": "v"})]])
+    agent = Agent(d, "desc", llm, max_steps=10, interactive=False)
+    msg = agent._task_message()
+    assert len(msg) < 6_000
+    assert "[listing truncated]" in msg
 
 
 def test_bench_isolates_errors(tmp_path, monkeypatch, capsys):

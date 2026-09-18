@@ -2,6 +2,7 @@
 import json
 import time
 from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .casefile import CaseFile
@@ -60,6 +61,8 @@ class Agent:
 
     def _task_message(self) -> str:
         listing = run_cmd("ls -la", cwd=self.problem_dir, timeout=10)
+        if len(listing) > 4_000:
+            listing = listing[:4_000] + "\n[listing truncated]"
         return TASK_TEMPLATE.format(dir=self.problem_dir, desc=self.description.strip() or "(none)",
                                     listing=listing)
 
@@ -91,10 +94,15 @@ class Agent:
     # ---- main loop ---------------------------------------------------------
     def run(self) -> dict:
         start = time.time()
+        self._log({
+            "role": "_meta", "event": "session_start",
+            "time": datetime.now(timezone.utc).isoformat(),
+            "problem_dir": str(self.problem_dir),
+            "max_steps": self.max_steps,
+            "max_minutes": self.max_minutes,
+        })
         start_prompt_tokens = self.llm.total_prompt_tokens
         start_completion_tokens = self.llm.total_completion_tokens
-        self._append({"role": "system", "content": load_system_prompt()})
-        self._append({"role": "user", "content": self._task_message()})
         no_tool_streak = 0
         recent = deque(maxlen=3)
         compactions = 0
@@ -103,6 +111,8 @@ class Agent:
 
         try:
             try:
+                self._append({"role": "system", "content": load_system_prompt()})
+                self._append({"role": "user", "content": self._task_message()})
                 for step in range(1, self.max_steps + 1):
                     steps = step
                     if time.time() - start > self.max_minutes * 60:

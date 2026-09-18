@@ -6,6 +6,7 @@ THRESHOLD = 44_000
 KEEP_RECENT = 4
 PER_MSG_CAP = 1_500
 TOTAL_CAP = 90_000
+SHRINK_INPUT_CAP = 60_000
 
 RESET_TEXT = ("[CONTEXT RESET] Your context was compacted. The case file below is everything that "
               "survived. Read it, then continue from the Todo section. Keep writing conclusions to notes.")
@@ -27,8 +28,14 @@ SHRINK_PROMPT = (
 )
 
 
+def _is_reset_banner(m: dict) -> bool:
+    return m.get("role") == "user" and (m.get("content") or "").startswith(RESET_TEXT)
+
+
 def split_messages(messages: list[dict]) -> tuple[list, list, list]:
-    """head = [system, task]; tail = last KEEP_RECENT assistant-tool-call exchanges; middle = the rest."""
+    """head = [system, task]; tail = last KEEP_RECENT assistant-tool-call exchanges; middle = the rest,
+    excluding any earlier [CONTEXT RESET] banner (already folded into the case file; re-summarizing
+    it would just re-feed stale context back into the log)."""
     idxs = [i for i, m in enumerate(messages) if m.get("role") == "assistant" and m.get("tool_calls")]
     if len(idxs) > KEEP_RECENT:
         tail_start = idxs[-KEEP_RECENT]
@@ -37,7 +44,8 @@ def split_messages(messages: list[dict]) -> tuple[list, list, list]:
     else:
         tail_start = len(messages)
     tail_start = max(tail_start, 2)
-    return messages[:2], messages[2:tail_start], messages[tail_start:]
+    middle = [m for m in messages[2:tail_start] if not _is_reset_banner(m)]
+    return messages[:2], middle, messages[tail_start:]
 
 
 def serialize(middle: list[dict]) -> str:
@@ -83,8 +91,20 @@ def compact(messages: list[dict], llm, casefile, n: int) -> list[dict]:
 
 def shrink_casefile(casefile, llm) -> bool:
     text = casefile.read()
-    new = llm.complete(SHRINK_PROMPT + text).strip()
-    if new.startswith("# Case:") and "## Facts" in new and "## Todo" in new:
-        casefile.write(new + "\n")
-        return True
-    return False
+    input_text = text
+    if len(input_text) > SHRINK_INPUT_CAP:
+        input_text = input_text[:SHRINK_INPUT_CAP] + "\n[… truncated …]"
+    try:
+        new = llm.complete(SHRINK_PROMPT + input_text).strip()
+    except Exception:
+        return False
+    required_headers = ("## Facts", "## Hypotheses", "## Todo", "## Log")
+    if not (new.startswith("# Case:") and all(h in new for h in required_headers)):
+        return False
+    non_empty_lines = [l for l in new.splitlines() if l.strip()]
+    if non_empty_lines and not non_empty_lines[-1].strip().startswith(("-", "#")):
+        return False  # looks like the reply was cut off mid-line
+    backup = casefile.path.with_name(casefile.path.name + ".bak")
+    backup.write_text(text, encoding="utf-8")
+    casefile.write(new + "\n")
+    return True

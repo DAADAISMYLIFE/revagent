@@ -110,3 +110,74 @@ def test_shrink_casefile_returns_bool(tmp_path):
     llm2 = FakeLLM(reply="garbage")
     assert shrink_casefile(cf2, llm2) is False
     assert cf2.read() == before2
+
+
+def test_shrink_casefile_llm_exception_returns_false(tmp_path):
+    cf = CaseFile(tmp_path / "case.md", "p", "d")
+    cf.add("facts", "x")
+    before = cf.read()
+
+    class BoomLLM:
+        def complete(self, prompt, system=None):
+            raise RuntimeError("server down")
+
+    assert shrink_casefile(cf, BoomLLM()) is False
+    assert cf.read() == before
+    assert not (tmp_path / "case.md.bak").exists()
+
+
+def test_shrink_casefile_missing_header_rejected(tmp_path):
+    cf = CaseFile(tmp_path / "case.md", "p", "d")
+    cf.add("facts", "x")
+    before = cf.read()
+    # missing "## Log"
+    llm = FakeLLM(reply="# Case: p\n\n## Facts\n- short\n\n## Hypotheses\n\n## Todo\n- t")
+    assert shrink_casefile(cf, llm) is False
+    assert cf.read() == before
+    assert not (tmp_path / "case.md.bak").exists()
+
+
+def test_shrink_casefile_rejects_reply_that_looks_cut_off(tmp_path):
+    cf = CaseFile(tmp_path / "case.md", "p", "d")
+    cf.add("facts", "x")
+    before = cf.read()
+    # has all headers but the reply is truncated mid-sentence, not on a bullet/heading line
+    llm = FakeLLM(reply="# Case: p\n\n## Facts\n- short\n\n## Hypotheses\n\n## Todo\n\n## Log\nthe function does")
+    assert shrink_casefile(cf, llm) is False
+    assert cf.read() == before
+
+
+def test_shrink_casefile_backs_up_before_overwrite(tmp_path):
+    cf = CaseFile(tmp_path / "case.md", "p", "d")
+    cf.add("facts", "original fact, verbatim")
+    before = cf.read()
+    llm = FakeLLM(reply="# Case: p\n\n## Facts\n- short\n\n## Hypotheses\n\n## Todo\n\n## Log\n")
+    assert shrink_casefile(cf, llm) is True
+    backup = tmp_path / "case.md.bak"
+    assert backup.exists()
+    assert backup.read_text(encoding="utf-8") == before
+    assert "original fact, verbatim" in backup.read_text(encoding="utf-8")
+
+
+def test_shrink_casefile_caps_huge_input(tmp_path):
+    cf = CaseFile(tmp_path / "case.md", "p", "d")
+    cf.add("facts", "a" * 61_000)
+    llm = FakeLLM(reply="# Case: p\n\n## Facts\n- short\n\n## Hypotheses\n\n## Todo\n\n## Log\n")
+    shrink_casefile(cf, llm)
+    assert llm.prompts[0].count("a") <= 60_000 + 100
+    assert "truncated" in llm.prompts[0]
+
+
+def test_compact_excludes_reset_banner_from_next_middle(tmp_path):
+    cf = CaseFile(tmp_path / "case.md", "p", "d")
+    llm = FakeLLM()
+    msgs = compact(build(10), llm, cf, n=1)
+    assert RESET_TEXT in msgs[2]["content"]
+
+    # Grow the conversation again so the earlier reset banner (msgs[2]) would fall
+    # inside "middle" on the next compaction if it weren't filtered out.
+    for i in range(10, 20):
+        msgs = msgs + exchange(i)
+    compact(msgs, llm, cf, n=2)
+
+    assert RESET_TEXT not in llm.prompts[1]
