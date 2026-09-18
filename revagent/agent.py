@@ -70,20 +70,29 @@ class Agent:
     def _execute(self, call: ToolCall) -> str:
         handler = self.handlers.get(call.name)
         if handler is None:
-            return f"[tool error] unknown tool {call.name}; available: {', '.join(sorted(self.handlers))}"
-        if call.parse_error:
-            return f"[tool error] arguments were not valid JSON: {call.raw_args[:300]}"
-        try:
-            out = handler(self.ctx, **call.args)
-        except TypeError as e:
-            return f"[tool error] bad arguments for {call.name}: {e}"
-        except Exception as e:  # tool bugs must not kill the session
-            return f"[tool error] {type(e).__name__}: {e}"
-        return truncate(str(out), self.ctx.out_dir, self.ctx.next_out_id)
+            result = f"[tool error] unknown tool {call.name}; available: {', '.join(sorted(self.handlers))}"
+        elif call.parse_error:
+            result = f"[tool error] arguments were not valid JSON: {call.raw_args[:300]}"
+        else:
+            try:
+                result = str(handler(self.ctx, **call.args))
+            except TypeError as e:
+                result = f"[tool error] bad arguments for {call.name}: {e}"
+            except Exception as e:  # tool bugs must not kill the session
+                result = f"[tool error] {type(e).__name__}: {e}"
+        return truncate(result, self.ctx.out_dir, self.ctx.next_out_id)
+
+    def _compact(self, cause: str, compactions: int) -> list[dict]:
+        self._log({"role": "_meta", "event": "compaction", "n": compactions, "cause": cause})
+        messages = compact(self.messages, self.llm, self.casefile, compactions)
+        self._log(messages[2])
+        return messages
 
     # ---- main loop ---------------------------------------------------------
     def run(self) -> dict:
         start = time.time()
+        start_prompt_tokens = self.llm.total_prompt_tokens
+        start_completion_tokens = self.llm.total_completion_tokens
         self._append({"role": "system", "content": load_system_prompt()})
         self._append({"role": "user", "content": self._task_message()})
         no_tool_streak = 0
@@ -93,69 +102,88 @@ class Agent:
         status, reason, steps = "unsolved", "", 0
 
         try:
-            for step in range(1, self.max_steps + 1):
-                steps = step
-                if time.time() - start > self.max_minutes * 60:
-                    reason = "time limit"
-                    steps = step - 1
-                    break
-                try:
-                    resp = self.llm.chat(self.messages, self.schemas)
-                except ContextOverflow:
-                    compactions += 1
-                    self._log({"role": "_meta", "event": "compaction", "n": compactions, "cause": "overflow"})
-                    self.messages = compact(self.messages, self.llm, self.casefile, compactions)
-                    steps = step - 1
-                    continue
-                self._log({"role": "_reasoning", "step": step, "content": resp.reasoning})
-                self._append(resp.message)
-                if self.show_thinking and resp.reasoning:
-                    self._print(f"\033[2m{resp.reasoning[:2000]}\033[0m")
-                if resp.content:
-                    self._print(f"[{step}] {resp.content[:600]}")
-
-                if not resp.tool_calls:
-                    no_tool_streak += 1
-                    if no_tool_streak >= 3:
-                        reason = "no tool calls 3x"
+            try:
+                for step in range(1, self.max_steps + 1):
+                    steps = step
+                    if time.time() - start > self.max_minutes * 60:
+                        reason = "time limit"
+                        steps = step - 1
                         break
-                    self._append({"role": "user", "content": "Call a tool, or finish with submit_flag. Do not just narrate."})
-                    continue
-                no_tool_streak = 0
+                    try:
+                        resp = self.llm.chat(self.messages, self.schemas)
+                    except ContextOverflow:
+                        over_streak += 1
+                        if over_streak >= 3:
+                            reason = "context cannot be reduced"
+                            steps = step - 1
+                            break
+                        if over_streak == 2:
+                            shrunk = shrink_casefile(self.casefile, self.llm)
+                            self._log({"role": "_meta", "event": "shrink_casefile", "accepted": shrunk})
+                        compactions += 1
+                        self.messages = self._compact("overflow", compactions)
+                        recent.clear()
+                        steps = step - 1
+                        continue
+                    self._log({"role": "_reasoning", "step": step, "content": resp.reasoning})
+                    self._append(resp.message)
+                    if self.show_thinking and resp.reasoning:
+                        self._print(f"\033[2m{resp.reasoning[:2000]}\033[0m")
+                    if resp.content:
+                        self._print(f"[{step}] {resp.content[:600]}")
 
-                for call in resp.tool_calls:
-                    self._print(f"[{step}] > {call.name} {call.raw_args[:160]}")
-                    result = self._execute(call)
-                    self._append({"role": "tool", "tool_call_id": call.id, "content": result})
-                    head = "\n".join(result.splitlines()[:3])
-                    self._print(f"[{step}] < {head[:300]}")
+                    if not resp.tool_calls:
+                        no_tool_streak += 1
+                        if no_tool_streak >= 3:
+                            reason = "no tool calls 3x"
+                            break
+                        self._append({"role": "user", "content": "Call a tool, or finish with submit_flag. Do not just narrate."})
+                        continue
+                    no_tool_streak = 0
+
+                    flag_just_set = False
+                    for call in resp.tool_calls:
+                        if flag_just_set:
+                            result = "[tool error] skipped: flag submitted"
+                            self._append({"role": "tool", "tool_call_id": call.id, "content": result})
+                            continue
+                        self._print(f"[{step}] > {call.name} {call.raw_args[:160]}")
+                        result = self._execute(call)
+                        self._append({"role": "tool", "tool_call_id": call.id, "content": result})
+                        head = "\n".join(result.splitlines()[:3])
+                        self._print(f"[{step}] < {head[:300]}")
+                        if self.ctx.flag:
+                            flag_just_set = True
+                    self._print(f"[{step}] tokens: prompt={resp.prompt_tokens} completion={resp.completion_tokens}")
                     if self.ctx.flag:
+                        status = "solved"
                         break
-                self._print(f"[{step}] tokens: prompt={resp.prompt_tokens} completion={resp.completion_tokens}")
-                if self.ctx.flag:
-                    status = "solved"
-                    break
 
-                recent.append(tuple((c.name, c.raw_args) for c in resp.tool_calls))
-                if len(recent) == 3 and len(set(recent)) == 1:
-                    self._append({"role": "user", "content": "You have repeated the same tool call 3 times. Read your notes and choose a different approach."})
+                    recent.append(tuple((c.name, c.raw_args) for c in resp.tool_calls))
+                    if len(recent) == 3 and len(set(recent)) == 1:
+                        self._append({"role": "user", "content": "You have repeated the same tool call 3 times. Read your notes and choose a different approach."})
+                        recent.clear()
 
-                if self.llm.last_prompt_tokens > THRESHOLD:
-                    over_streak += 1
-                    if over_streak >= 3:
-                        reason = "context cannot be reduced"
-                        break
-                    if over_streak == 2:
-                        shrunk = shrink_casefile(self.casefile, self.llm)
-                        self._log({"role": "_meta", "event": "shrink_casefile", "accepted": shrunk})
-                    compactions += 1
-                    self._log({"role": "_meta", "event": "compaction", "n": compactions, "cause": "threshold"})
-                    self.messages = compact(self.messages, self.llm, self.casefile, compactions)
-                    self._print(f"[{step}] -- context compacted ({compactions}) --")
+                    if self.llm.last_prompt_tokens > THRESHOLD:
+                        over_streak += 1
+                        if over_streak >= 3:
+                            reason = "context cannot be reduced"
+                            break
+                        if over_streak == 2:
+                            shrunk = shrink_casefile(self.casefile, self.llm)
+                            self._log({"role": "_meta", "event": "shrink_casefile", "accepted": shrunk})
+                        compactions += 1
+                        self.messages = self._compact("threshold", compactions)
+                        recent.clear()
+                        self._print(f"[{step}] -- context compacted ({compactions}) --")
+                    else:
+                        over_streak = 0
                 else:
-                    over_streak = 0
-            else:
-                reason = "step limit"
+                    reason = "step limit"
+            except Exception as e:  # never lose the run: still write result.json and report
+                status = "unsolved"
+                reason = f"error: {type(e).__name__}: {e}"[:500]
+                self._log({"role": "_meta", "event": "error", "error": reason})
 
             result = {
                 "status": status,
@@ -164,8 +192,8 @@ class Agent:
                 "reason": reason,
                 "steps": steps,
                 "compactions": compactions,
-                "prompt_tokens": self.llm.total_prompt_tokens,
-                "completion_tokens": self.llm.total_completion_tokens,
+                "prompt_tokens": self.llm.total_prompt_tokens - start_prompt_tokens,
+                "completion_tokens": self.llm.total_completion_tokens - start_completion_tokens,
                 "minutes": round((time.time() - start) / 60, 1),
             }
             (self.work_dir / "result.json").write_text(json.dumps(result, indent=2, ensure_ascii=False))

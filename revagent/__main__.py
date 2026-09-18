@@ -33,19 +33,26 @@ def main(argv=None) -> int:
     _add_limits(b)
     args = ap.parse_args(argv)
 
-    llm = LLM(load_secure(Path(args.secure) if args.secure else None))
-
     if args.cmd == "solve":
         d = Path(args.dir)
+        if not d.is_dir():
+            print(f"error: {d} is not a directory", file=sys.stderr)
+            return 2
+        llm = LLM(load_secure(Path(args.secure) if args.secure else None))
         r = Agent(d, _read_desc(d, args.desc), llm, max_steps=args.max_steps, max_minutes=args.max_minutes,
                   interactive=not args.no_ask, show_thinking=args.show_thinking).run()
         return 0 if r["status"] == "solved" else 1
 
+    llm = LLM(load_secure(Path(args.secure) if args.secure else None))
     rows = []
     for d in map(Path, args.dirs):
-        r = Agent(d, _read_desc(d, None), llm, max_steps=args.max_steps, max_minutes=args.max_minutes,
-                  interactive=False, show_thinking=args.show_thinking).run()
-        rows.append((d.name, r["status"], r.get("flag") or r["reason"], r["steps"], r["minutes"]))
+        try:
+            r = Agent(d, _read_desc(d, None), llm, max_steps=args.max_steps, max_minutes=args.max_minutes,
+                      interactive=False, show_thinking=args.show_thinking).run()
+            rows.append((d.name, r["status"], r.get("flag") or r["reason"], r["steps"], r["minutes"]))
+        except Exception as e:
+            print(f"error: {d}: {e}", file=sys.stderr)
+            rows.append((d.name, "error", str(e)[:80], 0, 0))
     print("\n| challenge | status | flag/reason | steps | min |\n|---|---|---|---|---|")
     for row in rows:
         print("| " + " | ".join(str(x) for x in row) + " |")

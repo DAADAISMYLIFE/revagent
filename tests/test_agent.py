@@ -2,11 +2,14 @@ import json
 from pathlib import Path
 
 from revagent.agent import Agent
-from revagent.llm import ChatResponse, ToolCall
+from revagent.llm import ChatResponse, ContextOverflow, ToolCall
 
 
 class ScriptedLLM:
-    """Returns pre-baked responses in order; records the messages it was given."""
+    """Returns pre-baked responses in order; records the messages it was given.
+    A script entry may also be an exception (instance or class), in which case
+    chat() raises it instead of returning a response — used to simulate
+    ContextOverflow / arbitrary server errors."""
 
     def __init__(self, script, prompt_tokens=100):
         self.script = list(script)
@@ -19,7 +22,10 @@ class ScriptedLLM:
 
     def chat(self, messages, tools=None):
         self.seen.append([dict(m) for m in messages])
-        calls = self.script.pop(0)
+        item = self.script.pop(0)
+        if isinstance(item, BaseException) or (isinstance(item, type) and issubclass(item, BaseException)):
+            raise item
+        calls = item
         tcs = [ToolCall(f"id{i}", n, a, json.dumps(a)) for i, (n, a) in enumerate(calls)]
         msg = {"role": "assistant", "content": "" if tcs else "just talking"}
         if tcs:
@@ -27,6 +33,8 @@ class ScriptedLLM:
                                   "function": {"name": t.name, "arguments": t.raw_args}} for t in tcs]
         pt = self.prompt_tokens(len(self.seen)) if callable(self.prompt_tokens) else self.prompt_tokens
         self.last_prompt_tokens = pt
+        self.total_prompt_tokens += pt
+        self.total_completion_tokens += 10
         return ChatResponse(msg["content"], "thinking...", tcs, msg, pt, 10)
 
     def complete(self, prompt, system=None):
@@ -113,3 +121,98 @@ def test_compaction_triggers_over_threshold(tmp_path):
     seventh = llm.seen[6]
     assert seventh[2]["role"] == "user" and "[CONTEXT RESET]" in seventh[2]["content"]
     assert "- summary bullet" in seventh[2]["content"]
+
+
+def test_reset_message_logged(tmp_path):
+    d = make_problem(tmp_path)
+    script = [[("bash", {"cmd": f"echo {i}"})] for i in range(7)] + \
+             [[("submit_flag", {"flag": "DH{x}", "how_verified": "v"})]]
+    llm = ScriptedLLM(script, prompt_tokens=lambda n: 50_000 if n == 6 else 100)
+    Agent(d, "desc", llm, max_steps=20, interactive=False).run()
+    lines = (d / ".revagent" / "transcript.jsonl").read_text().splitlines()
+    assert any(json.loads(l).get("content", "").startswith("[CONTEXT RESET]") for l in lines)
+
+
+def test_overflow_escalates_and_aborts(tmp_path):
+    d = make_problem(tmp_path)
+    llm = ScriptedLLM([ContextOverflow("too big")] * 3)
+    r = Agent(d, "", llm, max_steps=10, interactive=False).run()
+    assert r["reason"] == "context cannot be reduced"
+    shrink_calls = [p for p in llm.completes if "Rewrite this case file" in p]
+    assert len(shrink_calls) == 1
+    assert (d / ".revagent" / "result.json").exists()
+
+
+def test_exception_still_writes_result(tmp_path):
+    d = make_problem(tmp_path)
+    llm = ScriptedLLM([RuntimeError("boom")])
+    r = Agent(d, "", llm, max_steps=10, interactive=False).run()
+    assert r["status"] == "unsolved"
+    assert r["reason"].startswith("error: RuntimeError")
+    assert (d / ".revagent" / "result.json").exists()
+
+
+def test_token_totals_are_per_run(tmp_path):
+    d = make_problem(tmp_path)
+    llm = ScriptedLLM([[("submit_flag", {"flag": "DH{x}", "how_verified": "v"})]], prompt_tokens=77)
+    llm.total_prompt_tokens = 500
+    llm.total_completion_tokens = 200
+    r = Agent(d, "", llm, max_steps=10, interactive=False).run()
+    assert r["prompt_tokens"] == 77
+    assert r["completion_tokens"] == 10
+
+
+def test_skipped_calls_get_tool_results(tmp_path):
+    d = make_problem(tmp_path)
+    llm = ScriptedLLM([
+        [("submit_flag", {"flag": "DH{x}", "how_verified": "v"}), ("bash", {"cmd": "echo hi"})],
+    ])
+    Agent(d, "", llm, max_steps=10, interactive=False).run()
+    lines = (d / ".revagent" / "transcript.jsonl").read_text().splitlines()
+    tool_lines = [json.loads(l) for l in lines if json.loads(l).get("role") == "tool"]
+    assert len(tool_lines) == 2
+    assert "skipped" in tool_lines[1]["content"]
+
+
+def test_solve_rejects_non_directory(tmp_path, monkeypatch):
+    from revagent import __main__ as main_mod
+
+    called = {"load_secure": False}
+
+    def fake_load_secure(*a, **kw):
+        called["load_secure"] = True
+        raise AssertionError("load_secure should not be called")
+
+    monkeypatch.setattr(main_mod, "load_secure", fake_load_secure)
+    rc = main_mod.main(["solve", str(tmp_path / "nope")])
+    assert rc == 2
+    assert called["load_secure"] is False
+
+
+def test_bench_isolates_errors(tmp_path, monkeypatch, capsys):
+    from revagent import __main__ as main_mod
+
+    d_bad = tmp_path / "bad"
+    d_bad.mkdir()
+    d_good = tmp_path / "good"
+    d_good.mkdir()
+
+    class FakeAgent:
+        def __init__(self, d, desc, llm, **kw):
+            self.d = Path(d)
+
+        def run(self):
+            if self.d.name == "bad":
+                raise RuntimeError("kaboom")
+            return {"status": "solved", "flag": "DH{x}", "how_verified": "v", "reason": "",
+                    "steps": 1, "compactions": 0, "prompt_tokens": 1, "completion_tokens": 1, "minutes": 0.1}
+
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **kw: object())
+    monkeypatch.setattr(main_mod, "LLM", lambda secure: object())
+    monkeypatch.setattr(main_mod, "Agent", FakeAgent)
+
+    rc = main_mod.main(["bench", str(d_bad), str(d_good)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "error" in out
+    assert "solved" in out
