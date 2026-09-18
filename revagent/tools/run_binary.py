@@ -28,11 +28,19 @@ SCHEMA = {
 
 
 def run(ctx, path: str, args: list[str] | None = None, stdin: str = "", timeout: int = 10) -> str:
-    p = ctx.problem_dir / path
+    problem_dir = ctx.problem_dir.resolve()
+    p = (ctx.problem_dir / path).resolve()
+    if not p.is_relative_to(problem_dir):
+        return f"[tool error] path escapes the challenge directory: {path}"
     if not p.is_file():
         return f"[tool error] no such file: {path}"
-    kind = subprocess.run(["file", "-b", str(p)], capture_output=True, text=True).stdout.strip()
-    if "PE32" in kind or "MS Windows" in kind or p.read_bytes()[:2] == b"MZ":
+    try:
+        kind = subprocess.run(["file", "-b", str(p)], capture_output=True, text=True).stdout.strip()
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        kind = ""
+    with p.open("rb") as f:
+        magic = f.read(2)
+    if "PE32" in kind or "MS Windows" in kind or magic == b"MZ":
         return (f"[cannot run here] {kind} — Windows PE, no wine. Use static analysis, unicorn emulation "
                 f"(ctfpy), or re-implement the check in Python and verify against it.")
     if "ELF" in kind and "x86-64" not in kind:

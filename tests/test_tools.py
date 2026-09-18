@@ -68,6 +68,27 @@ def test_run_binary_refuses_pe(tmp_path, monkeypatch):
     assert out.startswith("[cannot run here]")
 
 
+def test_run_binary_rejects_escape(tmp_path):
+    c = ctx_for(tmp_path)
+    assert run_binary.run(c, path="../outside").startswith("[tool error] path escapes")
+    assert run_binary.run(c, path="/bin/true").startswith("[tool error] path escapes")
+
+
+def test_run_binary_survives_missing_file_cmd(tmp_path, monkeypatch):
+    script = tmp_path / "p.sh"
+    script.write_text("#!/bin/bash\necho ran\n")
+    script.chmod(0o755)
+    (tmp_path / "x.exe").write_bytes(b"MZ" + b"\0" * 100)
+
+    def boom(*a, **kw):
+        raise FileNotFoundError("no file(1)")
+
+    monkeypatch.setattr("revagent.tools.run_binary.subprocess.run", boom)
+    c = ctx_for(tmp_path)
+    assert "ran" in run_binary.run(c, path="p.sh")
+    assert run_binary.run(c, path="x.exe").startswith("[cannot run here]")
+
+
 def test_notes_read_add(tmp_path):
     c = ctx_for(tmp_path)
     assert notes.run(c, action="add", section="facts", text="f1") == "added to facts"
