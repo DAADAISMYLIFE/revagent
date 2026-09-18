@@ -1,0 +1,7 @@
+.secure
+__pycache__/
+*.pyc
+.pytest_cache/
+.revagent/
+bench/mini/*/build/
+*.egg-info/
