@@ -324,3 +324,46 @@ def test_compact_leaves_todo_unchanged_without_c_section(tmp_path):
     compact(build(10), llm, cf, n=1)
     todo = cf.read().split("## Todo")[1].split("## Log")[0]
     assert "existing todo" in todo
+
+
+def test_extract_unfinished_ignores_mid_sentence_c_mention_before_real_heading():
+    summary = ('(a) FACTS\n- strings: "Copyright (c) 1998 Foo"\n(b) FAILED\n- fail one\n'
+               "(c) UNFINISHED\n- real todo one\n- real todo two\n(d) ARTIFACTS\n- art one")
+    out = extract_unfinished(summary)
+    assert "real todo one" in out and "real todo two" in out
+    assert "Copyright" not in out and "fail one" not in out and "art one" not in out
+
+
+def test_extract_unfinished_mid_line_d_does_not_truncate_section():
+    summary = ("(c) UNFINISHED\n- add (d)ata parsing support\n- another real todo\n"
+               "(d) ARTIFACTS\n- art one")
+    out = extract_unfinished(summary)
+    assert "add (d)ata parsing support" in out
+    assert "another real todo" in out
+    assert "art one" not in out
+
+
+def test_extract_unfinished_excludes_heading_line_itself():
+    summary = "(c) UNFINISHED\n- todo one"
+    out = extract_unfinished(summary)
+    assert "(c) UNFINISHED" not in out
+    assert out == "- todo one"
+
+
+def test_format_work_files_caps_block_length(tmp_path):
+    files = [(f"very/long/relative/path/to/some/deeply/nested/directory/structure/for/"
+              f"testing/purposes/file_number_{i:04d}.json", 1234) for i in range(40)]
+    s = format_work_files(files)
+    assert len(s) <= 4000
+    assert "more files)" in s
+
+
+def test_list_work_files_skips_non_regular_files(tmp_path):
+    since = time.time_ns()
+    (tmp_path / "real.json").write_text("{}")
+    fifo_path = tmp_path / "a_fifo"
+    os.mkfifo(fifo_path)
+    files = list_work_files(tmp_path, since)
+    paths = [p for p, _ in files]
+    assert "real.json" in paths
+    assert "a_fifo" not in paths

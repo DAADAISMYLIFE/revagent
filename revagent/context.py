@@ -1,6 +1,7 @@
 """Context compaction: summarize the middle of the conversation into the case file and rebuild."""
 
 import os
+import stat
 from pathlib import Path
 
 from .casefile import SECTIONS
@@ -57,6 +58,8 @@ def list_work_files(problem_dir: Path, since_ns: int, limit: int = 40) -> list[t
                 st = full.stat()
             except OSError:
                 continue
+            if not stat.S_ISREG(st.st_mode):
+                continue
             if st.st_mtime_ns < since_ns:
                 continue
             rel = (rel_root / name).as_posix()
@@ -65,13 +68,30 @@ def list_work_files(problem_dir: Path, since_ns: int, limit: int = 40) -> list[t
     return found[:limit]
 
 
+WORK_FILES_BLOCK_CAP = 4_000
+_WORK_FILES_TAIL_RESERVE = 80  # room for a trailing "- … (N more files)" line
+
+
 def format_work_files(files: list[tuple[str, int]]) -> str:
     if not files:
         return ""
-    lines = ["[WORK FILES] These files were created or modified during this run and still exist "
-             "under the challenge dir. Read/load them instead of re-deriving their contents:"]
-    lines += [f"- {path} ({size} bytes)" for path, size in files]
-    return "\n".join(lines)
+    header = ("[WORK FILES] These files were created or modified during this run and still exist "
+              "under the challenge dir. Read/load them instead of re-deriving their contents:")
+    lines = [header]
+    budget = WORK_FILES_BLOCK_CAP - _WORK_FILES_TAIL_RESERVE
+    shown = 0
+    for path, size in files:
+        line = f"- {path} ({size} bytes)"
+        prospective = len("\n".join(lines)) + 1 + len(line)
+        if prospective > budget:
+            break
+        lines.append(line)
+        shown += 1
+    remaining = len(files) - shown
+    if remaining > 0:
+        lines.append(f"- … ({remaining} more files)")
+    result = "\n".join(lines)
+    return result[:WORK_FILES_BLOCK_CAP]
 
 
 def _is_reset_banner(m: dict) -> bool:
@@ -125,15 +145,24 @@ def sanitize_summary(text: str) -> str:
     return "\n".join(lines)
 
 
+def _is_heading(line: str, tag: str) -> bool:
+    """True if `line`, once bullet/heading punctuation is stripped, starts with `tag`
+    (e.g. "(c)"). Guards against a fact bullet merely mentioning "(c)" mid-sentence
+    (e.g. a "Copyright (c) 1998" string dumped from the binary)."""
+    return line.strip().lstrip("#*- ").startswith(tag)
+
+
 def extract_unfinished(summary: str) -> str:
-    """Return the text under the "(c)" heading (from the line containing "(c)" up to the next
-    line containing "(d)" or the end), stripped. "" if not found."""
+    """Return the body under the "(c)" heading line (the line itself is a heading-shaped line
+    starting with "(c)", not just any line mentioning it) up to the next heading-shaped "(d)"
+    line found after it, or the end. Excludes the heading line itself; stripped; "" if no
+    "(c)" heading or no body remains."""
     lines = summary.split("\n")
-    start = next((i for i, line in enumerate(lines) if "(c)" in line), None)
+    start = next((i for i, line in enumerate(lines) if _is_heading(line, "(c)")), None)
     if start is None:
         return ""
-    end = next((i for i in range(start + 1, len(lines)) if "(d)" in lines[i]), len(lines))
-    return "\n".join(lines[start:end]).strip()
+    end = next((i for i in range(start + 1, len(lines)) if _is_heading(lines[i], "(d)")), len(lines))
+    return "\n".join(lines[start + 1:end]).strip()
 
 
 def compact(messages: list[dict], llm, casefile, n: int, work_files_block: str = "") -> list[dict]:
