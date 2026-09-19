@@ -38,7 +38,8 @@ RUN bash /tmp/scripts/install_ghidra.sh && rm -rf /tmp/scripts /tmp/revagent /ro
 # Agent + Python reversing stack. Editable install so `-v <repo>:/app` overrides code at runtime.
 COPY . /app
 RUN pip install -e /app \
-    && pip install angr z3-solver unicorn capstone pwntools pefile pycryptodome
+    && pip install angr==10.0.0 z3-solver==5.1.0.0 unicorn==2.1.2 capstone==5.0.9 pwntools==4.15.0 \
+         pefile==2024.8.26 pycryptodome==3.23.0
 
 COPY docker/entrypoint.sh /usr/local/bin/revagent-entrypoint
 RUN chmod +x /usr/local/bin/revagent-entrypoint

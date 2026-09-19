@@ -7,3 +7,6 @@ __pycache__
 **/.revagent
 bench/mini/xor_check/xor_check
 docs/diagrams/*.html
+*.crt
+*.key
+*.pem
