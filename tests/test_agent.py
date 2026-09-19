@@ -503,6 +503,35 @@ def test_bench_sandbox_tolerates_bad_result_json(tmp_path, monkeypatch, capsys):
     assert "| b | solved | DH{b} | 2 | 0.5 |" in out
 
 
+def test_sandbox_ca_flag_without_sandbox_is_rejected(tmp_path, monkeypatch, capsys):
+    from revagent import __main__ as main_mod
+
+    d = tmp_path / "chal"
+    d.mkdir()
+    crt = tmp_path / "corp.crt"
+    crt.write_text("cert")
+    monkeypatch.setattr(main_mod, "load_secure",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("not reached")))
+    rc = main_mod.main(["solve", str(d), "--sandbox-ca", str(crt)])
+    assert rc == 2
+    assert "error: --sandbox-ca requires --sandbox" in capsys.readouterr().err
+
+
+def test_sandbox_ca_env_without_sandbox_is_rejected(tmp_path, monkeypatch, capsys):
+    from revagent import __main__ as main_mod
+
+    d = tmp_path / "chal"
+    d.mkdir()
+    crt = tmp_path / "corp.crt"
+    crt.write_text("cert")
+    monkeypatch.setenv("REVAGENT_SANDBOX_CA", str(crt))
+    monkeypatch.setattr(main_mod, "load_secure",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("not reached")))
+    rc = main_mod.main(["solve", str(d)])
+    assert rc == 2
+    assert "error: --sandbox-ca requires --sandbox" in capsys.readouterr().err
+
+
 def test_bench_table_shared_helper(capsys):
     from revagent import __main__ as main_mod
 

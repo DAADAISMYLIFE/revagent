@@ -51,7 +51,7 @@ def _run_in_sandbox(d: Path, args, desc_arg: str | None, no_ask: bool) -> int:
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    ca_arg = args.sandbox_ca or os.environ.get("REVAGENT_SANDBOX_CA") or None
+    ca_arg = args.sandbox_ca or os.environ.get("REVAGENT_SANDBOX_CA")
     extra_ca = Path(ca_arg) if ca_arg else None
     if extra_ca is not None and not extra_ca.is_file():
         print(f"error: --sandbox-ca file not found: {extra_ca}", file=sys.stderr)
@@ -95,6 +95,11 @@ def main(argv=None) -> int:
     _add_limits(b)
     args = ap.parse_args(argv)
     sandbox = args.sandbox or args.sandbox_dev
+
+    ca_requested = args.sandbox_ca or os.environ.get("REVAGENT_SANDBOX_CA")
+    if ca_requested and not sandbox:
+        print("error: --sandbox-ca requires --sandbox", file=sys.stderr)
+        return 2
 
     if args.cmd == "solve":
         d = Path(args.dir)
