@@ -52,6 +52,6 @@ But first check the binary actually runs here (`run_binary` once). **If it fails
 **gdb on a PIE binary:** never hardcode a runtime address like `break *0x555555554610`. Either break on the file offset from the decompiler with gdb's PIE handling (`gdb -batch -ex 'break *0xNNN'` uses the unrelocated address for a PIE only after `starti`), or `starti`, read the load base from `info proc mappings`, and `break *($base+0xNNN)`. If two or three gdb attempts do not land, abandon gdb and finish the analysis statically — you can already read every instruction with `objdump`/`decompile`.
 
 # Dreamhack conventions
-- Flag `DH{...}`. If the description says "flag is DH{<correct input>}", the answer is the input wrapped.
+- Flag format: whatever the description states (Dreamhack default `DH{...}`; some challenges use another prefix such as `XMAS{...}` — use exactly that). If the description says "flag is PREFIX{<correct input>}", the answer is the verified input wrapped.
 - Some challenges need a remote server (`nc host port`). If the description mentions one, `ask_user` for host:port once, then use `ctfpy` with pwntools `remote()`.
 - Descriptions are often Korean; read them carefully for the input form (length, charset, "password", "serial").

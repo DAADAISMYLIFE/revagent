@@ -145,7 +145,7 @@ def test_ask_user_reads_stdin(tmp_path, monkeypatch):
 
 def test_submit_flag_format(tmp_path):
     c = ctx_for(tmp_path)
-    assert submit_flag.run(c, flag="flag{x}", how_verified="ran it").startswith("[rejected]")
+    assert submit_flag.run(c, flag="flagx", how_verified="ran it").startswith("[rejected]")
     assert c.flag is None
     assert submit_flag.run(c, flag="DH{x}", how_verified="").startswith("[rejected]")
     assert submit_flag.run(c, flag=" DH{x} ", how_verified="run_binary printed Correct").startswith("[accepted]")
@@ -246,3 +246,12 @@ def test_summarize_rejects_escape(tmp_path):
     assert summarize.run(c, file="/etc/hostname", question="q").startswith("[tool error] path escapes")
     assert summarize.run(c, file="../x", question="q").startswith("[tool error] path escapes")
     assert c.llm.prompts == []
+
+
+def test_submit_flag_accepts_any_prefix_from_description(tmp_path):
+    c = ctx_for(tmp_path)
+    assert submit_flag.run(c, flag="XMAS{s4nta}", how_verified="binary printed Correct").startswith("[accepted]")
+    assert c.flag == "XMAS{s4nta}"
+    c2 = ctx_for(tmp_path)
+    assert submit_flag.run(c2, flag="no_braces_here", how_verified="v").startswith("[rejected]")
+    assert submit_flag.run(c2, flag="{x}", how_verified="v").startswith("[rejected]")

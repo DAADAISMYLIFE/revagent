@@ -32,7 +32,7 @@ Directory: {dir}
 {listing}
 
 ## Rules
-- Flag format: DH{{...}}. Verify before submit_flag.
+- Flag format: PREFIX{{...}} using the prefix stated in the description (Dreamhack default DH{{...}}). Verify before submit_flag.
 - Write conclusions to notes as you go; your context will be reset when it grows.
 - Start with triage, then locate and classify the check. Go."""
 
