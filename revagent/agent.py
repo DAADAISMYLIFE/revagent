@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .casefile import CaseFile
-from .context import THRESHOLD, compact, shrink_casefile
+from .context import THRESHOLD, compact, format_work_files, list_work_files, shrink_casefile
 from .llm import ContextOverflow, ToolCall
 from .tools import load_tools
 from .tools.base import ToolContext
@@ -52,6 +52,7 @@ class Agent:
         self.show_thinking = show_thinking
         self.work_dir = self.problem_dir / ".revagent"
         self.work_dir.mkdir(exist_ok=True)
+        self.run_start_ns = time.time_ns()
         self.casefile = CaseFile(self.work_dir / "case.md", self.problem_dir.name, self.description)
         self.ctx = ToolContext(problem_dir=self.problem_dir, work_dir=self.work_dir,
                                casefile=self.casefile, llm=llm, interactive=interactive)
@@ -96,7 +97,9 @@ class Agent:
 
     def _compact(self, cause: str, compactions: int) -> list[dict]:
         self._log({"role": "_meta", "event": "compaction", "n": compactions, "cause": cause})
-        messages = compact(self.messages, self.llm, self.casefile, compactions)
+        files = list_work_files(self.problem_dir, self.run_start_ns)
+        self._log({"role": "_meta", "event": "work_files", "n": len(files)})
+        messages = compact(self.messages, self.llm, self.casefile, compactions, format_work_files(files))
         self._log(messages[2])
         return messages
 

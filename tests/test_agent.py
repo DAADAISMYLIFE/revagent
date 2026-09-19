@@ -134,6 +134,28 @@ def test_compaction_triggers_over_threshold(tmp_path):
     assert "- summary bullet" in seventh[2]["content"]
 
 
+def test_compaction_includes_work_files_created_during_run(tmp_path):
+    d = make_problem(tmp_path)
+
+    def write_table(ctx=None, **kw):
+        (d / "notes_table.json").write_text("{}")
+        return "wrote table"
+
+    script = [[("bash", {"cmd": f"echo {i}"})] for i in range(7)] + \
+             [[("submit_flag", {"flag": "DH{x}", "how_verified": "v"})]]
+    llm = ScriptedLLM(script, prompt_tokens=lambda n: 50_000 if n == 6 else 100)
+    agent = Agent(d, "desc", llm, max_steps=20, interactive=False)
+    agent.handlers["bash"] = write_table
+    r = agent.run()
+    assert r["compactions"] == 1
+    seventh = llm.seen[6]
+    assert "notes_table.json" in seventh[2]["content"]
+    assert "[WORK FILES]" in seventh[2]["content"]
+    lines = [json.loads(l) for l in (d / ".revagent" / "transcript.jsonl").read_text().splitlines()]
+    work_file_events = [m for m in lines if m.get("event") == "work_files"]
+    assert len(work_file_events) == 1 and work_file_events[0]["n"] >= 1
+
+
 def test_reset_message_logged(tmp_path):
     d = make_problem(tmp_path)
     script = [[("bash", {"cmd": f"echo {i}"})] for i in range(7)] + \
