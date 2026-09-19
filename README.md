@@ -59,6 +59,8 @@ Design: [docs/superpowers/specs/2026-09-19-revagent-design.md](docs/superpowers/
 | challenge | level | result |
 |---|---|---|
 | bench/mini/xor_check | plumbing test | solved (8 steps, 0.4 min) |
+| quiz/multipoint (Dreamhack) | real | run1 unsolved (time limit, 62 steps); run2 with playbook v2 **solved** (30 steps, 13.4 min) |
+| quiz/revlogin (Dreamhack) | real | run1 unsolved (step limit, 150 steps); run2 in progress |
 
 ## Tests
 ```bash
