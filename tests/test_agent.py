@@ -392,3 +392,67 @@ def test_bench_sandbox_runs_each_dir(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "| a | solved | DH{a} | 3 | 1.5 |" in out
     assert "| b | unsolved | step limit | 3 | 1.5 |" in out
+
+
+def test_bench_sandbox_reports_container_failure_not_stale_result(tmp_path, monkeypatch, capsys):
+    import json
+    from revagent import __main__ as main_mod
+    from revagent.llm import Secure
+
+    d1 = tmp_path / "a"
+    d1.mkdir()
+    (d1 / ".revagent").mkdir()
+    (d1 / ".revagent" / "result.json").write_text(json.dumps(
+        {"status": "solved", "flag": "DH{stale}", "reason": "", "steps": 9, "minutes": 9.9}))
+
+    monkeypatch.setattr(main_mod, "check_docker", lambda: None)
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: Secure("k", "https://h", "m"))
+    monkeypatch.setattr(main_mod, "run_sandbox", lambda cmd: 125)
+    rc = main_mod.main(["bench", "--sandbox", str(d1)])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "| a | error | container exited 125 | 0 | 0 |" in out
+    assert "DH{stale}" not in out
+
+
+def test_bench_sandbox_tolerates_bad_result_json(tmp_path, monkeypatch, capsys):
+    import json
+    from revagent import __main__ as main_mod
+    from revagent.llm import Secure
+
+    d1 = tmp_path / "a"
+    d2 = tmp_path / "b"
+    d1.mkdir()
+    d2.mkdir()
+
+    def fake_run(cmd):
+        target = cmd[cmd.index("solve") + 1]
+        name = target.rsplit("/", 1)[1]
+        d = d1 if name == "a" else d2
+        (d / ".revagent").mkdir(exist_ok=True)
+        if name == "a":
+            (d / ".revagent" / "result.json").write_text("{not json")
+        else:
+            (d / ".revagent" / "result.json").write_text(json.dumps(
+                {"status": "solved", "flag": "DH{b}", "reason": "", "steps": 2, "minutes": 0.5}))
+        return 0
+
+    monkeypatch.setattr(main_mod, "check_docker", lambda: None)
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: Secure("k", "https://h", "m"))
+    monkeypatch.setattr(main_mod, "run_sandbox", fake_run)
+    rc = main_mod.main(["bench", "--sandbox", str(d1), str(d2)])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "bad result.json" in out
+    assert "| b | solved | DH{b} | 2 | 0.5 |" in out
+
+
+def test_bench_table_shared_helper(capsys):
+    from revagent import __main__ as main_mod
+
+    rc = main_mod._print_bench_table([("a", "solved", "DH{a}", 1, 0.5)])
+    assert rc == 0
+    assert "| a | solved | DH{a} | 1 | 0.5 |" in capsys.readouterr().out
+
+    rc = main_mod._print_bench_table([("a", "unsolved", "step limit", 3, 1.5)])
+    assert rc == 1

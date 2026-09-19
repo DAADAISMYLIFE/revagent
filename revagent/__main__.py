@@ -58,7 +58,17 @@ def _read_result(d: Path) -> dict:
     p = d / ".revagent" / "result.json"
     if not p.is_file():
         return {"status": "error", "reason": "no result.json", "flag": None, "steps": 0, "minutes": 0}
-    return json.loads(p.read_text(encoding="utf-8"))
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        return {"status": "error", "reason": f"bad result.json: {e}", "flag": None, "steps": 0, "minutes": 0}
+
+
+def _print_bench_table(rows) -> int:
+    print("\n| challenge | status | flag/reason | steps | min |\n|---|---|---|---|---|")
+    for row in rows:
+        print("| " + " | ".join(str(x) for x in row) + " |")
+    return 0 if all(r[1] == "solved" for r in rows) else 1
 
 
 def main(argv=None) -> int:
@@ -90,13 +100,20 @@ def main(argv=None) -> int:
     if sandbox:
         rows = []
         for d in map(Path, args.dirs):
-            _run_in_sandbox(d, args, None, no_ask=True)
-            r = _read_result(d)
-            rows.append((d.name, r["status"], r.get("flag") or r.get("reason", ""), r.get("steps", 0), r.get("minutes", 0)))
-        print("\n| challenge | status | flag/reason | steps | min |\n|---|---|---|---|---|")
-        for row in rows:
-            print("| " + " | ".join(str(x) for x in row) + " |")
-        return 0 if all(r[1] == "solved" for r in rows) else 1
+            try:
+                p = d / ".revagent" / "result.json"
+                before = p.stat().st_mtime_ns if p.exists() else None
+                rc = _run_in_sandbox(d, args, None, no_ask=True)
+                if rc != 0 and (not p.exists() or p.stat().st_mtime_ns == before):
+                    rows.append((d.name, "error", f"container exited {rc}", 0, 0))
+                    continue
+                r = _read_result(d)
+                rows.append((d.name, r.get("status", "error"), r.get("flag") or r.get("reason", ""),
+                              r.get("steps", 0), r.get("minutes", 0)))
+            except Exception as e:
+                print(f"error: {d}: {e}", file=sys.stderr)
+                rows.append((d.name, "error", str(e)[:80], 0, 0))
+        return _print_bench_table(rows)
 
     llm = LLM(load_secure(Path(args.secure) if args.secure else None))
     rows = []
@@ -108,10 +125,7 @@ def main(argv=None) -> int:
         except Exception as e:
             print(f"error: {d}: {e}", file=sys.stderr)
             rows.append((d.name, "error", str(e)[:80], 0, 0))
-    print("\n| challenge | status | flag/reason | steps | min |\n|---|---|---|---|---|")
-    for row in rows:
-        print("| " + " | ".join(str(x) for x in row) + " |")
-    return 0 if all(r[1] == "solved" for r in rows) else 1
+    return _print_bench_table(rows)
 
 
 if __name__ == "__main__":
