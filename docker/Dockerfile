@@ -50,7 +50,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       mingw-w64 fonts-dejavu-core procps \
     && rm -rf /var/lib/apt/lists/*
 RUN pip install pillow==12.3.0
-ENV DISPLAY=:99 WINEDEBUG=-all WINEPREFIX=/root/.wine
+ENV DISPLAY=:99 WINEDEBUG=fixme-all WINEPREFIX=/root/.wine
 RUN (Xvfb :99 -screen 0 1280x800x24 -nolisten tcp >/dev/null 2>&1 &) && sleep 2 \
     && wineboot -u && wineserver -w \
     && (pkill Xvfb || true)

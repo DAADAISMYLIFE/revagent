@@ -17,9 +17,19 @@ docker run --rm --entrypoint bash revagent-sandbox -c '
   (Xvfb :99 -screen 0 1280x800x24 -nolisten tcp >/dev/null 2>&1 &) ; sleep 2; xdpyinfo -display :99 >/dev/null && echo "xvfb ok"
   bash /app/bench/mini/build_win.sh
   printf "DH{w1ne_c0ns0le}\n" | WINEDEBUG=-all wine /app/bench/mini/win_console/win_console.exe | grep -q Correct && echo "wine console ok"
-  (DISPLAY=:99 WINEDEBUG=-all wine /app/bench/mini/win_gui/win_gui.exe >/dev/null 2>&1 &) ; sleep 5
-  import -display :99 -window root /tmp/gui.png && tesseract /tmp/gui.png stdout --psm 6 2>/dev/null | grep -q "DH" && echo "gui ocr ok"
+  cd /app
+  python - <<'"'"'PY'"'"'
+from pathlib import Path
+from revagent.casefile import CaseFile
+from revagent.tools.base import ToolContext
+from revagent.tools import run_gui
+d = Path("/app/bench/mini/win_gui"); w = Path("/tmp/wg"); w.mkdir(exist_ok=True)
+ctx = ToolContext(problem_dir=d, work_dir=w, casefile=CaseFile(w/"case.md","g","d"), llm=None, interactive=False)
+out = run_gui.run(ctx, path="win_gui.exe", wait_seconds=6)
+print(out[:400]); assert "DH" in out, "run_gui OCR did not find DH"
+print("run_gui ok")
+PY
 '
 docker image inspect revagent-sandbox --format 'image size: {{.Size}} bytes'
 echo "== build test PEs into host tree"
-docker run --rm -v "$HERE":/app --entrypoint bash revagent-sandbox -c "bash /app/bench/mini/build_win.sh"
+docker run --rm --user "$(id -u):$(id -g)" -v "$HERE":/app --entrypoint bash revagent-sandbox -c "bash /app/bench/mini/build_win.sh"
