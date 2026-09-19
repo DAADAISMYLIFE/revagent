@@ -1,0 +1,293 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "revagent 동작 구조",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    {
+      "id": "input",
+      "label": "입력"
+    },
+    {
+      "id": "loop",
+      "label": "에이전트 루프 (agent.py)"
+    },
+    {
+      "id": "tools",
+      "label": "툴 (로컬 WSL)"
+    },
+    {
+      "id": "memory",
+      "label": "외부 메모리 · 산출물 (.revagent/)"
+    }
+  ],
+  "phases": [
+    {
+      "id": "p_setup",
+      "label": "준비",
+      "fromCol": 0,
+      "toCol": 1
+    },
+    {
+      "id": "p_react",
+      "label": "ReAct 스텝 (최대 300회)",
+      "fromCol": 2,
+      "toCol": 4,
+      "variant": "emphasis"
+    },
+    {
+      "id": "p_ctx",
+      "label": "컨텍스트 관리",
+      "fromCol": 5,
+      "toCol": 5,
+      "variant": "dashed"
+    }
+  ],
+  "mainPath": [
+    "problem",
+    "task",
+    "qwen",
+    "dispatch",
+    "truncate",
+    "gate"
+  ],
+  "nodes": [
+    {
+      "id": "problem",
+      "lane": "input",
+      "col": 0,
+      "type": "external",
+      "label": "문제 폴더",
+      "sublabel": "바이너리 + desc.txt",
+      "width": 140
+    },
+    {
+      "id": "task",
+      "lane": "loop",
+      "col": 1,
+      "type": "backend",
+      "label": "과제 메시지 구성",
+      "sublabel": "플레이북 + 설명 + ls",
+      "width": 150
+    },
+    {
+      "id": "qwen",
+      "lane": "loop",
+      "col": 2,
+      "type": "cloud",
+      "label": "Qwen3.8-27B 호출",
+      "sublabel": "vLLM · thinking medium",
+      "tag": "tool calling",
+      "width": 150
+    },
+    {
+      "id": "dispatch",
+      "lane": "loop",
+      "col": 3,
+      "type": "backend",
+      "label": "툴 호출 실행",
+      "sublabel": "순차 · 예외는 [tool error]",
+      "width": 150
+    },
+    {
+      "id": "truncate",
+      "lane": "loop",
+      "col": 4,
+      "type": "backend",
+      "label": "결과 절단",
+      "sublabel": "12k 초과 → out/NNN.txt",
+      "width": 150
+    },
+    {
+      "id": "gate",
+      "lane": "loop",
+      "col": 5,
+      "type": "security",
+      "label": "프롬프트 44k 초과?",
+      "sublabel": "아니면 다음 스텝",
+      "tag": "3회 연속이면 중단",
+      "width": 150
+    },
+    {
+      "id": "ghidra",
+      "lane": "tools",
+      "col": 2,
+      "type": "database",
+      "label": "decompile",
+      "sublabel": "Ghidra headless · 캐시",
+      "width": 150
+    },
+    {
+      "id": "shell",
+      "lane": "tools",
+      "col": 3,
+      "type": "messagebus",
+      "label": "bash / summarize",
+      "sublabel": "objdump · gdb · python",
+      "width": 150
+    },
+    {
+      "id": "run",
+      "lane": "tools",
+      "col": 4,
+      "type": "backend",
+      "label": "run_binary",
+      "sublabel": "후보 입력으로 검증",
+      "width": 150
+    },
+    {
+      "id": "submit",
+      "lane": "tools",
+      "col": 5,
+      "type": "security",
+      "label": "submit_flag",
+      "sublabel": "DH{...} 검사 → 종료",
+      "width": 150
+    },
+    {
+      "id": "casefile",
+      "lane": "memory",
+      "col": 1,
+      "type": "database",
+      "label": "case.md",
+      "sublabel": "Facts · Todo · Log",
+      "tag": "notes 툴이 기록",
+      "width": 150
+    },
+    {
+      "id": "compact",
+      "lane": "memory",
+      "col": 5,
+      "type": "database",
+      "label": "컴팩션",
+      "sublabel": "요약 → Log · 최근 4교환",
+      "width": 150
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_problem_task",
+      "from": "problem",
+      "to": "task",
+      "variant": "default"
+    },
+    {
+      "id": "e_task_qwen",
+      "from": "task",
+      "to": "qwen",
+      "label": "system + task",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e_qwen_dispatch",
+      "from": "qwen",
+      "to": "dispatch",
+      "label": "tool_calls",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e_dispatch_truncate",
+      "from": "dispatch",
+      "to": "truncate",
+      "variant": "default"
+    },
+    {
+      "id": "e_truncate_gate",
+      "from": "truncate",
+      "to": "gate",
+      "label": "tool 메시지 추가",
+      "variant": "default"
+    },
+    {
+      "id": "e_gate_qwen",
+      "from": "gate",
+      "to": "qwen",
+      "label": "다음 스텝",
+      "variant": "default",
+      "role": "return"
+    },
+    {
+      "id": "e_dispatch_ghidra",
+      "from": "dispatch",
+      "to": "ghidra",
+      "variant": "default",
+      "role": "branch"
+    },
+    {
+      "id": "e_dispatch_shell",
+      "from": "dispatch",
+      "to": "shell",
+      "variant": "default",
+      "role": "branch"
+    },
+    {
+      "id": "e_dispatch_run",
+      "from": "dispatch",
+      "to": "run",
+      "variant": "default",
+      "role": "branch"
+    },
+    {
+      "id": "e_run_submit",
+      "from": "run",
+      "to": "submit",
+      "label": "Correct 확인 후",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e_gate_compact",
+      "from": "gate",
+      "to": "compact",
+      "label": "초과",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "e_compact_casefile",
+      "from": "compact",
+      "to": "casefile",
+      "label": "요약을 Log에 추가",
+      "variant": "dashed",
+      "role": "async"
+    },
+    {
+      "id": "e_casefile_task",
+      "from": "casefile",
+      "to": "task",
+      "label": "리셋 시 전문 재주입",
+      "variant": "dashed",
+      "role": "return"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "한 스텝의 흐름",
+      "items": [
+        "Qwen이 thinking 후 tool_calls를 내면 순서대로 실행하고 결과를 tool 메시지로 붙인다",
+        "툴 호출이 없으면 \"툴을 써라\" 재촉, 3회 연속이면 중단",
+        "같은 호출 3회 반복 시 \"다른 접근\" 재촉"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "컨텍스트 64k 안에서 버티기",
+      "items": [
+        "44k 초과 시 오래된 구간을 별도 Qwen 호출로 요약해 case.md Log에 저장",
+        "system + 과제 + case.md 전문 + 최근 4교환으로 재구성",
+        "2회 연속 초과면 case.md 축약, 3회면 중단"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "종료 조건",
+      "items": [
+        "submit_flag 수락 → result.json (solved)",
+        "스텝/시간 상한, 툴 미호출 3회, 컨텍스트 축소 실패, 예외 → unsolved + 사유",
+        "재실행 시 case.md는 이어받는다"
+      ]
+    }
+  ]
+}
