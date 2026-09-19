@@ -8,7 +8,7 @@ ENV LANG=C.UTF-8 DEBIAN_FRONTEND=noninteractive HOME=/root PIP_NO_CACHE_DIR=1
 # radare2 is not packaged in Debian bookworm (removed from the archive); installed below from upstream's .deb release.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       binutils gdb gcc g++ gcc-multilib libc6-i386 file strace ltrace \
-      curl ca-certificates git make xxd qemu-user-static \
+      curl ca-certificates git make xxd qemu-user-static netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
 # libssl1.1 for older CTF binaries (not in bookworm). Pinned bullseye build; failure fails the build.
@@ -31,15 +31,23 @@ RUN mkdir -p /root/tools
 COPY --from=jdk /opt/java/openjdk /root/tools/jdk-21-temurin
 
 # Ghidra + JDK 21 under /root/tools (same script as the host install; needs revagent/ghidra_scripts for its verify step).
+# GHIDRA_URL pins an exact release for reproducible builds (unset would fall back to a "latest" GitHub
+# API lookup, like the host install script does).
+ARG GHIDRA_URL=https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.3_build/ghidra_12.1.3_PUBLIC_20260817.zip
 COPY scripts/install_ghidra.sh /tmp/scripts/install_ghidra.sh
 COPY revagent/ghidra_scripts /tmp/revagent/ghidra_scripts
-RUN bash /tmp/scripts/install_ghidra.sh && rm -rf /tmp/scripts /tmp/revagent /root/tools/*.zip /root/tools/*.tar.gz
+RUN GHIDRA_URL=$GHIDRA_URL bash /tmp/scripts/install_ghidra.sh \
+    && rm -rf /tmp/scripts /tmp/revagent /root/tools/*.zip /root/tools/*.tar.gz /tmp/tmp.*
 
-# Agent + Python reversing stack. Editable install so `-v <repo>:/app` overrides code at runtime.
+# Pinned reversing-stack Python packages, installed before the app code so this (large, slow) layer
+# caches independently of application source changes.
+RUN pip install angr==10.0.0 z3-solver==5.1.0.0 unicorn==2.1.2 capstone==5.0.9 pwntools==4.15.0 \
+      pefile==2024.8.26 pycryptodome==3.23.0
+
+# Agent code. Editable install so `-v <repo>:/app` overrides code at runtime. openai pinned to the
+# version pip last resolved for this image (I2): reproducible builds, no silent API drift.
 COPY . /app
-RUN pip install -e /app \
-    && pip install angr==10.0.0 z3-solver==5.1.0.0 unicorn==2.1.2 capstone==5.0.9 pwntools==4.15.0 \
-         pefile==2024.8.26 pycryptodome==3.23.0
+RUN pip install -e /app "openai==3.16.2"
 
 COPY docker/entrypoint.sh /usr/local/bin/revagent-entrypoint
 RUN chmod +x /usr/local/bin/revagent-entrypoint

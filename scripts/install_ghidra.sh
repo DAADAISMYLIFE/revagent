@@ -17,9 +17,11 @@ JDK="$(ls -d "$TOOLS"/jdk-21* | tail -1)"
 echo "JDK: $JDK"
 
 if ! ls -d ghidra_*_PUBLIC >/dev/null 2>&1; then
-  echo "[2/3] Ghidra (latest release)"
-  URL="$(curl -fsSL https://api.github.com/repos/NationalSecurityAgency/ghidra/releases/latest \
-        | grep -oE 'https://[^"]+_PUBLIC_[0-9]+\.zip' | head -1)"
+  echo "[2/3] Ghidra"
+  # GHIDRA_URL pins an exact release (e.g. for reproducible image builds); unset falls back to
+  # looking up the latest GitHub release, same as before.
+  URL="${GHIDRA_URL:-$(curl -fsSL https://api.github.com/repos/NationalSecurityAgency/ghidra/releases/latest \
+        | grep -oE 'https://[^"]+_PUBLIC_[0-9]+\.zip' | head -1)}"
   echo "  $URL"
   curl -fL -o ghidra.zip "$URL"
   # no unzip on this box; python zipfile drops exec bits, so restore them from external_attr
