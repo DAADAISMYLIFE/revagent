@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from revagent.agent import Agent
+from revagent.agent import Agent, load_system_prompt
 from revagent.llm import ChatResponse, ContextOverflow, ToolCall
 
 
@@ -562,6 +562,13 @@ def test_sandbox_ca_env_without_sandbox_is_ignored(tmp_path, monkeypatch, capsys
     rc = main_mod.main(["solve", str(d)])
     assert rc == 0
     assert capsys.readouterr().err == ""
+
+
+def test_system_prompt_loads_and_tells_agent_where_to_save_work_files():
+    t = load_system_prompt()
+    assert "submit_flag" in t
+    assert "never under `/tmp`" in t
+    assert "only files under the challenge directory are listed for you after a context reset" in t
 
 
 def test_bench_table_shared_helper(capsys):
