@@ -47,7 +47,20 @@ non-interactively (as if `--no-ask`) and reads each challenge's own `<dir>/desc.
 Artifacts land in `<challenge>/.revagent/`: `case.md` (the agent's notes), `transcript.jsonl`,
 `out/NNN.txt` (full tool outputs), `ghidra/` (cached decompilation), `result.json`.
 
-## Sandbox
+## Sandbox (recommended)
+Run each challenge in a disposable container with the full toolchain (Ghidra, gdb, angr/z3/unicorn,
+radare2, qemu-user, libssl1.1). The agent code runs unchanged inside; artifacts land in `<challenge>/.revagent/` on the host.
+
+```bash
+bash scripts/sandbox-build.sh                                   # once; ~2.2 GB, 10–20 min
+~/.revagent-venv/bin/revagent solve --sandbox path/to/challenge --no-ask
+~/.revagent-venv/bin/revagent bench --sandbox chal1 chal2
+~/.revagent-venv/bin/revagent solve --sandbox-dev path/to/challenge   # mounts this repo at /app: edit code, no rebuild
+```
+Requirements: Docker Desktop with WSL integration enabled for this distro. Credentials are passed from
+`.secure` as `QWEN`/`URL`/`MODEL` env vars. The container runs as root with network access; it is
+removed when the run ends. The image is about 4.3 GB. Windows PE execution (wine) is the next stage and not included yet.
+
 On networks with a TLS-inspecting proxy, pass the proxy's CA certificate with `--sandbox-ca /path/to/ca.crt`
 (or set `REVAGENT_SANDBOX_CA`). It is bind-mounted read-only at run time and never stored in the image.
 
