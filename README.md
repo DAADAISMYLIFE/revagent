@@ -47,6 +47,27 @@ non-interactively (as if `--no-ask`) and reads each challenge's own `<dir>/desc.
 Artifacts land in `<challenge>/.revagent/`: `case.md` (the agent's notes), `transcript.jsonl`,
 `out/NNN.txt` (full tool outputs), `ghidra/` (cached decompilation), `result.json`.
 
+## Sandbox (recommended)
+Run each challenge in a disposable container with the full toolchain (Ghidra, gdb, angr/z3/unicorn,
+radare2, qemu-user, libssl1.1). The agent code runs unchanged inside; artifacts land in `<challenge>/.revagent/` on the host.
+
+```bash
+bash scripts/sandbox-build.sh                                   # once; ~4.3 GB, 10–20 min
+~/.revagent-venv/bin/revagent solve --sandbox path/to/challenge --no-ask
+~/.revagent-venv/bin/revagent bench --sandbox chal1 chal2
+~/.revagent-venv/bin/revagent solve --sandbox-dev path/to/challenge   # mounts this repo at /app: edit code, no rebuild
+```
+Requirements: Docker Desktop with WSL integration enabled for this distro. Credentials are passed from
+`.secure` as `QWEN`/`URL`/`MODEL` env vars, passed to the docker CLI's own environment rather than as
+`-e KEY=VALUE` on argv, so they never show up in the host process table (`ps`) — but they are still
+visible to any local docker-group user via `docker inspect` on the running container. The container
+runs as root with network access; it is removed when the run ends. Artifacts written back into
+`<challenge>/.revagent/` on a native ext4 path (e.g. inside WSL) come out root-owned, since the
+container runs as root. The image is about 4.3 GB. Windows PE execution (wine) is the next stage and not included yet.
+
+On networks with a TLS-inspecting proxy, pass the proxy's CA certificate with `--sandbox-ca /path/to/ca.crt`
+(or set `REVAGENT_SANDBOX_CA`). It is bind-mounted read-only at run time and never stored in the image.
+
 ## How it works
 Single ReAct loop, seven tools (`bash`, `decompile`, `run_binary`, `notes`, `summarize`,
 `ask_user`, `submit_flag`). The case file is the agent's external memory: when the prompt passes
@@ -61,6 +82,8 @@ Design: [docs/superpowers/specs/2026-09-19-revagent-design.md](docs/superpowers/
 | bench/mini/xor_check | plumbing test | solved (8 steps, 0.4 min) |
 | quiz/multipoint (Dreamhack) | real | run1 unsolved (time limit, 62 steps); run2 with playbook v2 **solved** (30 steps, 13.4 min) |
 | quiz/revlogin (Dreamhack) | real | run1 unsolved (step limit, 150 steps); run2 with playbook v2 **solved** (154 steps, 53.4 min, 5 compactions) |
+| quiz/multipoint (Dreamhack) **sandbox** | real | fresh case file, `--sandbox`: **solved** (48 steps, 13.0 min, 0 compactions) |
+| quiz/revlogin (Dreamhack) **sandbox** | real | fresh case file, `--sandbox`: **solved** (57+70 steps across a pod outage, 26.3 min total, 2 compactions; binary runs directly thanks to libssl1.1, no shim detour) |
 
 ## Tests
 ```bash

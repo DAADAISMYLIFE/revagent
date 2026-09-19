@@ -6,3 +6,6 @@ __pycache__/
 *.egg-info/
 bench/mini/xor_check/xor_check
 .superpowers/
+*.crt
+*.key
+*.pem

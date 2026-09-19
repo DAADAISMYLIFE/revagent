@@ -210,3 +210,33 @@ def test_chat_exposes_finish_reason(monkeypatch):
     monkeypatch.setattr(llm.client.chat.completions, "create", lambda **kw: responses.pop(0))
     assert llm.chat([{"role": "user", "content": "hi"}]).finish_reason == "length"
     assert llm.chat([{"role": "user", "content": "hi"}]).finish_reason == "stop"
+
+
+def test_load_secure_prefers_complete_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("QWEN", "envkey")
+    monkeypatch.setenv("URL", "https://env.example/")
+    monkeypatch.setenv("MODEL", "env/model")
+    monkeypatch.setattr("revagent.llm.REPO_SECURE", tmp_path / "absent")
+    monkeypatch.chdir(tmp_path)  # no .secure here either
+    s = load_secure()
+    assert s == Secure(key="envkey", url="https://env.example", model="env/model")
+
+
+def test_load_secure_partial_env_falls_back_to_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("QWEN", "envkey")
+    monkeypatch.delenv("URL", raising=False)
+    monkeypatch.delenv("MODEL", raising=False)
+    f = tmp_path / ".secure"
+    f.write_text("QWEN=filekey\nURL=https://file\nMODEL=m\n")
+    monkeypatch.chdir(tmp_path)
+    assert load_secure().key == "filekey"
+
+
+def test_load_secure_explicit_file_wins_over_complete_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("QWEN", "envkey")
+    monkeypatch.setenv("URL", "https://env.example")
+    monkeypatch.setenv("MODEL", "env/model")
+    f = tmp_path / ".secure"
+    f.write_text("QWEN=filekey\nURL=https://file\nMODEL=file/model\n")
+    s = load_secure(f)
+    assert s == Secure(key="filekey", url="https://file", model="file/model")

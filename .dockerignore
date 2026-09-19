@@ -1,0 +1,12 @@
+.git
+.superpowers
+.secure
+.pytest_cache
+**/__pycache__
+**/*.egg-info
+**/.revagent
+bench/mini/xor_check/xor_check
+docs/diagrams/*.html
+**/*.crt
+**/*.key
+**/*.pem

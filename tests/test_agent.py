@@ -291,3 +291,253 @@ def test_truncated_thinking_twice_counts_toward_abort(tmp_path):
     assert len(llm.seen) == 6
     nudges = [m for m in llm.seen[-1] if m["role"] == "user" and "hit the output budget" in m["content"]]
     assert len(nudges) == 2
+
+
+def test_solve_sandbox_dispatches_docker(tmp_path, monkeypatch):
+    from revagent import __main__ as main_mod
+    from revagent.llm import Secure
+
+    d = tmp_path / "chal"
+    d.mkdir()
+    (d / "desc.txt").write_text("hi")
+    recorded = {}
+    monkeypatch.setattr(main_mod, "check_docker", lambda: None)
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: Secure("k", "https://h", "m"))
+    monkeypatch.setattr(main_mod, "is_interactive_tty", lambda: False)
+    monkeypatch.setattr(main_mod, "run_sandbox",
+                        lambda cmd, env_extra=None: recorded.update(cmd=cmd, env_extra=env_extra) or 3)
+    monkeypatch.setattr(main_mod, "Agent", lambda *a, **k: (_ for _ in ()).throw(AssertionError("Agent must not run on host")))
+    rc = main_mod.main(["solve", "--sandbox", str(d), "--max-steps", "7", "--no-ask", "--desc", str(d / "desc.txt")])
+    assert rc == 3
+    cmd = recorded["cmd"]
+    assert cmd[:2] == ["docker", "run"] and "-i" in cmd
+    assert f"{d.resolve()}:/work/chal" in cmd
+    tail = cmd[cmd.index("revagent-sandbox"):]
+    assert tail[:3] == ["revagent-sandbox", "solve", "/work/chal"]
+    assert "--max-steps" in tail and "7" in tail and "--no-ask" in tail
+    assert "--desc" in tail and "/work/chal/desc.txt" in tail
+    assert "--sandbox" not in tail
+    # the secret key never appears in argv (visible in the host process table); it travels via env_extra
+    assert "k" not in cmd
+    assert recorded["env_extra"] == {"QWEN": "k", "URL": "https://h", "MODEL": "m"}
+
+
+def test_solve_sandbox_dev_mounts_repo(tmp_path, monkeypatch):
+    from revagent import __main__ as main_mod
+    from revagent.llm import Secure
+
+    d = tmp_path / "chal"
+    d.mkdir()
+    recorded = {}
+    monkeypatch.setattr(main_mod, "check_docker", lambda: None)
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: Secure("k", "https://h", "m"))
+    monkeypatch.setattr(main_mod, "is_interactive_tty", lambda: True)
+    monkeypatch.setattr(main_mod, "run_sandbox",
+                        lambda cmd, env_extra=None: recorded.setdefault("cmd", cmd) and 0)
+    rc = main_mod.main(["solve", "--sandbox-dev", str(d)])
+    assert rc == 0
+    cmd = recorded["cmd"]
+    assert "-it" in cmd
+    assert any(x.endswith(":/app") for x in cmd)
+
+
+def test_solve_sandbox_docker_missing(tmp_path, monkeypatch, capsys):
+    from revagent import __main__ as main_mod
+
+    d = tmp_path / "chal"
+    d.mkdir()
+    monkeypatch.setattr(main_mod, "check_docker", lambda: "docker not found. enable it")
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: (_ for _ in ()).throw(AssertionError("not reached")))
+    rc = main_mod.main(["solve", "--sandbox", str(d)])
+    assert rc == 2
+    assert "docker not found" in capsys.readouterr().err
+
+
+def test_solve_sandbox_desc_outside_dir(tmp_path, monkeypatch, capsys):
+    from revagent import __main__ as main_mod
+    from revagent.llm import Secure
+
+    d = tmp_path / "chal"
+    d.mkdir()
+    (tmp_path / "far.txt").write_text("x")
+    monkeypatch.setattr(main_mod, "check_docker", lambda: None)
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: Secure("k", "https://h", "m"))
+    rc = main_mod.main(["solve", "--sandbox", str(d), "--desc", str(tmp_path / "far.txt")])
+    assert rc == 2
+    assert "inside the problem dir" in capsys.readouterr().err
+
+
+def test_solve_sandbox_ca_flag(tmp_path, monkeypatch):
+    from revagent import __main__ as main_mod
+    from revagent.llm import Secure
+
+    d = tmp_path / "chal"
+    d.mkdir()
+    crt = tmp_path / "corp.crt"
+    crt.write_text("cert")
+    recorded = {}
+    monkeypatch.setattr(main_mod, "check_docker", lambda: None)
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: Secure("k", "https://h", "m"))
+    monkeypatch.setattr(main_mod, "is_interactive_tty", lambda: False)
+    monkeypatch.setattr(main_mod, "run_sandbox", lambda cmd, env_extra=None: recorded.setdefault("cmd", cmd) and 0)
+    rc = main_mod.main(["solve", "--sandbox", str(d), "--sandbox-ca", str(crt)])
+    assert rc == 0
+    assert any(x.endswith(":/usr/local/share/ca-certificates/extra-ca.crt:ro") for x in recorded["cmd"])
+
+
+def test_solve_sandbox_ca_env(tmp_path, monkeypatch):
+    from revagent import __main__ as main_mod
+    from revagent.llm import Secure
+
+    d = tmp_path / "chal"
+    d.mkdir()
+    crt = tmp_path / "corp.crt"
+    crt.write_text("cert")
+    recorded = {}
+    monkeypatch.setattr(main_mod, "check_docker", lambda: None)
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: Secure("k", "https://h", "m"))
+    monkeypatch.setattr(main_mod, "is_interactive_tty", lambda: False)
+    monkeypatch.setattr(main_mod, "run_sandbox", lambda cmd, env_extra=None: recorded.setdefault("cmd", cmd) and 0)
+    monkeypatch.setenv("REVAGENT_SANDBOX_CA", str(crt))
+    rc = main_mod.main(["solve", "--sandbox", str(d)])
+    assert rc == 0
+    assert any(x.endswith(":/usr/local/share/ca-certificates/extra-ca.crt:ro") for x in recorded["cmd"])
+
+
+def test_solve_sandbox_ca_missing_file(tmp_path, monkeypatch, capsys):
+    from revagent import __main__ as main_mod
+    from revagent.llm import Secure
+
+    d = tmp_path / "chal"
+    d.mkdir()
+    missing = tmp_path / "nope.crt"
+    monkeypatch.setattr(main_mod, "check_docker", lambda: None)
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: Secure("k", "https://h", "m"))
+    rc = main_mod.main(["solve", "--sandbox", str(d), "--sandbox-ca", str(missing)])
+    assert rc == 2
+    assert "not found" in capsys.readouterr().err
+
+
+def test_bench_sandbox_runs_each_dir(tmp_path, monkeypatch, capsys):
+    import json
+    from revagent import __main__ as main_mod
+    from revagent.llm import Secure
+
+    d1 = tmp_path / "a"
+    d2 = tmp_path / "b"
+    d1.mkdir()
+    d2.mkdir()
+    seen = []
+
+    def fake_run(cmd, env_extra=None):
+        target = cmd[cmd.index("solve") + 1]
+        name = target.rsplit("/", 1)[1]
+        d = d1 if name == "a" else d2
+        (d / ".revagent").mkdir(exist_ok=True)
+        (d / ".revagent" / "result.json").write_text(json.dumps(
+            {"status": "solved" if name == "a" else "unsolved", "flag": "DH{a}" if name == "a" else None,
+             "reason": "" if name == "a" else "step limit", "steps": 3, "minutes": 1.5}))
+        seen.append(name)
+        return 0 if name == "a" else 1
+
+    monkeypatch.setattr(main_mod, "check_docker", lambda: None)
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: Secure("k", "https://h", "m"))
+    monkeypatch.setattr(main_mod, "run_sandbox", fake_run)
+    rc = main_mod.main(["bench", "--sandbox", str(d1), str(d2)])
+    assert seen == ["a", "b"] and rc == 1
+    out = capsys.readouterr().out
+    assert "| a | solved | DH{a} | 3 | 1.5 |" in out
+    assert "| b | unsolved | step limit | 3 | 1.5 |" in out
+
+
+def test_bench_sandbox_reports_container_failure_not_stale_result(tmp_path, monkeypatch, capsys):
+    import json
+    from revagent import __main__ as main_mod
+    from revagent.llm import Secure
+
+    d1 = tmp_path / "a"
+    d1.mkdir()
+    (d1 / ".revagent").mkdir()
+    (d1 / ".revagent" / "result.json").write_text(json.dumps(
+        {"status": "solved", "flag": "DH{stale}", "reason": "", "steps": 9, "minutes": 9.9}))
+
+    monkeypatch.setattr(main_mod, "check_docker", lambda: None)
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: Secure("k", "https://h", "m"))
+    monkeypatch.setattr(main_mod, "run_sandbox", lambda cmd, env_extra=None: 125)
+    rc = main_mod.main(["bench", "--sandbox", str(d1)])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "| a | error | container exited 125 | 0 | 0 |" in out
+    assert "DH{stale}" not in out
+
+
+def test_bench_sandbox_tolerates_bad_result_json(tmp_path, monkeypatch, capsys):
+    import json
+    from revagent import __main__ as main_mod
+    from revagent.llm import Secure
+
+    d1 = tmp_path / "a"
+    d2 = tmp_path / "b"
+    d1.mkdir()
+    d2.mkdir()
+
+    def fake_run(cmd, env_extra=None):
+        target = cmd[cmd.index("solve") + 1]
+        name = target.rsplit("/", 1)[1]
+        d = d1 if name == "a" else d2
+        (d / ".revagent").mkdir(exist_ok=True)
+        if name == "a":
+            (d / ".revagent" / "result.json").write_text("{not json")
+        else:
+            (d / ".revagent" / "result.json").write_text(json.dumps(
+                {"status": "solved", "flag": "DH{b}", "reason": "", "steps": 2, "minutes": 0.5}))
+        return 0
+
+    monkeypatch.setattr(main_mod, "check_docker", lambda: None)
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: Secure("k", "https://h", "m"))
+    monkeypatch.setattr(main_mod, "run_sandbox", fake_run)
+    rc = main_mod.main(["bench", "--sandbox", str(d1), str(d2)])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "bad result.json" in out
+    assert "| b | solved | DH{b} | 2 | 0.5 |" in out
+
+
+def test_sandbox_ca_flag_without_sandbox_is_rejected(tmp_path, monkeypatch, capsys):
+    from revagent import __main__ as main_mod
+
+    d = tmp_path / "chal"
+    d.mkdir()
+    crt = tmp_path / "corp.crt"
+    crt.write_text("cert")
+    monkeypatch.setattr(main_mod, "load_secure",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("not reached")))
+    rc = main_mod.main(["solve", str(d), "--sandbox-ca", str(crt)])
+    assert rc == 2
+    assert "error: --sandbox-ca requires --sandbox" in capsys.readouterr().err
+
+
+def test_sandbox_ca_env_without_sandbox_is_rejected(tmp_path, monkeypatch, capsys):
+    from revagent import __main__ as main_mod
+
+    d = tmp_path / "chal"
+    d.mkdir()
+    crt = tmp_path / "corp.crt"
+    crt.write_text("cert")
+    monkeypatch.setenv("REVAGENT_SANDBOX_CA", str(crt))
+    monkeypatch.setattr(main_mod, "load_secure",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("not reached")))
+    rc = main_mod.main(["solve", str(d)])
+    assert rc == 2
+    assert "error: --sandbox-ca requires --sandbox" in capsys.readouterr().err
+
+
+def test_bench_table_shared_helper(capsys):
+    from revagent import __main__ as main_mod
+
+    rc = main_mod._print_bench_table([("a", "solved", "DH{a}", 1, 0.5)])
+    assert rc == 0
+    assert "| a | solved | DH{a} | 1 | 0.5 |" in capsys.readouterr().out
+
+    rc = main_mod._print_bench_table([("a", "unsolved", "step limit", 3, 1.5)])
+    assert rc == 1
