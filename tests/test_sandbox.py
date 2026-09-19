@@ -3,6 +3,8 @@ from pathlib import Path
 
 import pytest
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
 from revagent.llm import Secure
 from revagent.sandbox import (IMAGE, MSG_NO_CLI, MSG_NO_DAEMON, MSG_NO_IMAGE, build_sandbox_cmd,
                               check_docker, container_desc_arg, run_sandbox)
@@ -97,6 +99,12 @@ def test_check_docker_timeout_no_daemon():
 def test_run_sandbox_returns_exit_code(monkeypatch):
     monkeypatch.setattr("revagent.sandbox.subprocess.run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 7))
     assert run_sandbox(["docker", "run"]) == 7
+
+
+def test_entrypoint_syntax():
+    entrypoint = REPO_ROOT / "docker" / "entrypoint.sh"
+    r = subprocess.run(["bash", "-n", str(entrypoint)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
 
 
 def test_run_sandbox_passes_env(monkeypatch):
