@@ -230,3 +230,13 @@ def test_load_secure_partial_env_falls_back_to_file(tmp_path, monkeypatch):
     f.write_text("QWEN=filekey\nURL=https://file\nMODEL=m\n")
     monkeypatch.chdir(tmp_path)
     assert load_secure().key == "filekey"
+
+
+def test_load_secure_explicit_file_wins_over_complete_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("QWEN", "envkey")
+    monkeypatch.setenv("URL", "https://env.example")
+    monkeypatch.setenv("MODEL", "env/model")
+    f = tmp_path / ".secure"
+    f.write_text("QWEN=filekey\nURL=https://file\nMODEL=file/model\n")
+    s = load_secure(f)
+    assert s == Secure(key="filekey", url="https://file", model="file/model")

@@ -23,7 +23,7 @@ class Secure:
 
 def load_secure(explicit: Path | None = None) -> Secure:
     env = {k: os.environ.get(k, "").strip() for k in ("QWEN", "URL", "MODEL")}
-    if all(env.values()):
+    if explicit is None and all(env.values()):
         return Secure(key=env["QWEN"], url=env["URL"].rstrip("/"), model=env["MODEL"])
 
     candidates: list[Path] = []
