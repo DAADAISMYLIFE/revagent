@@ -291,3 +291,104 @@ def test_truncated_thinking_twice_counts_toward_abort(tmp_path):
     assert len(llm.seen) == 6
     nudges = [m for m in llm.seen[-1] if m["role"] == "user" and "hit the output budget" in m["content"]]
     assert len(nudges) == 2
+
+
+def test_solve_sandbox_dispatches_docker(tmp_path, monkeypatch):
+    from revagent import __main__ as main_mod
+    from revagent.llm import Secure
+
+    d = tmp_path / "chal"
+    d.mkdir()
+    (d / "desc.txt").write_text("hi")
+    recorded = {}
+    monkeypatch.setattr(main_mod, "check_docker", lambda: None)
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: Secure("k", "https://h", "m"))
+    monkeypatch.setattr(main_mod, "is_interactive_tty", lambda: False)
+    monkeypatch.setattr(main_mod, "run_sandbox", lambda cmd: recorded.setdefault("cmd", cmd) and 3)
+    monkeypatch.setattr(main_mod, "Agent", lambda *a, **k: (_ for _ in ()).throw(AssertionError("Agent must not run on host")))
+    rc = main_mod.main(["solve", "--sandbox", str(d), "--max-steps", "7", "--no-ask", "--desc", str(d / "desc.txt")])
+    assert rc == 3
+    cmd = recorded["cmd"]
+    assert cmd[:2] == ["docker", "run"] and "-i" in cmd
+    assert f"{d.resolve()}:/work/chal" in cmd
+    tail = cmd[cmd.index("revagent-sandbox"):]
+    assert tail[:3] == ["revagent-sandbox", "solve", "/work/chal"]
+    assert "--max-steps" in tail and "7" in tail and "--no-ask" in tail
+    assert "--desc" in tail and "/work/chal/desc.txt" in tail
+    assert "--sandbox" not in tail
+
+
+def test_solve_sandbox_dev_mounts_repo(tmp_path, monkeypatch):
+    from revagent import __main__ as main_mod
+    from revagent.llm import Secure
+
+    d = tmp_path / "chal"
+    d.mkdir()
+    recorded = {}
+    monkeypatch.setattr(main_mod, "check_docker", lambda: None)
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: Secure("k", "https://h", "m"))
+    monkeypatch.setattr(main_mod, "is_interactive_tty", lambda: True)
+    monkeypatch.setattr(main_mod, "run_sandbox", lambda cmd: recorded.setdefault("cmd", cmd) and 0)
+    rc = main_mod.main(["solve", "--sandbox-dev", str(d)])
+    assert rc == 0
+    cmd = recorded["cmd"]
+    assert "-it" in cmd
+    assert any(x.endswith(":/app") for x in cmd)
+
+
+def test_solve_sandbox_docker_missing(tmp_path, monkeypatch, capsys):
+    from revagent import __main__ as main_mod
+
+    d = tmp_path / "chal"
+    d.mkdir()
+    monkeypatch.setattr(main_mod, "check_docker", lambda: "docker not found. enable it")
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: (_ for _ in ()).throw(AssertionError("not reached")))
+    rc = main_mod.main(["solve", "--sandbox", str(d)])
+    assert rc == 2
+    assert "docker not found" in capsys.readouterr().err
+
+
+def test_solve_sandbox_desc_outside_dir(tmp_path, monkeypatch, capsys):
+    from revagent import __main__ as main_mod
+    from revagent.llm import Secure
+
+    d = tmp_path / "chal"
+    d.mkdir()
+    (tmp_path / "far.txt").write_text("x")
+    monkeypatch.setattr(main_mod, "check_docker", lambda: None)
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: Secure("k", "https://h", "m"))
+    rc = main_mod.main(["solve", "--sandbox", str(d), "--desc", str(tmp_path / "far.txt")])
+    assert rc == 2
+    assert "inside the problem dir" in capsys.readouterr().err
+
+
+def test_bench_sandbox_runs_each_dir(tmp_path, monkeypatch, capsys):
+    import json
+    from revagent import __main__ as main_mod
+    from revagent.llm import Secure
+
+    d1 = tmp_path / "a"
+    d2 = tmp_path / "b"
+    d1.mkdir()
+    d2.mkdir()
+    seen = []
+
+    def fake_run(cmd):
+        target = cmd[cmd.index("solve") + 1]
+        name = target.rsplit("/", 1)[1]
+        d = d1 if name == "a" else d2
+        (d / ".revagent").mkdir(exist_ok=True)
+        (d / ".revagent" / "result.json").write_text(json.dumps(
+            {"status": "solved" if name == "a" else "unsolved", "flag": "DH{a}" if name == "a" else None,
+             "reason": "" if name == "a" else "step limit", "steps": 3, "minutes": 1.5}))
+        seen.append(name)
+        return 0 if name == "a" else 1
+
+    monkeypatch.setattr(main_mod, "check_docker", lambda: None)
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: Secure("k", "https://h", "m"))
+    monkeypatch.setattr(main_mod, "run_sandbox", fake_run)
+    rc = main_mod.main(["bench", "--sandbox", str(d1), str(d2)])
+    assert seen == ["a", "b"] and rc == 1
+    out = capsys.readouterr().out
+    assert "| a | solved | DH{a} | 3 | 1.5 |" in out
+    assert "| b | unsolved | step limit | 3 | 1.5 |" in out
