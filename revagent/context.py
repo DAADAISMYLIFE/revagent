@@ -165,6 +165,80 @@ def extract_unfinished(summary: str) -> str:
     return "\n".join(lines[start + 1:end]).strip()
 
 
+def _reduce_log_block(block: list[str]) -> tuple[list[str], bool]:
+    """`block[0]` is the "### compaction N" heading line; `block[1:]` is the (a)/(b)/(c)/(d)
+    summary body. Returns (new_block, changed): changed is False (block returned as-is) if the
+    block has no heading-shaped (b) or (c) part left to drop (already reduced, or never had one)."""
+    heading, rest = block[0], block[1:]
+    tags = ("(a)", "(b)", "(c)", "(d)")
+    part_starts = []
+    for i, line in enumerate(rest):
+        for tag in tags:
+            if _is_heading(line, tag):
+                part_starts.append((tag, i))
+                break
+    if not any(tag in ("(b)", "(c)") for tag, _ in part_starts):
+        return block, False
+    parts = {}
+    for idx, (tag, pstart) in enumerate(part_starts):
+        pend = part_starts[idx + 1][1] if idx + 1 < len(part_starts) else len(rest)
+        parts[tag] = rest[pstart:pend]
+    new_rest = parts.get("(a)", []) + parts.get("(d)", [])
+    return [heading, *new_rest], True
+
+
+def prune_log(casefile, keep: int = 3) -> int:
+    """Reduce older "### compaction N" blocks in the case file's Log section to just their
+    (a) FACTS and (d) ARTIFACTS parts (dropping (b) FAILED and (c) UNFINISHED), keeping the
+    last `keep` blocks verbatim. The case file is re-sent whole on every reset, so an unbounded
+    Log makes resets progressively more expensive; this keeps old compactions' facts/artifacts
+    without their now-stale failed-attempt/todo narrative. Text before the first block, and
+    blocks already reduced (no (b)/(c) part left), are left untouched. Returns the number of
+    blocks reduced."""
+    text = casefile.read()
+    header = SECTIONS["log"]
+    lines = text.split("\n")
+    try:
+        start = lines.index(header)
+    except ValueError:
+        return 0
+    valid_headers = set(SECTIONS.values())
+    end = next(
+        (i for i in range(start + 1, len(lines)) if lines[i].strip() in valid_headers),
+        len(lines),
+    )
+    body = lines[start + 1:end]
+
+    block_starts = [i for i, line in enumerate(body) if line.startswith("### ")]
+    if not block_starts:
+        return 0
+
+    preamble = body[:block_starts[0]]
+    blocks = []
+    for idx, bstart in enumerate(block_starts):
+        bend = block_starts[idx + 1] if idx + 1 < len(block_starts) else len(body)
+        blocks.append(body[bstart:bend])
+
+    n_older = max(0, len(blocks) - keep)
+    reduced_count = 0
+    new_blocks = []
+    for i, block in enumerate(blocks):
+        if i < n_older:
+            new_block, changed = _reduce_log_block(block)
+            if changed:
+                reduced_count += 1
+            new_blocks.append(new_block)
+        else:
+            new_blocks.append(block)
+
+    if reduced_count == 0:
+        return 0
+
+    new_body = preamble + [line for block in new_blocks for line in block]
+    casefile.replace_section("log", "\n".join(new_body))
+    return reduced_count
+
+
 def compact(messages: list[dict], llm, casefile, n: int, work_files_block: str = "") -> list[dict]:
     head, middle, tail = split_messages(messages)
     if middle:
@@ -174,6 +248,7 @@ def compact(messages: list[dict], llm, casefile, n: int, work_files_block: str =
         todo = extract_unfinished(summary)
         if todo:
             casefile.replace_section("todo", todo)
+        prune_log(casefile)
     content = RESET_TEXT + "\n\n" + casefile.read()
     if work_files_block:
         content += "\n\n" + work_files_block

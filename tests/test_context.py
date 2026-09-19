@@ -3,8 +3,8 @@ import time
 
 from revagent.casefile import CaseFile
 from revagent.context import (compact, extract_unfinished, format_work_files, list_work_files,
-                              serialize, shrink_casefile, split_messages, KEEP_RECENT, RESET_TEXT,
-                              SUMMARY_PROMPT)
+                              prune_log, serialize, shrink_casefile, split_messages, KEEP_RECENT,
+                              RESET_TEXT, SUMMARY_PROMPT)
 
 
 class FakeLLM:
@@ -356,6 +356,60 @@ def test_format_work_files_caps_block_length(tmp_path):
     s = format_work_files(files)
     assert len(s) <= 4000
     assert "more files)" in s
+
+
+def _add_log_block(cf, n):
+    text = (f"### compaction {n}\n"
+            "(a) FACTS\n- fact\n"
+            "(b) FAILED\n- fail\n"
+            "(c) UNFINISHED\n- todo\n"
+            "(d) ARTIFACTS\n- art")
+    cf.add("log", text, bullet=False)
+
+
+def test_prune_log_reduces_older_blocks_keeps_recent(tmp_path):
+    cf = CaseFile(tmp_path / "case.md", "p", "d")
+    cf.add("log", "pre-existing log note", bullet=True)
+    for i in range(1, 6):
+        _add_log_block(cf, i)
+
+    n = prune_log(cf, keep=3)
+    assert n == 2
+
+    log = cf.read().split("## Log")[1]
+    assert "pre-existing log note" in log
+    assert log.index("pre-existing log note") < log.index("### compaction 1")
+
+    parts = log.split("### compaction ")
+    # parts[0] is the preamble before the first block; parts[1..5] are blocks "1"…"5"
+    for i in (1, 2):
+        block = parts[i]
+        assert "(a)" in block and "(d)" in block
+        assert "(b)" not in block and "(c)" not in block
+    for i in (3, 4, 5):
+        block = parts[i]
+        assert "(b)" in block and "(c)" in block
+
+    after_first_prune = cf.read()
+    n2 = prune_log(cf, keep=3)
+    assert n2 == 0
+    assert cf.read() == after_first_prune
+
+
+def test_compact_prunes_log_to_at_most_keep_unreduced_blocks(tmp_path):
+    cf = CaseFile(tmp_path / "case.md", "p", "d")
+    reply = ("(a) FACTS\n- fact\n(b) FAILED\n- fail\n(c) UNFINISHED\n- todo\n(d) ARTIFACTS\n- art")
+    llm = FakeLLM(reply=reply)
+    msgs = build(10)
+    for n in range(1, 6):
+        msgs = compact(msgs, llm, cf, n=n)
+        for i in range(10 * n, 10 * n + 10):
+            msgs = msgs + exchange(i)
+
+    log = cf.read().split("## Log")[1]
+    assert log.count("### compaction") == 5
+    assert log.count("(b)") <= 3
+    assert log.count("(c)") <= 3
 
 
 def test_list_work_files_skips_non_regular_files(tmp_path):
