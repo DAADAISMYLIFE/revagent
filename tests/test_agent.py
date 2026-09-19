@@ -304,7 +304,8 @@ def test_solve_sandbox_dispatches_docker(tmp_path, monkeypatch):
     monkeypatch.setattr(main_mod, "check_docker", lambda: None)
     monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: Secure("k", "https://h", "m"))
     monkeypatch.setattr(main_mod, "is_interactive_tty", lambda: False)
-    monkeypatch.setattr(main_mod, "run_sandbox", lambda cmd: recorded.setdefault("cmd", cmd) and 3)
+    monkeypatch.setattr(main_mod, "run_sandbox",
+                        lambda cmd, env_extra=None: recorded.update(cmd=cmd, env_extra=env_extra) or 3)
     monkeypatch.setattr(main_mod, "Agent", lambda *a, **k: (_ for _ in ()).throw(AssertionError("Agent must not run on host")))
     rc = main_mod.main(["solve", "--sandbox", str(d), "--max-steps", "7", "--no-ask", "--desc", str(d / "desc.txt")])
     assert rc == 3
@@ -316,6 +317,9 @@ def test_solve_sandbox_dispatches_docker(tmp_path, monkeypatch):
     assert "--max-steps" in tail and "7" in tail and "--no-ask" in tail
     assert "--desc" in tail and "/work/chal/desc.txt" in tail
     assert "--sandbox" not in tail
+    # the secret key never appears in argv (visible in the host process table); it travels via env_extra
+    assert "k" not in cmd
+    assert recorded["env_extra"] == {"QWEN": "k", "URL": "https://h", "MODEL": "m"}
 
 
 def test_solve_sandbox_dev_mounts_repo(tmp_path, monkeypatch):
@@ -328,7 +332,8 @@ def test_solve_sandbox_dev_mounts_repo(tmp_path, monkeypatch):
     monkeypatch.setattr(main_mod, "check_docker", lambda: None)
     monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: Secure("k", "https://h", "m"))
     monkeypatch.setattr(main_mod, "is_interactive_tty", lambda: True)
-    monkeypatch.setattr(main_mod, "run_sandbox", lambda cmd: recorded.setdefault("cmd", cmd) and 0)
+    monkeypatch.setattr(main_mod, "run_sandbox",
+                        lambda cmd, env_extra=None: recorded.setdefault("cmd", cmd) and 0)
     rc = main_mod.main(["solve", "--sandbox-dev", str(d)])
     assert rc == 0
     cmd = recorded["cmd"]
@@ -374,7 +379,7 @@ def test_solve_sandbox_ca_flag(tmp_path, monkeypatch):
     monkeypatch.setattr(main_mod, "check_docker", lambda: None)
     monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: Secure("k", "https://h", "m"))
     monkeypatch.setattr(main_mod, "is_interactive_tty", lambda: False)
-    monkeypatch.setattr(main_mod, "run_sandbox", lambda cmd: recorded.setdefault("cmd", cmd) and 0)
+    monkeypatch.setattr(main_mod, "run_sandbox", lambda cmd, env_extra=None: recorded.setdefault("cmd", cmd) and 0)
     rc = main_mod.main(["solve", "--sandbox", str(d), "--sandbox-ca", str(crt)])
     assert rc == 0
     assert any(x.endswith(":/usr/local/share/ca-certificates/extra-ca.crt:ro") for x in recorded["cmd"])
@@ -392,7 +397,7 @@ def test_solve_sandbox_ca_env(tmp_path, monkeypatch):
     monkeypatch.setattr(main_mod, "check_docker", lambda: None)
     monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: Secure("k", "https://h", "m"))
     monkeypatch.setattr(main_mod, "is_interactive_tty", lambda: False)
-    monkeypatch.setattr(main_mod, "run_sandbox", lambda cmd: recorded.setdefault("cmd", cmd) and 0)
+    monkeypatch.setattr(main_mod, "run_sandbox", lambda cmd, env_extra=None: recorded.setdefault("cmd", cmd) and 0)
     monkeypatch.setenv("REVAGENT_SANDBOX_CA", str(crt))
     rc = main_mod.main(["solve", "--sandbox", str(d)])
     assert rc == 0
@@ -424,7 +429,7 @@ def test_bench_sandbox_runs_each_dir(tmp_path, monkeypatch, capsys):
     d2.mkdir()
     seen = []
 
-    def fake_run(cmd):
+    def fake_run(cmd, env_extra=None):
         target = cmd[cmd.index("solve") + 1]
         name = target.rsplit("/", 1)[1]
         d = d1 if name == "a" else d2
@@ -458,7 +463,7 @@ def test_bench_sandbox_reports_container_failure_not_stale_result(tmp_path, monk
 
     monkeypatch.setattr(main_mod, "check_docker", lambda: None)
     monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: Secure("k", "https://h", "m"))
-    monkeypatch.setattr(main_mod, "run_sandbox", lambda cmd: 125)
+    monkeypatch.setattr(main_mod, "run_sandbox", lambda cmd, env_extra=None: 125)
     rc = main_mod.main(["bench", "--sandbox", str(d1)])
     assert rc == 1
     out = capsys.readouterr().out
@@ -476,7 +481,7 @@ def test_bench_sandbox_tolerates_bad_result_json(tmp_path, monkeypatch, capsys):
     d1.mkdir()
     d2.mkdir()
 
-    def fake_run(cmd):
+    def fake_run(cmd, env_extra=None):
         target = cmd[cmd.index("solve") + 1]
         name = target.rsplit("/", 1)[1]
         d = d1 if name == "a" else d2

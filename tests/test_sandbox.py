@@ -18,7 +18,8 @@ def test_build_cmd_basic(tmp_path):
     assert "-i" in cmd and "-it" not in cmd
     assert cmd[cmd.index("-v") + 1] == f"{d.resolve()}:/work/revlogin"
     env = [cmd[i + 1] for i, x in enumerate(cmd) if x == "-e"]
-    assert env == ["QWEN=k1", "URL=https://h", "MODEL=m/x"]
+    assert env == ["QWEN", "URL", "MODEL"]
+    assert "k1" not in cmd and "https://h" not in cmd and "m/x" not in cmd
     assert cmd[-6:] == [IMAGE, "solve", "/work/revlogin", "--no-ask", "--max-steps", "5"]
 
 
@@ -87,6 +88,31 @@ def test_check_docker_ok():
     assert check_docker(run=_ok, which=lambda n: "/usr/bin/docker") is None
 
 
+def test_check_docker_timeout_no_daemon():
+    def run(cmd, **k):
+        raise subprocess.TimeoutExpired(cmd, 20)
+    assert check_docker(run=run, which=lambda n: "/usr/bin/docker") == MSG_NO_DAEMON
+
+
 def test_run_sandbox_returns_exit_code(monkeypatch):
     monkeypatch.setattr("revagent.sandbox.subprocess.run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 7))
     assert run_sandbox(["docker", "run"]) == 7
+
+
+def test_run_sandbox_passes_env(monkeypatch):
+    import os
+
+    captured = {}
+
+    def fake_run(cmd, **k):
+        captured.update(k)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr("revagent.sandbox.subprocess.run", fake_run)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    assert run_sandbox(["docker", "run"], env_extra={"QWEN": "sekrit", "URL": "https://h", "MODEL": "m"}) == 0
+    env = captured["env"]
+    assert env["QWEN"] == "sekrit"
+    assert env["URL"] == "https://h"
+    assert env["MODEL"] == "m"
+    assert env["PATH"] == os.environ["PATH"]

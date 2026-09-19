@@ -1,4 +1,5 @@
 """Run the agent inside the revagent-sandbox Docker image (spec: sandbox-design §3.2)."""
+import os
 import shutil
 import subprocess
 import sys
@@ -32,8 +33,10 @@ def build_sandbox_cmd(problem_dir: Path, passthrough: list[str], secure: Secure,
     root = problem_dir.resolve()
     cmd = ["docker", "run", "--rm", "--init", "-it" if interactive else "-i",
            "-v", f"{root}:/work/{root.name}"]
-    for k, v in (("QWEN", secure.key), ("URL", secure.url), ("MODEL", secure.model)):
-        cmd += ["-e", f"{k}={v}"]
+    # names only, no values: docker run argv is visible to any local user via `ps`/the process table.
+    # Values travel separately through run_sandbox's env_extra (the docker CLI's own environment).
+    for k in ("QWEN", "URL", "MODEL"):
+        cmd += ["-e", k]
     if dev_repo is not None:
         cmd += ["-v", f"{dev_repo.resolve()}:/app"]
     if extra_ca is not None:
@@ -46,16 +49,22 @@ def check_docker(run=subprocess.run, which=shutil.which) -> str | None:
     """Return a user-facing message if docker cannot run the sandbox, else None."""
     if which("docker") is None:
         return MSG_NO_CLI
-    if run(["docker", "info"], capture_output=True, text=True).returncode != 0:
+    try:
+        if run(["docker", "info"], capture_output=True, text=True, timeout=20).returncode != 0:
+            return MSG_NO_DAEMON
+        if run(["docker", "image", "inspect", IMAGE], capture_output=True, text=True,
+               timeout=20).returncode != 0:
+            return MSG_NO_IMAGE
+    except subprocess.TimeoutExpired:
         return MSG_NO_DAEMON
-    if run(["docker", "image", "inspect", IMAGE], capture_output=True, text=True).returncode != 0:
-        return MSG_NO_IMAGE
     return None
 
 
-def run_sandbox(cmd: list[str]) -> int:
-    """Run the container in the foreground; SIGINT reaches the docker CLI, which stops the container."""
-    return subprocess.run(cmd).returncode
+def run_sandbox(cmd: list[str], env_extra: dict[str, str] | None = None) -> int:
+    """Run the container in the foreground; SIGINT reaches the docker CLI, which stops the container.
+    env_extra (e.g. QWEN/URL/MODEL) is passed via the docker CLI's own environment, not argv, so the
+    secret never appears in the host process table (`ps`, /proc/<pid>/cmdline)."""
+    return subprocess.run(cmd, env={**os.environ, **(env_extra or {})}).returncode
 
 
 def is_interactive_tty() -> bool:

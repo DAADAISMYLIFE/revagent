@@ -61,7 +61,8 @@ def _run_in_sandbox(d: Path, args, desc_arg: str | None, no_ask: bool) -> int:
     interactive = (not no_ask) and is_interactive_tty()
     cmd = build_sandbox_cmd(d, _sandbox_passthrough(args, desc_in, no_ask), secure, interactive, dev_repo,
                             extra_ca)
-    return run_sandbox(cmd)
+    env_extra = {"QWEN": secure.key, "URL": secure.url, "MODEL": secure.model}
+    return run_sandbox(cmd, env_extra=env_extra)
 
 
 def _read_result(d: Path) -> dict:
