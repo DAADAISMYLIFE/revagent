@@ -42,16 +42,34 @@ def _display_ok(env: dict) -> bool:
     return r.returncode == 0
 
 
+def _run_quiet(cmd: list[str], env: dict, timeout: float) -> subprocess.CompletedProcess | None:
+    """subprocess.run that turns a timeout/OS error into None instead of raising, so a slow or
+    missing wine/X tool degrades the report instead of skipping the killpg cleanup below."""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+
 def _ocr(png: Path, psm: int, env: dict) -> str:
-    r = subprocess.run(["tesseract", str(png), "stdout", "--psm", str(psm)], capture_output=True, text=True, env=env, timeout=60)
+    r = _run_quiet(["tesseract", str(png), "stdout", "--psm", str(psm)], env, 60)
+    if r is None:
+        return "(timeout)"
     return (r.stdout or "").strip() or "(empty)"
 
 
 def _windows(env: dict) -> str:
-    r = subprocess.run(["xdotool", "search", "--onlyvisible", "--name", ".", "getwindowname", "%@"],
-                       capture_output=True, text=True, env=env, timeout=10)
+    r = _run_quiet(["xdotool", "search", "--onlyvisible", "--name", ".", "getwindowname", "%@"], env, 10)
+    if r is None:
+        return "(timeout)"
     names = [l for l in (r.stdout or "").splitlines() if l.strip()]
     return ", ".join(names) or "(none)"
+
+
+def _next_screenshot_path(screens: Path) -> Path:
+    existing = [int(f.stem) for f in screens.glob("*.png") if f.stem.isdigit()]
+    next_n = max(existing) + 1 if existing else 1
+    return screens / f"{next_n:03d}.png"
 
 
 def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5, type_text: str = "") -> str:
@@ -71,30 +89,40 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5, ty
     cmd = launch_cmd(p, list(args or []))
     proc = subprocess.Popen(cmd, cwd=str(ctx.problem_dir), env=env, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, start_new_session=True)
-    time.sleep(wait)
-    if type_text:
-        subprocess.run(["xdotool", "type", "--delay", "20", type_text], env=env, timeout=30)
-        subprocess.run(["xdotool", "key", "Return"], env=env, timeout=10)
-        time.sleep(min(wait, 5))
-    screens = ctx.work_dir / "screens"
-    screens.mkdir(parents=True, exist_ok=True)
-    png = screens / f"{len(list(screens.glob('*.png'))) + 1:03d}.png"
-    subprocess.run(["import", "-display", DISPLAY, "-window", "root", str(png)], env=env, timeout=30)
-    windows = _windows(env)
-    state = "still running at capture" if proc.poll() is None else f"exited (code {proc.returncode}) before capture"
-    ocr6 = _ocr(png, 6, env) if png.exists() else "(no screenshot)"
-    ocr7 = _ocr(png, 7, env) if png.exists() else "(no screenshot)"
+    info = {"tail": ""}
     try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    try:
-        out, _ = proc.communicate(timeout=5)
-    except Exception:
-        out = b""
-    tail = (out or b"").decode("utf-8", errors="replace")[-800:]
-    rel = f".revagent/screens/{png.name}"
-    return (f"launched: {' '.join(cmd)}\nprocess: {state}\nwindows: {windows}\n"
-            f"screenshot: {rel}\n--- OCR psm6 (block) ---\n{ocr6}\n--- OCR psm7 (single line) ---\n{ocr7}\n"
-            f"--- program output (tail) ---\n{tail or '(none)'}\n"
+        time.sleep(wait)
+        if type_text:
+            _run_quiet(["xdotool", "type", "--delay", "20", type_text], env, 30)
+            _run_quiet(["xdotool", "key", "Return"], env, 10)
+            time.sleep(min(wait, 5))
+        screens = ctx.work_dir / "screens"
+        screens.mkdir(parents=True, exist_ok=True)
+        png = _next_screenshot_path(screens)
+        shot = _run_quiet(["import", "-display", DISPLAY, "-window", "root", str(png)], env, 30)
+        info["windows"] = _windows(env)
+        info["state"] = ("still running at capture" if proc.poll() is None
+                          else f"exited (code {proc.returncode}) before capture")
+        if shot is not None and png.exists():
+            info["screenshot_line"] = f"screenshot: .revagent/screens/{png.name}"
+            info["ocr6"] = _ocr(png, 6, env)
+            info["ocr7"] = _ocr(png, 7, env)
+        else:
+            info["screenshot_line"] = "screenshot: failed (timeout)"
+            info["ocr6"] = "(timeout)"
+            info["ocr7"] = "(timeout)"
+    finally:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            out, _ = proc.communicate(timeout=5)
+            info["tail"] = (out or b"").decode("utf-8", errors="replace")[-800:]
+        except Exception:
+            pass
+    return (f"launched: {' '.join(cmd)}\nprocess: {info['state']}\nwindows: {info['windows']}\n"
+            f"{info['screenshot_line']}\n--- OCR psm6 (block) ---\n{info['ocr6']}\n"
+            f"--- OCR psm7 (single line) ---\n{info['ocr7']}\n"
+            f"--- program output (tail) ---\n{info['tail'] or '(none)'}\n"
             f"If the OCR is wrong, open the PNG with pillow in bash and print bright pixels as an ASCII grid.")

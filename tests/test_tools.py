@@ -350,3 +350,70 @@ def test_run_gui_no_display(tmp_path, monkeypatch):
     monkeypatch.setattr("revagent.tools.run_gui.subprocess.run",
                         lambda cmd, **kw: sp.CompletedProcess(cmd, 1, "", "unable to open display"))
     assert run_gui.run(ctx_for(tmp_path), path="g.exe").startswith("[tool error] no display")
+
+
+def test_run_gui_screenshot_timeout_still_kills(tmp_path, monkeypatch):
+    # A TimeoutExpired from any post-launch subprocess.run (here: the "import" screenshot call)
+    # must not skip the killpg cleanup, and must degrade the report instead of raising.
+    import subprocess as sp
+    (tmp_path / "g.exe").write_bytes(b"MZ" + b"\0" * 50)
+    monkeypatch.setattr("revagent.tools.run_gui.shutil.which", lambda n: "/usr/bin/" + n)
+    monkeypatch.setattr("revagent.tools.run_gui.time.sleep", lambda s: None)
+
+    class FakeProc:
+        pid = 4242
+        def poll(self): return None
+        def communicate(self, timeout=None): return (b"", None)
+
+    def fake_popen(cmd, **kw):
+        return FakeProc()
+
+    def fake_run(cmd, **kw):
+        if cmd[0] == "import":
+            raise sp.TimeoutExpired(cmd, 30)
+        if cmd[0] == "xdpyinfo":
+            return sp.CompletedProcess(cmd, 0, "name of display: :99\n", "")
+        return sp.CompletedProcess(cmd, 0, "", "")
+
+    killed = []
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", fake_run)
+    monkeypatch.setattr("revagent.tools.run_gui.os.killpg", lambda pid, sig: killed.append(pid))
+    out = run_gui.run(ctx_for(tmp_path), path="g.exe")
+    assert "screenshot: failed" in out
+    assert killed == [4242]
+
+
+def test_run_gui_screenshot_numbering_skips_to_next_after_gaps(tmp_path, monkeypatch):
+    import subprocess as sp
+    (tmp_path / "g.exe").write_bytes(b"MZ" + b"\0" * 50)
+    monkeypatch.setattr("revagent.tools.run_gui.shutil.which", lambda n: "/usr/bin/" + n)
+    monkeypatch.setattr("revagent.tools.run_gui.time.sleep", lambda s: None)
+    c = ctx_for(tmp_path)
+    screens = c.work_dir / "screens"
+    screens.mkdir(parents=True)
+    (screens / "002.png").write_bytes(b"\x89PNG")
+    (screens / "003.png").write_bytes(b"\x89PNG")
+
+    class FakeProc:
+        pid = 4242
+        def poll(self): return None
+        def communicate(self, timeout=None): return (b"", None)
+
+    def fake_popen(cmd, **kw):
+        return FakeProc()
+
+    def fake_run(cmd, **kw):
+        if cmd[0] == "import":
+            Path(cmd[-1]).write_bytes(b"\x89PNG")
+            return sp.CompletedProcess(cmd, 0, "", "")
+        if cmd[0] == "xdpyinfo":
+            return sp.CompletedProcess(cmd, 0, "name of display: :99\n", "")
+        return sp.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", fake_run)
+    monkeypatch.setattr("revagent.tools.run_gui.os.killpg", lambda pid, sig: None)
+    out = run_gui.run(c, path="g.exe")
+    assert (screens / "004.png").exists()
+    assert ".revagent/screens/004.png" in out
