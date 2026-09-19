@@ -100,8 +100,32 @@ def test_run_binary_missing(tmp_path):
 
 def test_run_binary_refuses_pe(tmp_path, monkeypatch):
     (tmp_path / "x.exe").write_bytes(b"MZ" + b"\0" * 100)
+    monkeypatch.setattr("revagent.tools.run_binary.shutil.which", lambda n: None)
     out = run_binary.run(ctx_for(tmp_path), path="x.exe")
     assert out.startswith("[cannot run here]")
+
+
+def test_run_binary_pe_without_wine_says_use_sandbox(tmp_path, monkeypatch):
+    (tmp_path / "x.exe").write_bytes(b"MZ" + b"\0" * 100)
+    monkeypatch.setattr("revagent.tools.run_binary.shutil.which", lambda n: None)
+    out = run_binary.run(ctx_for(tmp_path), path="x.exe")
+    assert out.startswith("[cannot run here]") and "--sandbox" in out
+
+
+def test_run_binary_pe_runs_under_wine(tmp_path, monkeypatch):
+    (tmp_path / "x.exe").write_bytes(b"MZ" + b"\0" * 100)
+    monkeypatch.setattr("revagent.tools.run_binary.shutil.which", lambda n: "/usr/bin/wine")
+    captured = {}
+
+    def fake_run_cmd(cmd, cwd, timeout, stdin_text=None):
+        captured.update(cmd=cmd, cwd=cwd, timeout=timeout, stdin=stdin_text)
+        return "[exit 0]\nCorrect!\n"
+
+    monkeypatch.setattr("revagent.tools.run_binary.run_cmd", fake_run_cmd)
+    out = run_binary.run(ctx_for(tmp_path), path="x.exe", args=["a b"], stdin="in\n", timeout=7)
+    assert "Correct!" in out
+    assert captured["cmd"].startswith("WINEDEBUG=-all wine ") and captured["cmd"].endswith("x.exe 'a b'")
+    assert captured["timeout"] == 7 and captured["stdin"] == "in\n"
 
 
 def test_run_binary_rejects_escape(tmp_path):

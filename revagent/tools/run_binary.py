@@ -1,5 +1,6 @@
 import os
 import shlex
+import shutil
 import subprocess
 
 from .bash import MAX_TIMEOUT, run_cmd
@@ -11,7 +12,8 @@ SCHEMA = {
         "description": (
             "Execute a challenge binary (x86-64 ELF or script) with given argv and stdin, return exit code, "
             "stdout and stderr. Use it to observe behaviour and to VERIFY a candidate answer before "
-            "submit_flag. Windows PE and non-x86-64 ELF cannot run here; the tool tells you."
+            "submit_flag. Windows PE runs under wine inside the sandbox; GUI programs: use run_gui. "
+            "Non-x86-64 ELF cannot run here; the tool tells you."
         ),
         "parameters": {
             "type": "object",
@@ -40,14 +42,19 @@ def run(ctx, path: str, args: list[str] | None = None, stdin: str = "", timeout:
         kind = ""
     with p.open("rb") as f:
         magic = f.read(2)
+    timeout = max(1, min(int(timeout), MAX_TIMEOUT))
     if "PE32" in kind or "MS Windows" in kind or magic == b"MZ":
-        return (f"[cannot run here] {kind} — Windows PE, no wine. Use static analysis, unicorn emulation "
-                f"(ctfpy), or re-implement the check in Python and verify against it.")
+        if shutil.which("wine") is None:
+            return (f"[cannot run here] {kind} — Windows PE and wine is not installed on the host. "
+                    f"Run with --sandbox (the image has wine), or analyze statically / emulate with unicorn.")
+        if not os.access(p, os.X_OK):
+            p.chmod(p.stat().st_mode | 0o111)
+        cmd = "WINEDEBUG=-all wine " + " ".join(shlex.quote(x) for x in [str(p), *(args or [])])
+        return run_cmd(cmd, cwd=ctx.problem_dir, timeout=timeout, stdin_text=stdin)
     if "ELF" in kind and "x86-64" not in kind:
         return (f"[cannot run here] {kind} — not x86-64. Try `which qemu-aarch64 qemu-arm` via bash, "
                 f"otherwise static analysis / unicorn.")
     if not os.access(p, os.X_OK):
         p.chmod(p.stat().st_mode | 0o111)
     cmd = " ".join(shlex.quote(x) for x in [str(p), *(args or [])])
-    timeout = max(1, min(int(timeout), MAX_TIMEOUT))
     return run_cmd(cmd, cwd=ctx.problem_dir, timeout=timeout, stdin_text=stdin)
