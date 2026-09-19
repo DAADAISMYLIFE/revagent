@@ -14,6 +14,10 @@ from .tools.bash import run_cmd
 from .truncate import truncate
 
 TRUNCATED_RETRY_MAX_TOKENS = 32768
+TRUNCATED_RETRY_HINT = ("[system] Your previous attempt at this step exhausted the output budget while thinking and "
+                        "produced nothing. Do not repeat that: decide in a few sentences, then call a tool. If a "
+                        "computation is long, put it in a Python script and let the tool run it. Save intermediate "
+                        "results (tables, mappings) to a file and to notes so they survive context resets.")
 TRUNCATED_NUDGE = ("Your previous reply hit the output budget while thinking, so nothing was produced. "
                    "Do not trace long code by hand in your head: decide in a few sentences, write the key facts to "
                    "notes, then call a tool (write a script for any parsing).")
@@ -134,8 +138,10 @@ class Agent:
                             self._print(f"[{step}] -- output truncated mid-thinking; retrying with a larger budget --")
                             old_max = self.llm.max_tokens
                             self.llm.max_tokens = max(old_max, TRUNCATED_RETRY_MAX_TOKENS)
+                            self._log({"role": "_meta", "event": "retry_hint", "content": TRUNCATED_RETRY_HINT})
                             try:
-                                resp = self.llm.chat(self.messages, self.schemas)
+                                resp = self.llm.chat(
+                                    self.messages + [{"role": "user", "content": TRUNCATED_RETRY_HINT}], self.schemas)
                             finally:
                                 self.llm.max_tokens = old_max
                     except ContextOverflow:

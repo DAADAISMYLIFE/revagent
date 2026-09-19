@@ -273,6 +273,9 @@ def test_truncated_thinking_retries_with_bigger_budget(tmp_path):
     assert r["status"] == "solved" and r["steps"] == 1
     assert llm.max_tokens_seen == [8192, 32768]
     assert llm.max_tokens == 8192
+    # the retry request ends with a transient hint that is NOT persisted in the conversation
+    assert llm.seen[1][-1]["role"] == "user" and "exhausted the output budget" in llm.seen[1][-1]["content"]
+    assert not any(m["role"] == "user" and "exhausted the output budget" in m["content"] for m in llm.seen[0])
     lines = [json.loads(l) for l in (d / ".revagent" / "transcript.jsonl").read_text().splitlines()]
     assert any(m.get("event") == "output_truncated" for m in lines)
     # the truncated (empty) assistant message never entered the conversation
@@ -286,5 +289,5 @@ def test_truncated_thinking_twice_counts_toward_abort(tmp_path):
     r = Agent(d, "", llm, max_steps=10, interactive=False).run()
     assert r["reason"] == "no tool calls 3x"
     assert len(llm.seen) == 6
-    nudges = [m for m in llm.seen[-1] if m["role"] == "user" and "output budget" in m["content"]]
+    nudges = [m for m in llm.seen[-1] if m["role"] == "user" and "hit the output budget" in m["content"]]
     assert len(nudges) == 2
