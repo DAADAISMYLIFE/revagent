@@ -63,7 +63,7 @@ Requirements: Docker Desktop with WSL integration enabled for this distro. Crede
 visible to any local docker-group user via `docker inspect` on the running container. The container
 runs as root with network access; it is removed when the run ends. Artifacts written back into
 `<challenge>/.revagent/` on a native ext4 path (e.g. inside WSL) come out root-owned, since the
-container runs as root. The image is about 4.3 GB. Windows PE execution (wine) is the next stage and not included yet.
+container runs as root. Windows PE: console programs run under wine via `run_binary`; GUI programs via `run_gui` (Xvfb + screenshot + OCR). The image is about 8 GB (wine, Xvfb, OCR and mingw included).
 
 On networks with a TLS-inspecting proxy, pass the proxy's CA certificate with `--sandbox-ca /path/to/ca.crt`
 (or set `REVAGENT_SANDBOX_CA`). It is bind-mounted read-only at run time and never stored in the image.
@@ -86,6 +86,8 @@ Design: [docs/superpowers/specs/2026-09-19-revagent-design.md](docs/superpowers/
 | quiz/revlogin (Dreamhack) **sandbox** | real | fresh case file, `--sandbox`: **solved** (57+70 steps across a pod outage, 26.3 min total, 2 compactions; binary runs directly thanks to libssl1.1, no shim detour) |
 | quiz/captain-hook (Dreamhack, Windows PE) | real | unsolved after 4 runs (host ×2, sandbox ×2, ~500 steps total): flag is drawn as 7-segment digits via GdipDrawLineI; static analysis exhausted, needs stage 2 (wine + screenshot/OCR) |
 | quiz/ROVM (Dreamhack, XMAS{...}) | real | run1 unsolved (time limit): only 44 steps in 152 min because 32k truncation retries + a concurrent agent halved throughput; VM structure fully recovered (stack-based threaded VM, flag written by the 2nd syscall) — rerun pending |
+| bench/mini/win_console (mingw PE, console) | plumbing test | pending |
+| bench/mini/win_gui (mingw PE, GUI) | plumbing test | pending |
 
 ## Tests
 ```bash
