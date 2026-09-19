@@ -58,8 +58,12 @@ bash scripts/sandbox-build.sh                                   # once; ~4.3 GB,
 ~/.revagent-venv/bin/revagent solve --sandbox-dev path/to/challenge   # mounts this repo at /app: edit code, no rebuild
 ```
 Requirements: Docker Desktop with WSL integration enabled for this distro. Credentials are passed from
-`.secure` as `QWEN`/`URL`/`MODEL` env vars. The container runs as root with network access; it is
-removed when the run ends. The image is about 4.3 GB. Windows PE execution (wine) is the next stage and not included yet.
+`.secure` as `QWEN`/`URL`/`MODEL` env vars, passed to the docker CLI's own environment rather than as
+`-e KEY=VALUE` on argv, so they never show up in the host process table (`ps`) — but they are still
+visible to any local docker-group user via `docker inspect` on the running container. The container
+runs as root with network access; it is removed when the run ends. Artifacts written back into
+`<challenge>/.revagent/` on a native ext4 path (e.g. inside WSL) come out root-owned, since the
+container runs as root. The image is about 4.3 GB. Windows PE execution (wine) is the next stage and not included yet.
 
 On networks with a TLS-inspecting proxy, pass the proxy's CA certificate with `--sandbox-ca /path/to/ca.crt`
 (or set `REVAGENT_SANDBOX_CA`). It is bind-mounted read-only at run time and never stored in the image.

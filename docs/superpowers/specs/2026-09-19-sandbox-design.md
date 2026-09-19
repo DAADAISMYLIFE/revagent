@@ -146,3 +146,16 @@ def run_sandbox(cmd: list[str]) -> int:
 
 - Dockerfile 끝의 주석 자리에 wine64/xvfb/tesseract 레이어 추가.
 - `run_binary`가 `.exe`(MZ)를 만나면 `[cannot run here]` 대신 `wine`(콘솔) 또는 `xvfb-run wine` + 스크린샷 + OCR(GUI) 경로로 분기. 이 스펙에서는 손대지 않는다.
+
+## 8. 수정 이력 (구현 중 판결)
+
+전체 브랜치 리뷰(2026-09-19, final-fix-list)에서 확정된, 이 문서 §2~§6과 다른 실제 동작:
+
+- **이미지 크기**: §2의 "최종 약 2.2GB" 추정은 틀렸다. 실측 약 **4.3GB**(Ghidra+JDK, angr 스택에 더해 radare2 .deb, libssl1.1, 전체 Python 리버싱 스택이 추정보다 크다). README의 벤치 표/설치 안내는 4.3GB로 정정했다.
+- **런타임 CA (R5)**: `docker/entrypoint.sh`가 실제로 존재한다(§3의 구성 요소 표는 "(없음)"이라 적었던 옛 버전). `--sandbox-ca <path>` 또는 `REVAGENT_SANDBOX_CA` 환경변수로 지정한 CA 인증서를 `-v ...:/usr/local/share/ca-certificates/extra-ca.crt:ro`로 런타임에만 마운트하고 entrypoint가 `update-ca-certificates`를 실행한다. 이미지 자체에는 절대 포함되지 않는다(TLS 가로채는 사내망 대응, 이미지 재사용성 유지).
+- **JDK 설치 경로 (R4)**: `curl`로 adoptium API에서 받는 대신 `eclipse-temurin:21-jdk-jammy` 멀티스테이지 이미지에서 `COPY --from=jdk /opt/java/openjdk /root/tools/jdk-21-temurin`로 가져온다. api.adoptium.net이 이 네트워크에서 TLS 가로채기 대상이라 직접 다운로드가 불안정했기 때문.
+- **radare2**: Debian bookworm 저장소에 없어 upstream GitHub 릴리스의 `.deb`를 고정 URL(`RADARE2_URL` ARG)로 받아 `dpkg -i`. 실패 시 빌드 실패(조용히 건너뛰지 않음).
+- **파이썬 스택 고정 (R6/R7)**: `pip install` 대상을 전부 버전 고정(`angr==10.0.0` 등)했고, `openai`도 빌드 시점에 실제로 해석된 버전(`openai==3.16.2`)으로 고정했다. Ghidra도 `GHIDRA_URL` ARG(기본값은 특정 릴리스 zip의 고정 URL)로 고정하며, 호스트용 `scripts/install_ghidra.sh`는 `GHIDRA_URL` 환경변수가 설정되어 있으면 그 값을 쓰고 없으면 기존의 "latest" GitHub API 조회로 폴백한다(호스트 동작은 변경 없음). 목적: 재현 가능한 빌드, API가 조용히 바뀌어 생기는 회귀 방지.
+- **자격증명 전달 방식**: `docker run` argv에는 `-e QWEN -e URL -e MODEL`처럼 **이름만** 실리고 값은 싣지 않는다(호스트 프로세스 테이블에서 `ps`/`/proc/<pid>/cmdline`으로 노출되는 것을 막기 위해). 실제 값은 `run_sandbox(cmd, env_extra=...)`가 `subprocess.run(cmd, env={**os.environ, **env_extra})`로 docker CLI 프로세스 자신의 환경에만 실어 전달한다. 단, `docker inspect`로는 실행 중인 컨테이너의 환경변수 값을 여전히 볼 수 있으므로 로컬 docker 그룹 사용자에게는 노출 범위가 동일하다(README에 명시).
+- **`check_docker` 타임아웃**: `docker info`/`docker image inspect` 호출에 `timeout=20`을 두고, `subprocess.TimeoutExpired`를 데몬 무응답(`MSG_NO_DAEMON`)으로 처리한다. 데몬이 멈춰 있을 때 무한 대기하지 않기 위함.
+- **bench의 오래된 결과 방지 (R2)**: `bench --sandbox`는 컨테이너 실행 전 `result.json`의 mtime을 기록해 두고, 컨테이너가 실패 종료(non-zero)했는데 파일이 갱신되지 않았으면 "이전 실행의 결과"를 성공으로 잘못 읽지 않고 `error: container exited <rc>`로 보고한다.
