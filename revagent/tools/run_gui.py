@@ -38,8 +38,8 @@ def launch_cmd(exe: Path, args: list[str]) -> list[str]:
 
 
 def _display_ok(env: dict) -> bool:
-    r = subprocess.run(["xdpyinfo", "-display", env["DISPLAY"]], capture_output=True, text=True, env=env, timeout=10)
-    return r.returncode == 0
+    r = _run_quiet(["xdpyinfo", "-display", env["DISPLAY"]], env, 10)
+    return r is not None and r.returncode == 0
 
 
 def _run_quiet(cmd: list[str], env: dict, timeout: float) -> subprocess.CompletedProcess | None:
@@ -82,18 +82,20 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5, ty
         return f"[tool error] path escapes the challenge directory: {path}"
     if not p.is_file():
         return f"[tool error] no such file: {path}"
-    env = {**os.environ, "DISPLAY": DISPLAY, "WINEDEBUG": "-all"}
+    scrubbed = {k: v for k, v in os.environ.items() if k not in ("QWEN", "URL", "MODEL")}
+    env = {**scrubbed, "DISPLAY": DISPLAY, "WINEDEBUG": "-all"}
     if not _display_ok(env):
         return f"[tool error] no display at {DISPLAY}; the sandbox entrypoint should have started Xvfb"
     wait = max(1, min(int(wait_seconds), MAX_WAIT))
     cmd = launch_cmd(p, list(args or []))
-    proc = subprocess.Popen(cmd, cwd=str(ctx.problem_dir), env=env, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, start_new_session=True)
+    proc = subprocess.Popen(cmd, cwd=str(ctx.problem_dir), env=env, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
     info = {"tail": ""}
     try:
         time.sleep(wait)
         if type_text:
-            _run_quiet(["xdotool", "type", "--delay", "20", type_text], env, 30)
+            _run_quiet(["xdotool", "search", "--onlyvisible", "--name", ".", "windowfocus", "%@"], env, 10)
+            _run_quiet(["xdotool", "type", "--delay", "20", "--", type_text], env, 30)
             _run_quiet(["xdotool", "key", "Return"], env, 10)
             time.sleep(min(wait, 5))
         screens = ctx.work_dir / "screens"
@@ -119,6 +121,12 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5, ty
         try:
             out, _ = proc.communicate(timeout=5)
             info["tail"] = (out or b"").decode("utf-8", errors="replace")[-800:]
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
         except Exception:
             pass
     return (f"launched: {' '.join(cmd)}\nprocess: {info['state']}\nwindows: {info['windows']}\n"

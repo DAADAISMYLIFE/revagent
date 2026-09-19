@@ -29,10 +29,11 @@ SCHEMA = {
 
 
 def run_cmd(cmd: str, cwd: Path, timeout: int, stdin_text: str | None = None) -> str:
+    env = {k: v for k, v in os.environ.items() if k not in ("QWEN", "URL", "MODEL")}
     p = subprocess.Popen(
         cmd, shell=True, executable="/bin/bash", cwd=str(cwd),
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        start_new_session=True,
+        start_new_session=True, env=env,
     )
     try:
         out, _ = p.communicate(input=(stdin_text or "").encode(), timeout=timeout)

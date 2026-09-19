@@ -72,6 +72,14 @@ def test_run_binary_timeout_is_clamped_to_900(tmp_path, monkeypatch):
     assert captured["timeout"] == 900
 
 
+def test_bash_run_cmd_scrubs_secrets_from_child_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("QWEN", "sekrit-key")
+    out = bash.run_cmd("bash -c 'echo ${QWEN:-unset}'", cwd=tmp_path, timeout=5)
+    assert out.startswith("[exit 0]")
+    assert "unset" in out
+    assert "sekrit-key" not in out
+
+
 def test_bash_stdin_is_closed(tmp_path):
     out = bash.run(ctx_for(tmp_path), cmd="cat", timeout=3)
     assert out.startswith("[exit 0]")
@@ -113,8 +121,13 @@ def test_run_binary_pe_without_wine_says_use_sandbox(tmp_path, monkeypatch):
 
 
 def test_run_binary_pe_runs_under_wine(tmp_path, monkeypatch):
+    import subprocess as sp
     (tmp_path / "x.exe").write_bytes(b"MZ" + b"\0" * 100)
     monkeypatch.setattr("revagent.tools.run_binary.shutil.which", lambda n: "/usr/bin/wine")
+    monkeypatch.setattr(
+        "revagent.tools.run_binary.subprocess.run",
+        lambda *a, **k: sp.CompletedProcess(a, 0, "PE32+ executable (console) x86-64, for MS Windows", ""),
+    )
     captured = {}
 
     def fake_run_cmd(cmd, cwd, timeout, stdin_text=None):
@@ -126,6 +139,52 @@ def test_run_binary_pe_runs_under_wine(tmp_path, monkeypatch):
     assert "Correct!" in out
     assert captured["cmd"].startswith("WINEDEBUG=-all wine ") and captured["cmd"].endswith("x.exe 'a b'")
     assert captured["timeout"] == 7 and captured["stdin"] == "in\n"
+
+
+def test_run_binary_pe_32bit_blocked_by_kind_80386(tmp_path, monkeypatch):
+    import subprocess as sp
+    (tmp_path / "x.exe").write_bytes(b"MZ" + b"\0" * 100)
+    monkeypatch.setattr("revagent.tools.run_binary.shutil.which", lambda n: "/usr/bin/wine")
+    monkeypatch.setattr(
+        "revagent.tools.run_binary.subprocess.run",
+        lambda *a, **k: sp.CompletedProcess(a, 0, "PE32 executable (console) Intel 80386, for MS Windows", ""),
+    )
+    out = run_binary.run(ctx_for(tmp_path), path="x.exe")
+    assert out.startswith("[cannot run here] 32-bit Windows PE")
+    assert "wine64 only" in out
+    assert "unicorn" in out
+
+
+def test_run_binary_pe_32bit_blocked_when_kind_lacks_arch(tmp_path, monkeypatch):
+    import subprocess as sp
+    (tmp_path / "x.exe").write_bytes(b"MZ" + b"\0" * 100)
+    monkeypatch.setattr("revagent.tools.run_binary.shutil.which", lambda n: "/usr/bin/wine")
+    monkeypatch.setattr(
+        "revagent.tools.run_binary.subprocess.run",
+        lambda *a, **k: sp.CompletedProcess(a, 0, "PE32 executable for MS Windows", ""),
+    )
+    out = run_binary.run(ctx_for(tmp_path), path="x.exe")
+    assert out.startswith("[cannot run here] 32-bit Windows PE")
+
+
+def test_run_binary_pe_64bit_path_unchanged(tmp_path, monkeypatch):
+    import subprocess as sp
+    (tmp_path / "x.exe").write_bytes(b"MZ" + b"\0" * 100)
+    monkeypatch.setattr("revagent.tools.run_binary.shutil.which", lambda n: "/usr/bin/wine")
+    monkeypatch.setattr(
+        "revagent.tools.run_binary.subprocess.run",
+        lambda *a, **k: sp.CompletedProcess(a, 0, "PE32+ executable (console) x86-64, for MS Windows", ""),
+    )
+    captured = {}
+
+    def fake_run_cmd(cmd, cwd, timeout, stdin_text=None):
+        captured["cmd"] = cmd
+        return "[exit 0]\nCorrect!\n"
+
+    monkeypatch.setattr("revagent.tools.run_binary.run_cmd", fake_run_cmd)
+    out = run_binary.run(ctx_for(tmp_path), path="x.exe")
+    assert "Correct!" in out
+    assert captured["cmd"].startswith("WINEDEBUG=-all wine ")
 
 
 def test_run_binary_rejects_escape(tmp_path):
@@ -335,12 +394,132 @@ def test_run_gui_happy_path(tmp_path, monkeypatch):
     out = run_gui.run(c, path="g.exe", args=["-x"], wait_seconds=3, type_text="hello")
     popen = [x for x in calls if x[0] == "popen"][0]
     assert popen[1][:2] == ["wine", str((tmp_path / "g.exe").resolve())] and popen[1][2] == "-x" and popen[2] == ":99"
-    assert any(x[0] == "run" and x[1][:2] == ["xdotool", "type"] and "hello" in x[1] for x in calls)
+    run_calls = [x[1] for x in calls if x[0] == "run"]
+    focus_idx = next(i for i, c2 in enumerate(run_calls) if c2[:2] == ["xdotool", "search"] and c2[-2:] == ["windowfocus", "%@"])
+    type_idx = next(i for i, c2 in enumerate(run_calls) if c2[:2] == ["xdotool", "type"])
+    assert focus_idx < type_idx
+    type_call = run_calls[type_idx]
+    assert type_call[type_call.index("--") + 1] == "hello"
     png = c.work_dir / "screens" / "001.png"
     assert png.exists() and ".revagent/screens/001.png" in out
     assert "OCR6: DH{gui}" in out and "OCR7: DH{gui}" in out
     assert "CaptainHook" in out and "still running" in out
     assert killed == [4242]
+
+
+def test_run_gui_popen_uses_stdin_devnull(tmp_path, monkeypatch):
+    import subprocess as sp
+    (tmp_path / "g.exe").write_bytes(b"MZ" + b"\0" * 50)
+    monkeypatch.setattr("revagent.tools.run_gui.shutil.which", lambda n: "/usr/bin/" + n)
+    monkeypatch.setattr("revagent.tools.run_gui.time.sleep", lambda s: None)
+
+    class FakeProc:
+        pid = 4242
+        def poll(self): return None
+        def communicate(self, timeout=None): return (b"", None)
+
+    captured = {}
+
+    def fake_popen(cmd, **kw):
+        captured.update(kw)
+        return FakeProc()
+
+    def fake_run(cmd, **kw):
+        if cmd[0] == "import":
+            Path(cmd[-1]).write_bytes(b"\x89PNG")
+            return sp.CompletedProcess(cmd, 0, "", "")
+        if cmd[0] == "xdpyinfo":
+            return sp.CompletedProcess(cmd, 0, "name of display: :99\n", "")
+        return sp.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", fake_run)
+    monkeypatch.setattr("revagent.tools.run_gui.os.killpg", lambda pid, sig: None)
+    run_gui.run(ctx_for(tmp_path), path="g.exe")
+    assert captured["stdin"] is sp.DEVNULL
+
+
+def test_run_gui_env_excludes_secrets(tmp_path, monkeypatch):
+    import subprocess as sp
+    monkeypatch.setenv("QWEN", "sekrit")
+    monkeypatch.setenv("URL", "https://h")
+    monkeypatch.setenv("MODEL", "m/x")
+    (tmp_path / "g.exe").write_bytes(b"MZ" + b"\0" * 50)
+    monkeypatch.setattr("revagent.tools.run_gui.shutil.which", lambda n: "/usr/bin/" + n)
+    monkeypatch.setattr("revagent.tools.run_gui.time.sleep", lambda s: None)
+
+    class FakeProc:
+        pid = 4242
+        def poll(self): return None
+        def communicate(self, timeout=None): return (b"", None)
+
+    captured_env = {}
+
+    def fake_popen(cmd, **kw):
+        captured_env.update(kw.get("env", {}))
+        return FakeProc()
+
+    def fake_run(cmd, **kw):
+        if cmd[0] == "import":
+            Path(cmd[-1]).write_bytes(b"\x89PNG")
+            return sp.CompletedProcess(cmd, 0, "", "")
+        if cmd[0] == "xdpyinfo":
+            return sp.CompletedProcess(cmd, 0, "name of display: :99\n", "")
+        return sp.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", fake_run)
+    monkeypatch.setattr("revagent.tools.run_gui.os.killpg", lambda pid, sig: None)
+    run_gui.run(ctx_for(tmp_path), path="g.exe")
+    assert "QWEN" not in captured_env and "URL" not in captured_env and "MODEL" not in captured_env
+    assert captured_env.get("DISPLAY") == ":99" and captured_env.get("WINEDEBUG") == "-all"
+
+
+def test_run_gui_communicate_timeout_kills_and_waits(tmp_path, monkeypatch):
+    import subprocess as sp
+    (tmp_path / "g.exe").write_bytes(b"MZ" + b"\0" * 50)
+    monkeypatch.setattr("revagent.tools.run_gui.shutil.which", lambda n: "/usr/bin/" + n)
+    monkeypatch.setattr("revagent.tools.run_gui.time.sleep", lambda s: None)
+    actions = []
+
+    class FakeProc:
+        pid = 4242
+        def poll(self): return None
+        def communicate(self, timeout=None): raise sp.TimeoutExpired(cmd=["wine"], timeout=timeout)
+        def kill(self): actions.append("kill")
+        def wait(self, timeout=None): actions.append("wait")
+
+    def fake_popen(cmd, **kw):
+        return FakeProc()
+
+    def fake_run(cmd, **kw):
+        if cmd[0] == "import":
+            Path(cmd[-1]).write_bytes(b"\x89PNG")
+            return sp.CompletedProcess(cmd, 0, "", "")
+        if cmd[0] == "xdpyinfo":
+            return sp.CompletedProcess(cmd, 0, "name of display: :99\n", "")
+        return sp.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", fake_run)
+    monkeypatch.setattr("revagent.tools.run_gui.os.killpg", lambda pid, sig: None)
+    out = run_gui.run(ctx_for(tmp_path), path="g.exe")
+    assert actions == ["kill", "wait"]
+    assert "(none)" in out  # tail defaults empty since communicate never returned output
+
+
+def test_display_ok_returns_false_when_run_quiet_times_out(monkeypatch):
+    monkeypatch.setattr("revagent.tools.run_gui._run_quiet", lambda cmd, env, timeout: None)
+    assert run_gui._display_ok({"DISPLAY": ":99"}) is False
+
+
+def test_display_ok_true_when_probe_succeeds(monkeypatch):
+    import subprocess as sp
+    monkeypatch.setattr(
+        "revagent.tools.run_gui._run_quiet",
+        lambda cmd, env, timeout: sp.CompletedProcess(cmd, 0, "", ""),
+    )
+    assert run_gui._display_ok({"DISPLAY": ":99"}) is True
 
 
 def test_run_gui_no_display(tmp_path, monkeypatch):

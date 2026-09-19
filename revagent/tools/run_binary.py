@@ -12,8 +12,9 @@ SCHEMA = {
         "description": (
             "Execute a challenge binary (x86-64 ELF or script) with given argv and stdin, return exit code, "
             "stdout and stderr. Use it to observe behaviour and to VERIFY a candidate answer before "
-            "submit_flag. Windows PE runs under wine inside the sandbox; GUI programs: use run_gui. "
-            "Non-x86-64 ELF cannot run here; the tool tells you."
+            "submit_flag. Windows PE runs under wine inside the sandbox (64-bit only: wine64, no 32-bit "
+            "wine); GUI programs: use run_gui. Non-x86-64 ELF and 32-bit Windows PE cannot run here; "
+            "the tool tells you."
         ),
         "parameters": {
             "type": "object",
@@ -47,6 +48,9 @@ def run(ctx, path: str, args: list[str] | None = None, stdin: str = "", timeout:
         if shutil.which("wine") is None:
             return (f"[cannot run here] {kind} — Windows PE and wine is not installed on the host. "
                     f"Run with --sandbox (the image has wine), or analyze statically / emulate with unicorn.")
+        if "80386" in kind or ("x86-64" not in kind and "PE32+" not in kind):
+            return ("[cannot run here] 32-bit Windows PE: the image has wine64 only. "
+                     "Analyze statically / emulate with unicorn (x86 32-bit), or re-implement the check.")
         if not os.access(p, os.X_OK):
             p.chmod(p.stat().st_mode | 0o111)
         cmd = "WINEDEBUG=-all wine " + " ".join(shlex.quote(x) for x in [str(p), *(args or [])])
