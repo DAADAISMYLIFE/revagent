@@ -1,3 +1,5 @@
+FROM eclipse-temurin:21-jdk-jammy AS jdk
+
 FROM python:3.12-slim-bookworm
 
 ENV LANG=C.UTF-8 DEBIAN_FRONTEND=noninteractive HOME=/root PIP_NO_CACHE_DIR=1
@@ -22,6 +24,11 @@ RUN curl -fsSL -o /tmp/radare2.deb "$RADARE2_URL" \
     && dpkg -i /tmp/radare2.deb \
     && rm -f /tmp/radare2.deb \
     && radare2 -v >/dev/null
+
+# JDK 21 from the official Temurin image (avoids the api.adoptium.net download, which is TLS-intercepted on this network).
+# Directory name must start with jdk-21: install_ghidra.sh's `ls -d jdk-21*` and revagent/ghidra.py's `glob("jdk-21*")` both key off it.
+RUN mkdir -p /root/tools
+COPY --from=jdk /opt/java/openjdk /root/tools/jdk-21-temurin
 
 # Ghidra + JDK 21 under /root/tools (same script as the host install; needs revagent/ghidra_scripts for its verify step).
 COPY scripts/install_ghidra.sh /tmp/scripts/install_ghidra.sh
