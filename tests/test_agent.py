@@ -293,7 +293,7 @@ def test_truncated_thinking_retries_with_bigger_budget(tmp_path):
     ])
     r = Agent(d, "", llm, max_steps=10, interactive=False).run()
     assert r["status"] == "solved" and r["steps"] == 1
-    assert llm.max_tokens_seen == [8192, 32768]
+    assert llm.max_tokens_seen == [8192, 16384]
     assert llm.max_tokens == 8192
     # the retry request ends with a transient hint that is NOT persisted in the conversation
     assert llm.seen[1][-1]["role"] == "user" and "exhausted the output budget" in llm.seen[1][-1]["content"]

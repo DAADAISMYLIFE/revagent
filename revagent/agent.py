@@ -13,7 +13,7 @@ from .tools.base import ToolContext
 from .tools.bash import run_cmd
 from .truncate import truncate
 
-TRUNCATED_RETRY_MAX_TOKENS = 32768
+TRUNCATED_RETRY_MAX_TOKENS = 16384
 TRUNCATED_RETRY_HINT = ("[system] Your previous attempt at this step exhausted the output budget while thinking and "
                         "produced nothing. Do not repeat that: decide in a few sentences, then call a tool. If a "
                         "computation is long, put it in a Python script and let the tool run it. Save intermediate "
