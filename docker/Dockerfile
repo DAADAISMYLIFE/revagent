@@ -56,4 +56,12 @@ WORKDIR /work
 ENTRYPOINT ["/usr/local/bin/revagent-entrypoint"]
 CMD ["--help"]
 
-# ---- Stage 2 (PE verification) layer goes here: wine64 xvfb tesseract-ocr imagemagick ----
+# ---- Stage 2: Windows PE execution (wine on Xvfb) + OCR + mingw for test PEs ----
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      wine wine64 xvfb xdotool x11-utils imagemagick tesseract-ocr tesseract-ocr-eng \
+      mingw-w64 fonts-dejavu-core procps \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip install pillow==12.3.0
+ENV DISPLAY=:99 WINEDEBUG=-all WINEPREFIX=/root/.wine
+RUN (Xvfb :99 -screen 0 1280x800x24 -nolisten tcp >/dev/null 2>&1 &) && sleep 2 \
+    && wineboot -u && wineserver -w && pkill Xvfb || true

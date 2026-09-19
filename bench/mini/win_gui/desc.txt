@@ -1,0 +1,1 @@
+Run the program. The flag DH{...} is displayed in its window.
