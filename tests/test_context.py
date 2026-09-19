@@ -217,6 +217,15 @@ def test_list_work_files_skips_excluded_dirs_and_files(tmp_path):
     assert "result.json" not in paths
 
 
+def test_list_work_files_skips_screens_subtree(tmp_path):
+    since = time.time_ns()
+    (tmp_path / ".revagent" / "screens").mkdir(parents=True)
+    (tmp_path / ".revagent" / "screens" / "001.png").write_bytes(b"\x89PNG")
+    files = list_work_files(tmp_path, since)
+    paths = [p for p, _ in files]
+    assert not any(p.startswith(".revagent/screens") for p in paths)
+
+
 def test_list_work_files_honours_since_ns(tmp_path):
     (tmp_path / "old.json").write_text("{}")
     since = time.time_ns()

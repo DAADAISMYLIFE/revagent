@@ -35,7 +35,7 @@ SHRINK_PROMPT = (
 
 
 EXCLUDED_DIR_NAMES = {".git", "__pycache__"}
-EXCLUDED_SUBTREES = {Path(".revagent/out"), Path(".revagent/ghidra")}
+EXCLUDED_SUBTREES = {Path(".revagent/out"), Path(".revagent/ghidra"), Path(".revagent/screens")}
 EXCLUDED_FILE_NAMES = {"case.md", "case.md.bak", "transcript.jsonl", "result.json"}
 
 
