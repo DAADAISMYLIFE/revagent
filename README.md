@@ -52,7 +52,7 @@ Run each challenge in a disposable container with the full toolchain (Ghidra, gd
 radare2, qemu-user, libssl1.1). The agent code runs unchanged inside; artifacts land in `<challenge>/.revagent/` on the host.
 
 ```bash
-bash scripts/sandbox-build.sh                                   # once; ~4.3 GB, 10–20 min
+bash scripts/sandbox-build.sh                                   # once; ~8 GB, 10–20 min
 ~/.revagent-venv/bin/revagent solve --sandbox path/to/challenge --no-ask
 ~/.revagent-venv/bin/revagent bench --sandbox chal1 chal2
 ~/.revagent-venv/bin/revagent solve --sandbox-dev path/to/challenge   # mounts this repo at /app: edit code, no rebuild
@@ -63,13 +63,16 @@ Requirements: Docker Desktop with WSL integration enabled for this distro. Crede
 visible to any local docker-group user via `docker inspect` on the running container. The container
 runs as root with network access; it is removed when the run ends. Artifacts written back into
 `<challenge>/.revagent/` on a native ext4 path (e.g. inside WSL) come out root-owned, since the
-container runs as root. Windows PE: console programs run under wine via `run_binary`; GUI programs via `run_gui` (Xvfb + screenshot + OCR). The image is about 8 GB (wine, Xvfb, OCR and mingw included).
+container runs as root. The challenge dir is mounted read-write, so a hostile binary can modify it;
+never use `--sandbox-dev` with untrusted binaries (it mounts this repo). Windows PE: console programs
+run under wine via `run_binary`; GUI programs via `run_gui` (Xvfb + screenshot + OCR). The image is
+about 8 GB (wine, Xvfb, OCR and mingw included).
 
 On networks with a TLS-inspecting proxy, pass the proxy's CA certificate with `--sandbox-ca /path/to/ca.crt`
 (or set `REVAGENT_SANDBOX_CA`). It is bind-mounted read-only at run time and never stored in the image.
 
 ## How it works
-Single ReAct loop, seven tools (`bash`, `decompile`, `run_binary`, `notes`, `summarize`,
+Single ReAct loop, eight tools (`bash`, `decompile`, `run_binary`, `run_gui`, `notes`, `summarize`,
 `ask_user`, `submit_flag`). The case file is the agent's external memory: when the prompt passes
 44k tokens the middle of the conversation is summarized into it and the context is rebuilt from
 system prompt + task + case file + last 4 tool exchanges. Thinking stays on (`reasoning_effort=medium`).
