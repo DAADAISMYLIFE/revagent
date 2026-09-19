@@ -234,3 +234,30 @@ submit_flag(DH{...}, 검증 근거) ──► result.json, 종료
 - Docker 샌드박스.
 - Windows PE 동적 실행(wine).
 - APK/.NET/pyc 전용 툴(jadx, ilspy, pycdc). 문제로 만나면 `bash`에서 설치해 쓰고, 반복되면 툴로 승격.
+
+## 10. Amendments (2026-09-19)
+
+Implementation deviated from (or refined) this spec in a few places during the fix wave that closed
+out the branch review:
+
+- **Bench entry point.** There is no `bench/run.py` script; batch solving is `revagent bench chal1
+  chal2 ...` (see `revagent/__main__.py`), sharing the same `Agent` as `solve` but forcing
+  `interactive=False` per challenge and isolating exceptions per challenge (one bad challenge does not
+  abort the batch).
+- **Ghidra project directory.** The ephemeral Ghidra project passed to `analyzeHeadless` lives in a
+  plain system tempdir (`tempfile.TemporaryDirectory`), not under `.revagent/ghidra/`: Ghidra's
+  `ProjectLocator` rejects any path with a dot-prefixed component, and the cache dir is normally
+  `<challenge>/.revagent/ghidra`. The cached `functions.json` (and per-run `headless_<hash>.log`)
+  still land in `.revagent/ghidra/` as designed; only the throwaway project directory moved out.
+- **venv recipe (ruling R6).** `python3 -m venv --without-pip --system-site-packages`, with pip coming
+  from the system site and a `usersite.pth` added only when `angr`/`z3` were installed with
+  `pip install --user`. The Python version embedded in that `.pth` path is derived at setup time
+  (`python -c 'import sys; print(f"python{sys.version_info[0]}.{sys.version_info[1]}")'`) rather than
+  hardcoded, so the recipe doesn't silently target the wrong interpreter version.
+- **Tool timeouts.** Model-supplied `timeout` arguments to `bash` and `run_binary` are clamped to
+  `max(1, min(timeout, 900))` (`MAX_TIMEOUT = 900` in `revagent/tools/bash.py`) so a runaway or
+  adversarial timeout value from the model can't wedge a run indefinitely.
+- **`decompile list` paging.** `list_text()` takes `limit` (default 200) and `filter` (substring,
+  case-insensitive) so the model can page past the 200-largest-functions default or narrow to a
+  name pattern instead of being hard-capped with no escape hatch; falling back to grepping the cached
+  `.revagent/ghidra/<binary>.<hash>.functions.json` directly via `bash` remains available either way.
