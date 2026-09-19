@@ -5,7 +5,7 @@ from pathlib import Path
 from revagent.casefile import CaseFile
 from revagent.tools import load_tools
 from revagent.tools.base import ToolContext
-from revagent.tools import bash, run_binary, notes, ask_user, submit_flag
+from revagent.tools import bash, run_binary, notes, ask_user, submit_flag, run_gui
 
 
 def ctx_for(tmp_path, interactive=True):
@@ -17,7 +17,7 @@ def ctx_for(tmp_path, interactive=True):
 def test_registry_has_all_tools():
     schemas, handlers = load_tools()
     names = {s["function"]["name"] for s in schemas}
-    assert names == {"bash", "run_binary", "notes", "decompile", "summarize", "ask_user", "submit_flag"}
+    assert names == {"bash", "run_binary", "run_gui", "notes", "decompile", "summarize", "ask_user", "submit_flag"}
     assert set(handlers) == names
     for s in schemas:
         assert s["type"] == "function" and "parameters" in s["function"]
@@ -279,3 +279,74 @@ def test_submit_flag_accepts_any_prefix_from_description(tmp_path):
     c2 = ctx_for(tmp_path)
     assert submit_flag.run(c2, flag="no_braces_here", how_verified="v").startswith("[rejected]")
     assert submit_flag.run(c2, flag="{x}", how_verified="v").startswith("[rejected]")
+
+
+def test_registry_includes_run_gui():
+    schemas, handlers = load_tools()
+    assert "run_gui" in handlers and any(s["function"]["name"] == "run_gui" for s in schemas)
+
+
+def test_run_gui_without_wine(tmp_path, monkeypatch):
+    (tmp_path / "g.exe").write_bytes(b"MZ" + b"\0" * 50)
+    monkeypatch.setattr("revagent.tools.run_gui.shutil.which", lambda n: None)
+    assert run_gui.run(ctx_for(tmp_path), path="g.exe").startswith("[cannot run here]")
+
+
+def test_run_gui_rejects_escape(tmp_path, monkeypatch):
+    monkeypatch.setattr("revagent.tools.run_gui.shutil.which", lambda n: "/usr/bin/" + n)
+    assert run_gui.run(ctx_for(tmp_path), path="/bin/true").startswith("[tool error] path escapes")
+
+
+def test_run_gui_happy_path(tmp_path, monkeypatch):
+    import subprocess as sp
+    (tmp_path / "g.exe").write_bytes(b"MZ" + b"\0" * 50)
+    monkeypatch.setattr("revagent.tools.run_gui.shutil.which", lambda n: "/usr/bin/" + n)
+    monkeypatch.setattr("revagent.tools.run_gui.time.sleep", lambda s: None)
+    calls = []
+
+    class FakeProc:
+        pid = 4242
+        def poll(self): return None
+        def communicate(self, timeout=None): return (b"wine: out\n", None)
+
+    def fake_popen(cmd, **kw):
+        calls.append(("popen", cmd, kw.get("env", {}).get("DISPLAY")))
+        return FakeProc()
+
+    def fake_run(cmd, **kw):
+        calls.append(("run", cmd))
+        if cmd[0] == "import":
+            Path(cmd[-1]).write_bytes(b"\x89PNG")
+            return sp.CompletedProcess(cmd, 0, "", "")
+        if cmd[0] == "tesseract":
+            psm = cmd[cmd.index("--psm") + 1]
+            return sp.CompletedProcess(cmd, 0, f"OCR{psm}: DH{{gui}}\n", "")
+        if cmd[0] == "xdotool" and cmd[1] == "search":
+            return sp.CompletedProcess(cmd, 0, "CaptainHook\n", "")
+        if cmd[0] == "xdpyinfo":
+            return sp.CompletedProcess(cmd, 0, "name of display: :99\n", "")
+        return sp.CompletedProcess(cmd, 0, "", "")
+
+    killed = []
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", fake_run)
+    monkeypatch.setattr("revagent.tools.run_gui.os.killpg", lambda pid, sig: killed.append(pid))
+    c = ctx_for(tmp_path)
+    out = run_gui.run(c, path="g.exe", args=["-x"], wait_seconds=3, type_text="hello")
+    popen = [x for x in calls if x[0] == "popen"][0]
+    assert popen[1][:2] == ["wine", str((tmp_path / "g.exe").resolve())] and popen[1][2] == "-x" and popen[2] == ":99"
+    assert any(x[0] == "run" and x[1][:2] == ["xdotool", "type"] and "hello" in x[1] for x in calls)
+    png = c.work_dir / "screens" / "001.png"
+    assert png.exists() and ".revagent/screens/001.png" in out
+    assert "OCR6: DH{gui}" in out and "OCR7: DH{gui}" in out
+    assert "CaptainHook" in out and "still running" in out
+    assert killed == [4242]
+
+
+def test_run_gui_no_display(tmp_path, monkeypatch):
+    import subprocess as sp
+    (tmp_path / "g.exe").write_bytes(b"MZ" + b"\0" * 50)
+    monkeypatch.setattr("revagent.tools.run_gui.shutil.which", lambda n: "/usr/bin/" + n)
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.run",
+                        lambda cmd, **kw: sp.CompletedProcess(cmd, 1, "", "unable to open display"))
+    assert run_gui.run(ctx_for(tmp_path), path="g.exe").startswith("[tool error] no display")
