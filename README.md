@@ -47,6 +47,10 @@ non-interactively (as if `--no-ask`) and reads each challenge's own `<dir>/desc.
 Artifacts land in `<challenge>/.revagent/`: `case.md` (the agent's notes), `transcript.jsonl`,
 `out/NNN.txt` (full tool outputs), `ghidra/` (cached decompilation), `result.json`.
 
+## Sandbox
+On networks with a TLS-inspecting proxy, pass the proxy's CA certificate with `--sandbox-ca /path/to/ca.crt`
+(or set `REVAGENT_SANDBOX_CA`). It is bind-mounted read-only at run time and never stored in the image.
+
 ## How it works
 Single ReAct loop, seven tools (`bash`, `decompile`, `run_binary`, `notes`, `summarize`,
 `ask_user`, `submit_flag`). The case file is the agent's external memory: when the prompt passes

@@ -33,6 +33,22 @@ def test_build_cmd_interactive_and_dev(tmp_path):
     assert cmd.index(f"{repo.resolve()}:/app") < cmd.index(IMAGE)
 
 
+def test_build_cmd_extra_ca(tmp_path):
+    d = tmp_path / "p"
+    d.mkdir()
+    crt = tmp_path / "corp.crt"
+    crt.write_text("cert")
+    cmd = build_sandbox_cmd(d, [], SEC, interactive=False, dev_repo=None, extra_ca=crt)
+    mount = f"{crt.resolve()}:/usr/local/share/ca-certificates/extra-ca.crt:ro"
+    assert mount in cmd
+    idx = cmd.index(mount)
+    assert cmd[idx - 1] == "-v"
+    assert idx < cmd.index(IMAGE)
+
+    cmd_no_ca = build_sandbox_cmd(d, [], SEC, interactive=False, dev_repo=None)
+    assert not any("ca-certificates" in x for x in cmd_no_ca)
+
+
 def test_container_desc_arg(tmp_path):
     d = tmp_path / "p"
     (d / "sub").mkdir(parents=True)

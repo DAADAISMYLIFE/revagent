@@ -362,6 +362,57 @@ def test_solve_sandbox_desc_outside_dir(tmp_path, monkeypatch, capsys):
     assert "inside the problem dir" in capsys.readouterr().err
 
 
+def test_solve_sandbox_ca_flag(tmp_path, monkeypatch):
+    from revagent import __main__ as main_mod
+    from revagent.llm import Secure
+
+    d = tmp_path / "chal"
+    d.mkdir()
+    crt = tmp_path / "corp.crt"
+    crt.write_text("cert")
+    recorded = {}
+    monkeypatch.setattr(main_mod, "check_docker", lambda: None)
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: Secure("k", "https://h", "m"))
+    monkeypatch.setattr(main_mod, "is_interactive_tty", lambda: False)
+    monkeypatch.setattr(main_mod, "run_sandbox", lambda cmd: recorded.setdefault("cmd", cmd) and 0)
+    rc = main_mod.main(["solve", "--sandbox", str(d), "--sandbox-ca", str(crt)])
+    assert rc == 0
+    assert any(x.endswith(":/usr/local/share/ca-certificates/extra-ca.crt:ro") for x in recorded["cmd"])
+
+
+def test_solve_sandbox_ca_env(tmp_path, monkeypatch):
+    from revagent import __main__ as main_mod
+    from revagent.llm import Secure
+
+    d = tmp_path / "chal"
+    d.mkdir()
+    crt = tmp_path / "corp.crt"
+    crt.write_text("cert")
+    recorded = {}
+    monkeypatch.setattr(main_mod, "check_docker", lambda: None)
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: Secure("k", "https://h", "m"))
+    monkeypatch.setattr(main_mod, "is_interactive_tty", lambda: False)
+    monkeypatch.setattr(main_mod, "run_sandbox", lambda cmd: recorded.setdefault("cmd", cmd) and 0)
+    monkeypatch.setenv("REVAGENT_SANDBOX_CA", str(crt))
+    rc = main_mod.main(["solve", "--sandbox", str(d)])
+    assert rc == 0
+    assert any(x.endswith(":/usr/local/share/ca-certificates/extra-ca.crt:ro") for x in recorded["cmd"])
+
+
+def test_solve_sandbox_ca_missing_file(tmp_path, monkeypatch, capsys):
+    from revagent import __main__ as main_mod
+    from revagent.llm import Secure
+
+    d = tmp_path / "chal"
+    d.mkdir()
+    missing = tmp_path / "nope.crt"
+    monkeypatch.setattr(main_mod, "check_docker", lambda: None)
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: Secure("k", "https://h", "m"))
+    rc = main_mod.main(["solve", "--sandbox", str(d), "--sandbox-ca", str(missing)])
+    assert rc == 2
+    assert "not found" in capsys.readouterr().err
+
+
 def test_bench_sandbox_runs_each_dir(tmp_path, monkeypatch, capsys):
     import json
     from revagent import __main__ as main_mod

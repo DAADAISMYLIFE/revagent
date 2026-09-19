@@ -26,7 +26,8 @@ def container_desc_arg(problem_dir: Path, desc: str | None) -> str | None:
 
 
 def build_sandbox_cmd(problem_dir: Path, passthrough: list[str], secure: Secure,
-                      interactive: bool, dev_repo: Path | None) -> list[str]:
+                      interactive: bool, dev_repo: Path | None,
+                      extra_ca: Path | None = None) -> list[str]:
     """Assemble the docker run command. Pure: nothing is executed."""
     root = problem_dir.resolve()
     cmd = ["docker", "run", "--rm", "--init", "-it" if interactive else "-i",
@@ -35,6 +36,8 @@ def build_sandbox_cmd(problem_dir: Path, passthrough: list[str], secure: Secure,
         cmd += ["-e", f"{k}={v}"]
     if dev_repo is not None:
         cmd += ["-v", f"{dev_repo.resolve()}:/app"]
+    if extra_ca is not None:
+        cmd += ["-v", f"{extra_ca.resolve()}:/usr/local/share/ca-certificates/extra-ca.crt:ro"]
     cmd += [IMAGE, "solve", f"/work/{root.name}", *passthrough]
     return cmd
 

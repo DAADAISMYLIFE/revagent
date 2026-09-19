@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -24,6 +25,9 @@ def _add_limits(p: argparse.ArgumentParser) -> None:
     p.add_argument("--sandbox", action="store_true", help="run inside the revagent-sandbox Docker image")
     p.add_argument("--sandbox-dev", action="store_true",
                    help="like --sandbox, but mount this repo at /app so code edits apply without a rebuild")
+    p.add_argument("--sandbox-ca",
+                   help="trust this CA cert (.crt) at runtime inside the sandbox, for TLS-inspecting "
+                        "proxies (default: env REVAGENT_SANDBOX_CA)")
 
 
 def _sandbox_passthrough(args, desc_in_container: str | None, no_ask: bool) -> list[str]:
@@ -47,10 +51,16 @@ def _run_in_sandbox(d: Path, args, desc_arg: str | None, no_ask: bool) -> int:
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
+    ca_arg = args.sandbox_ca or os.environ.get("REVAGENT_SANDBOX_CA") or None
+    extra_ca = Path(ca_arg) if ca_arg else None
+    if extra_ca is not None and not extra_ca.is_file():
+        print(f"error: --sandbox-ca file not found: {extra_ca}", file=sys.stderr)
+        return 2
     secure = load_secure(Path(args.secure) if args.secure else None)
     dev_repo = Path(__file__).resolve().parents[1] if args.sandbox_dev else None
     interactive = (not no_ask) and is_interactive_tty()
-    cmd = build_sandbox_cmd(d, _sandbox_passthrough(args, desc_in, no_ask), secure, interactive, dev_repo)
+    cmd = build_sandbox_cmd(d, _sandbox_passthrough(args, desc_in, no_ask), secure, interactive, dev_repo,
+                            extra_ca)
     return run_sandbox(cmd)
 
 

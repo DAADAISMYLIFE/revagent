@@ -40,8 +40,11 @@ COPY . /app
 RUN pip install -e /app \
     && pip install angr z3-solver unicorn capstone pwntools pefile pycryptodome
 
+COPY docker/entrypoint.sh /usr/local/bin/revagent-entrypoint
+RUN chmod +x /usr/local/bin/revagent-entrypoint
+
 WORKDIR /work
-ENTRYPOINT ["revagent"]
+ENTRYPOINT ["/usr/local/bin/revagent-entrypoint"]
 CMD ["--help"]
 
 # ---- Stage 2 (PE verification) layer goes here: wine64 xvfb tesseract-ocr imagemagick ----
