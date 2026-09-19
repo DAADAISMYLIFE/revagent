@@ -52,7 +52,7 @@ Run each challenge in a disposable container with the full toolchain (Ghidra, gd
 radare2, qemu-user, libssl1.1). The agent code runs unchanged inside; artifacts land in `<challenge>/.revagent/` on the host.
 
 ```bash
-bash scripts/sandbox-build.sh                                   # once; ~2.2 GB, 10–20 min
+bash scripts/sandbox-build.sh                                   # once; ~4.3 GB, 10–20 min
 ~/.revagent-venv/bin/revagent solve --sandbox path/to/challenge --no-ask
 ~/.revagent-venv/bin/revagent bench --sandbox chal1 chal2
 ~/.revagent-venv/bin/revagent solve --sandbox-dev path/to/challenge   # mounts this repo at /app: edit code, no rebuild
@@ -78,6 +78,8 @@ Design: [docs/superpowers/specs/2026-09-19-revagent-design.md](docs/superpowers/
 | bench/mini/xor_check | plumbing test | solved (8 steps, 0.4 min) |
 | quiz/multipoint (Dreamhack) | real | run1 unsolved (time limit, 62 steps); run2 with playbook v2 **solved** (30 steps, 13.4 min) |
 | quiz/revlogin (Dreamhack) | real | run1 unsolved (step limit, 150 steps); run2 with playbook v2 **solved** (154 steps, 53.4 min, 5 compactions) |
+| quiz/multipoint (Dreamhack) **sandbox** | real | fresh case file, `--sandbox`: **solved** (48 steps, 13.0 min, 0 compactions) |
+| quiz/revlogin (Dreamhack) **sandbox** | real | fresh case file, `--sandbox`: **solved** (57+70 steps across a pod outage, 26.3 min total, 2 compactions; binary runs directly thanks to libssl1.1, no shim detour) |
 
 ## Tests
 ```bash
