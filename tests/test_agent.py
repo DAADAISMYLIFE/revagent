@@ -539,7 +539,7 @@ def test_sandbox_ca_flag_without_sandbox_is_rejected(tmp_path, monkeypatch, caps
     assert "error: --sandbox-ca requires --sandbox" in capsys.readouterr().err
 
 
-def test_sandbox_ca_env_without_sandbox_is_rejected(tmp_path, monkeypatch, capsys):
+def test_sandbox_ca_env_without_sandbox_is_ignored(tmp_path, monkeypatch, capsys):
     from revagent import __main__ as main_mod
 
     d = tmp_path / "chal"
@@ -547,11 +547,21 @@ def test_sandbox_ca_env_without_sandbox_is_rejected(tmp_path, monkeypatch, capsy
     crt = tmp_path / "corp.crt"
     crt.write_text("cert")
     monkeypatch.setenv("REVAGENT_SANDBOX_CA", str(crt))
-    monkeypatch.setattr(main_mod, "load_secure",
-                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("not reached")))
+
+    class FakeAgent:
+        def __init__(self, *a, **kw):
+            pass
+
+        def run(self):
+            return {"status": "solved", "flag": "DH{x}", "how_verified": "v", "reason": "",
+                    "steps": 1, "compactions": 0, "prompt_tokens": 1, "completion_tokens": 1, "minutes": 0.1}
+
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: object())
+    monkeypatch.setattr(main_mod, "LLM", lambda secure: object())
+    monkeypatch.setattr(main_mod, "Agent", FakeAgent)
     rc = main_mod.main(["solve", str(d)])
-    assert rc == 2
-    assert "error: --sandbox-ca requires --sandbox" in capsys.readouterr().err
+    assert rc == 0
+    assert capsys.readouterr().err == ""
 
 
 def test_bench_table_shared_helper(capsys):
