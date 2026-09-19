@@ -199,3 +199,14 @@ def test_usage_accounting(monkeypatch):
     assert kw0["temperature"] == 0.6
     assert kw0["max_tokens"] == 8192
     assert kw0["tool_choice"] == "auto"
+
+
+def test_chat_exposes_finish_reason(monkeypatch):
+    llm = _llm(monkeypatch)
+    r1 = _resp("cut", 10, 5)
+    r1.choices[0].finish_reason = "length"
+    r2 = _resp("done", 10, 5)
+    responses = [r1, r2]
+    monkeypatch.setattr(llm.client.chat.completions, "create", lambda **kw: responses.pop(0))
+    assert llm.chat([{"role": "user", "content": "hi"}]).finish_reason == "length"
+    assert llm.chat([{"role": "user", "content": "hi"}]).finish_reason == "stop"

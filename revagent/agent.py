@@ -13,6 +13,11 @@ from .tools.base import ToolContext
 from .tools.bash import run_cmd
 from .truncate import truncate
 
+TRUNCATED_RETRY_MAX_TOKENS = 32768
+TRUNCATED_NUDGE = ("Your previous reply hit the output budget while thinking, so nothing was produced. "
+                   "Do not trace long code by hand in your head: decide in a few sentences, write the key facts to "
+                   "notes, then call a tool (write a script for any parsing).")
+
 TASK_TEMPLATE = """# Challenge
 Directory: {dir}
 
@@ -121,6 +126,18 @@ class Agent:
                         break
                     try:
                         resp = self.llm.chat(self.messages, self.schemas)
+                        if resp.finish_reason == "length" and not resp.tool_calls:
+                            # The model spent the whole output budget thinking. Retry once with a
+                            # larger budget before treating it as a no-tool turn.
+                            self._log({"role": "_meta", "event": "output_truncated", "step": step,
+                                       "retry_max_tokens": TRUNCATED_RETRY_MAX_TOKENS})
+                            self._print(f"[{step}] -- output truncated mid-thinking; retrying with a larger budget --")
+                            old_max = self.llm.max_tokens
+                            self.llm.max_tokens = max(old_max, TRUNCATED_RETRY_MAX_TOKENS)
+                            try:
+                                resp = self.llm.chat(self.messages, self.schemas)
+                            finally:
+                                self.llm.max_tokens = old_max
                     except ContextOverflow:
                         over_streak += 1
                         if over_streak >= 3:
@@ -147,7 +164,9 @@ class Agent:
                         if no_tool_streak >= 3:
                             reason = "no tool calls 3x"
                             break
-                        self._append({"role": "user", "content": "Call a tool, or finish with submit_flag. Do not just narrate."})
+                        nudge = TRUNCATED_NUDGE if resp.finish_reason == "length" else \
+                            "Call a tool, or finish with submit_flag. Do not just narrate."
+                        self._append({"role": "user", "content": nudge})
                         continue
                     no_tool_streak = 0
 

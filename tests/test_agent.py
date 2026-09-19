@@ -14,6 +14,8 @@ class ScriptedLLM:
     def __init__(self, script, prompt_tokens=100):
         self.script = list(script)
         self.seen = []
+        self.max_tokens = 8192
+        self.max_tokens_seen = []
         self.last_prompt_tokens = 0
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
@@ -25,6 +27,11 @@ class ScriptedLLM:
         item = self.script.pop(0)
         if isinstance(item, BaseException) or (isinstance(item, type) and issubclass(item, BaseException)):
             raise item
+        self.max_tokens_seen.append(self.max_tokens)
+        finish_reason = "stop"
+        if isinstance(item, dict):
+            finish_reason = item.get("finish_reason", "stop")
+            item = item["calls"]
         calls = item
         tcs = [ToolCall(f"id{i}", n, a, json.dumps(a)) for i, (n, a) in enumerate(calls)]
         msg = {"role": "assistant", "content": "" if tcs else "just talking"}
@@ -35,7 +42,9 @@ class ScriptedLLM:
         self.last_prompt_tokens = pt
         self.total_prompt_tokens += pt
         self.total_completion_tokens += 10
-        return ChatResponse(msg["content"], "thinking...", tcs, msg, pt, 10)
+        if finish_reason == "length":
+            msg["content"] = ""
+        return ChatResponse(msg["content"], "thinking...", tcs, msg, pt, 10, finish_reason)
 
     def complete(self, prompt, system=None):
         self.completes.append(prompt)
@@ -252,3 +261,30 @@ def test_bench_isolates_errors(tmp_path, monkeypatch, capsys):
     assert rc == 1
     assert "error" in out
     assert "solved" in out
+
+
+def test_truncated_thinking_retries_with_bigger_budget(tmp_path):
+    d = make_problem(tmp_path)
+    llm = ScriptedLLM([
+        {"calls": [], "finish_reason": "length"},
+        [("submit_flag", {"flag": "DH{x}", "how_verified": "v"})],
+    ])
+    r = Agent(d, "", llm, max_steps=10, interactive=False).run()
+    assert r["status"] == "solved" and r["steps"] == 1
+    assert llm.max_tokens_seen == [8192, 32768]
+    assert llm.max_tokens == 8192
+    lines = [json.loads(l) for l in (d / ".revagent" / "transcript.jsonl").read_text().splitlines()]
+    assert any(m.get("event") == "output_truncated" for m in lines)
+    # the truncated (empty) assistant message never entered the conversation
+    assert not any(m.get("role") == "assistant" and m.get("content") == "" and not m.get("tool_calls") for m in lines)
+
+
+def test_truncated_thinking_twice_counts_toward_abort(tmp_path):
+    d = make_problem(tmp_path)
+    cut = {"calls": [], "finish_reason": "length"}
+    llm = ScriptedLLM([cut] * 6)
+    r = Agent(d, "", llm, max_steps=10, interactive=False).run()
+    assert r["reason"] == "no tool calls 3x"
+    assert len(llm.seen) == 6
+    nudges = [m for m in llm.seen[-1] if m["role"] == "user" and "output budget" in m["content"]]
+    assert len(nudges) == 2

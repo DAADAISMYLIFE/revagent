@@ -65,6 +65,7 @@ class ChatResponse:
     message: dict
     prompt_tokens: int
     completion_tokens: int
+    finish_reason: str = "stop"  # "length" means the output budget ran out (often mid-thinking)
 
 
 def parse_assistant(m) -> tuple[str, str, list[ToolCall], dict]:
@@ -155,10 +156,12 @@ class LLM:
             kw["tools"] = tools
             kw["tool_choice"] = "auto"
         resp = self._create(**kw)
-        content, reasoning, calls, msg = parse_assistant(resp.choices[0].message)
+        choice = resp.choices[0]
+        content, reasoning, calls, msg = parse_assistant(choice.message)
         p, c = self._account(resp)
         self.last_prompt_tokens = p
-        return ChatResponse(content, reasoning, calls, msg, p, c)
+        finish = getattr(choice, "finish_reason", None) or "stop"
+        return ChatResponse(content, reasoning, calls, msg, p, c, finish)
 
     def complete(self, prompt: str, system: str | None = None) -> str:
         msgs = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
