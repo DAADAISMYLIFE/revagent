@@ -16,14 +16,16 @@ class ScriptedLLM:
         self.seen = []
         self.max_tokens = 8192
         self.max_tokens_seen = []
+        self.efforts_seen = []
         self.last_prompt_tokens = 0
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
         self.prompt_tokens = prompt_tokens
         self.completes = []
 
-    def chat(self, messages, tools=None):
+    def chat(self, messages, tools=None, reasoning_effort=None):
         self.seen.append([dict(m) for m in messages])
+        self.efforts_seen.append(reasoning_effort)
         item = self.script.pop(0)
         if isinstance(item, BaseException) or (isinstance(item, type) and issubclass(item, BaseException)):
             raise item
@@ -294,6 +296,8 @@ def test_truncated_thinking_retries_with_bigger_budget(tmp_path):
     r = Agent(d, "", llm, max_steps=10, interactive=False).run()
     assert r["status"] == "solved" and r["steps"] == 1
     assert llm.max_tokens_seen == [8192, 16384]
+    # the retry alone runs at low reasoning effort; normal steps pass None (client default = medium)
+    assert llm.efforts_seen == [None, "low"]
     assert llm.max_tokens == 8192
     # the retry request ends with a transient hint that is NOT persisted in the conversation
     assert llm.seen[1][-1]["role"] == "user" and "exhausted the output budget" in llm.seen[1][-1]["content"]

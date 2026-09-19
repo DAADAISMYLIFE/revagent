@@ -14,6 +14,7 @@ from .tools.bash import run_cmd
 from .truncate import truncate
 
 TRUNCATED_RETRY_MAX_TOKENS = 16384
+TRUNCATED_RETRY_EFFORT = "low"  # the retry step only; normal steps keep the client default (medium)
 TRUNCATED_RETRY_HINT = ("[system] Your previous attempt at this step exhausted the output budget while thinking and "
                         "produced nothing. Do not repeat that: decide in a few sentences, then call a tool. If a "
                         "computation is long, put it in a Python script and let the tool run it. Save intermediate "
@@ -144,7 +145,8 @@ class Agent:
                             self._log({"role": "_meta", "event": "retry_hint", "content": TRUNCATED_RETRY_HINT})
                             try:
                                 resp = self.llm.chat(
-                                    self.messages + [{"role": "user", "content": TRUNCATED_RETRY_HINT}], self.schemas)
+                                    self.messages + [{"role": "user", "content": TRUNCATED_RETRY_HINT}], self.schemas,
+                                    reasoning_effort=TRUNCATED_RETRY_EFFORT)
                             finally:
                                 self.llm.max_tokens = old_max
                     except ContextOverflow:

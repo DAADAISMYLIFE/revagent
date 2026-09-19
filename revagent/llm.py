@@ -125,7 +125,7 @@ class LLM:
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
 
-    def _create(self, **kw):
+    def _create(self, reasoning_effort: str | None = None, **kw):
         delay = 2.0
         for attempt in range(self.retries + 1):
             try:
@@ -133,7 +133,7 @@ class LLM:
                     model=self.model,
                     temperature=self.temperature,
                     max_tokens=self.max_tokens,
-                    extra_body={"reasoning_effort": self.reasoning_effort},
+                    extra_body={"reasoning_effort": reasoning_effort or self.reasoning_effort},
                     **kw,
                 )
             except BadRequestError as e:
@@ -154,8 +154,10 @@ class LLM:
         self.total_completion_tokens += c
         return p, c
 
-    def chat(self, messages: list[dict], tools: list[dict] | None = None) -> ChatResponse:
-        kw: dict = {"messages": messages}
+    def chat(self, messages: list[dict], tools: list[dict] | None = None,
+             reasoning_effort: str | None = None) -> ChatResponse:
+        """reasoning_effort overrides the client default for this call only (e.g. "low" on a retry)."""
+        kw: dict = {"messages": messages, "reasoning_effort": reasoning_effort}
         if tools:
             kw["tools"] = tools
             kw["tool_choice"] = "auto"

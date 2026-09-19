@@ -240,3 +240,18 @@ def test_load_secure_explicit_file_wins_over_complete_env(tmp_path, monkeypatch)
     f.write_text("QWEN=filekey\nURL=https://file\nMODEL=file/model\n")
     s = load_secure(f)
     assert s == Secure(key="filekey", url="https://file", model="file/model")
+
+
+def test_chat_reasoning_effort_override(monkeypatch):
+    llm = _llm(monkeypatch)
+    captured = []
+
+    def fake_create(**kw):
+        captured.append(kw["extra_body"]["reasoning_effort"])
+        return _resp("ok", 1, 1)
+
+    monkeypatch.setattr(llm.client.chat.completions, "create", fake_create)
+    llm.chat([{"role": "user", "content": "hi"}])
+    llm.chat([{"role": "user", "content": "hi"}], reasoning_effort="low")
+    llm.complete("x")
+    assert captured == ["medium", "low", "medium"]
