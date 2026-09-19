@@ -2,8 +2,9 @@ import os
 import time
 
 from revagent.casefile import CaseFile
-from revagent.context import (compact, format_work_files, list_work_files, serialize,
-                              shrink_casefile, split_messages, KEEP_RECENT, RESET_TEXT)
+from revagent.context import (compact, extract_unfinished, format_work_files, list_work_files,
+                              serialize, shrink_casefile, split_messages, KEEP_RECENT, RESET_TEXT,
+                              SUMMARY_PROMPT)
 
 
 class FakeLLM:
@@ -273,3 +274,53 @@ def test_compact_without_work_files_block_omits_section(tmp_path):
     llm = FakeLLM()
     new = compact(build(10), llm, cf, n=1)
     assert "[WORK FILES]" not in new[2]["content"]
+
+
+def test_summary_prompt_asks_for_artifacts(tmp_path):
+    cf = CaseFile(tmp_path / "case.md", "p", "d")
+    llm = FakeLLM()
+    compact(build(10), llm, cf, n=1)
+    assert "(d) ARTIFACTS" in llm.prompts[0]
+    assert "Do not invent anything absent from the log." in llm.prompts[0]
+
+
+def test_summary_prompt_constant_has_artifacts_heading():
+    assert "(d) ARTIFACTS" in SUMMARY_PROMPT
+
+
+def test_extract_unfinished_returns_c_section():
+    summary = ("(a) FACTS\n- fact one\n(b) FAILED\n- fail one\n"
+               "(c) UNFINISHED\n- todo one\n- todo two\n(d) ARTIFACTS\n- art one")
+    out = extract_unfinished(summary)
+    assert "- todo one" in out and "- todo two" in out
+    assert "fact one" not in out and "art one" not in out
+
+
+def test_extract_unfinished_to_end_when_no_d():
+    summary = "(a) FACTS\n- fact one\n(c) UNFINISHED\n- todo one"
+    out = extract_unfinished(summary)
+    assert "- todo one" in out
+
+
+def test_extract_unfinished_empty_when_missing():
+    assert extract_unfinished("(a) FACTS\n- fact one\n(b) FAILED\n- fail one") == ""
+
+
+def test_compact_fills_todo_from_summary_c_section(tmp_path):
+    cf = CaseFile(tmp_path / "case.md", "p", "d")
+    reply = ("(a) FACTS\n- addr 0x401000\n(b) FAILED\n- brute force\n"
+             "(c) UNFINISHED\n- try z3 on the byte constraints\n(d) ARTIFACTS\n- table.json: opcode map")
+    llm = FakeLLM(reply=reply)
+    compact(build(10), llm, cf, n=1)
+    todo = cf.read().split("## Todo")[1].split("## Log")[0]
+    assert "try z3 on the byte constraints" in todo
+    assert "addr 0x401000" not in todo
+
+
+def test_compact_leaves_todo_unchanged_without_c_section(tmp_path):
+    cf = CaseFile(tmp_path / "case.md", "p", "d")
+    cf.add("todo", "existing todo")
+    llm = FakeLLM(reply="(a) FACTS\n- addr 0x401000")
+    compact(build(10), llm, cf, n=1)
+    todo = cf.read().split("## Todo")[1].split("## Log")[0]
+    assert "existing todo" in todo

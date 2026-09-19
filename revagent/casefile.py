@@ -50,3 +50,23 @@ class CaseFile:
             entry = text.rstrip()
         lines[end:end] = [entry, ""]
         self.write("\n".join(lines))
+
+    def replace_section(self, section: str, text: str) -> None:
+        """Replace the body of `section` (between its exact header and the next canonical
+        header) with `text`, leaving other sections untouched."""
+        if section not in SECTIONS:
+            raise ValueError(f"unknown section {section!r}; use one of {list(SECTIONS)}")
+        header = SECTIONS[section]
+        lines = self.read().split("\n")
+        try:
+            start = lines.index(header)
+        except ValueError:
+            raise ValueError(f"{self.path} has no {header!r} section")
+        valid_headers = set(SECTIONS.values())
+        end = next(
+            (i for i in range(start + 1, len(lines)) if lines[i].strip() in valid_headers),
+            len(lines),
+        )
+        body = text.rstrip("\n").splitlines()
+        lines[start + 1:end] = ["", *body, ""]
+        self.write("\n".join(lines))

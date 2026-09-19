@@ -16,10 +16,12 @@ RESET_TEXT = ("[CONTEXT RESET] Your context was compacted. The case file below i
 
 SUMMARY_PROMPT = (
     "Below is a log of an autonomous reverse-engineering session (assistant tool calls and tool outputs). "
-    "Extract, as terse bullets under three headings:\n"
+    "Extract, as terse bullets under four headings:\n"
     "(a) FACTS confirmed by tool output: addresses, constants (hex), function roles, check logic, file layout\n"
     "(b) FAILED attempts and why they failed\n"
     "(c) UNFINISHED work / concrete next steps\n"
+    "(d) ARTIFACTS: every file the assistant created or wrote (scripts, JSON/pickle tables, dumps) with its "
+    "path and what it contains\n"
     "Do not invent anything absent from the log. No preamble.\n\nLOG:\n"
 )
 
@@ -123,12 +125,26 @@ def sanitize_summary(text: str) -> str:
     return "\n".join(lines)
 
 
+def extract_unfinished(summary: str) -> str:
+    """Return the text under the "(c)" heading (from the line containing "(c)" up to the next
+    line containing "(d)" or the end), stripped. "" if not found."""
+    lines = summary.split("\n")
+    start = next((i for i, line in enumerate(lines) if "(c)" in line), None)
+    if start is None:
+        return ""
+    end = next((i for i in range(start + 1, len(lines)) if "(d)" in lines[i]), len(lines))
+    return "\n".join(lines[start:end]).strip()
+
+
 def compact(messages: list[dict], llm, casefile, n: int, work_files_block: str = "") -> list[dict]:
     head, middle, tail = split_messages(messages)
     if middle:
         summary = llm.complete(SUMMARY_PROMPT + serialize(middle))
         summary = sanitize_summary(summary.strip())
         casefile.add("log", f"### compaction {n}\n{summary}", bullet=False)
+        todo = extract_unfinished(summary)
+        if todo:
+            casefile.replace_section("todo", todo)
     content = RESET_TEXT + "\n\n" + casefile.read()
     if work_files_block:
         content += "\n\n" + work_files_block
