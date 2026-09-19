@@ -76,3 +76,31 @@ def test_missing_header_raises_clear_error(tmp_path):
     cf = CaseFile(p, "p", "d")
     with pytest.raises(ValueError, match="Todo"):
         cf.add("todo", "x")
+
+
+def test_replace_section_replaces_todo_body(tmp_path):
+    cf = CaseFile(tmp_path / "case.md", "p", "d")
+    cf.add("todo", "old todo item")
+    cf.replace_section("todo", "- new todo 1\n- new todo 2")
+    todo = cf.read().split("## Todo")[1].split("## Log")[0]
+    assert "old todo item" not in todo
+    assert "- new todo 1" in todo and "- new todo 2" in todo
+
+
+def test_replace_section_leaves_other_sections_intact(tmp_path):
+    cf = CaseFile(tmp_path / "case.md", "p", "d")
+    cf.add("facts", "important fact")
+    cf.add("todo", "old todo item")
+    cf.add("log", "### compaction 1\n- x", bullet=False)
+    cf.replace_section("todo", "- new todo")
+    text = cf.read()
+    facts = text.split("## Facts")[1].split("## Hypotheses")[0]
+    log = text.split("## Log")[1]
+    assert "important fact" in facts
+    assert "### compaction 1" in log and "- x" in log
+
+
+def test_replace_section_unknown_raises(tmp_path):
+    cf = CaseFile(tmp_path / "case.md", "p", "d")
+    with pytest.raises(ValueError):
+        cf.replace_section("nope", "x")

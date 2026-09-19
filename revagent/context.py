@@ -1,5 +1,9 @@
 """Context compaction: summarize the middle of the conversation into the case file and rebuild."""
 
+import os
+import stat
+from pathlib import Path
+
 from .casefile import SECTIONS
 
 THRESHOLD = 44_000
@@ -13,10 +17,12 @@ RESET_TEXT = ("[CONTEXT RESET] Your context was compacted. The case file below i
 
 SUMMARY_PROMPT = (
     "Below is a log of an autonomous reverse-engineering session (assistant tool calls and tool outputs). "
-    "Extract, as terse bullets under three headings:\n"
+    "Extract, as terse bullets under four headings:\n"
     "(a) FACTS confirmed by tool output: addresses, constants (hex), function roles, check logic, file layout\n"
     "(b) FAILED attempts and why they failed\n"
     "(c) UNFINISHED work / concrete next steps\n"
+    "(d) ARTIFACTS: every file the assistant created or wrote (scripts, JSON/pickle tables, dumps) with its "
+    "path and what it contains\n"
     "Do not invent anything absent from the log. No preamble.\n\nLOG:\n"
 )
 
@@ -26,6 +32,66 @@ SHRINK_PROMPT = (
     "markdown structure: '# Case: ...' then sections '## Facts', '## Hypotheses', '## Todo', '## Log'. "
     "Output only the rewritten file.\n\n"
 )
+
+
+EXCLUDED_DIR_NAMES = {".git", "__pycache__"}
+EXCLUDED_SUBTREES = {Path(".revagent/out"), Path(".revagent/ghidra")}
+EXCLUDED_FILE_NAMES = {"case.md", "case.md.bak", "transcript.jsonl", "result.json"}
+
+
+def list_work_files(problem_dir: Path, since_ns: int, limit: int = 40) -> list[tuple[str, int]]:
+    """Walk problem_dir for files modified at or after since_ns, skipping VCS/cache/output dirs
+    and the case file bookkeeping. Returns (relative posix path, size_bytes) sorted by path."""
+    problem_dir = Path(problem_dir)
+    found: list[tuple[str, int]] = []
+    for root, dirnames, filenames in os.walk(problem_dir):
+        rel_root = Path(root).relative_to(problem_dir)
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in EXCLUDED_DIR_NAMES and (rel_root / d) not in EXCLUDED_SUBTREES
+        ]
+        for name in filenames:
+            if name in EXCLUDED_FILE_NAMES:
+                continue
+            full = Path(root) / name
+            try:
+                st = full.stat()
+            except OSError:
+                continue
+            if not stat.S_ISREG(st.st_mode):
+                continue
+            if st.st_mtime_ns < since_ns:
+                continue
+            rel = (rel_root / name).as_posix()
+            found.append((rel, st.st_size))
+    found.sort(key=lambda t: t[0])
+    return found[:limit]
+
+
+WORK_FILES_BLOCK_CAP = 4_000
+_WORK_FILES_TAIL_RESERVE = 80  # room for a trailing "- … (N more files)" line
+
+
+def format_work_files(files: list[tuple[str, int]]) -> str:
+    if not files:
+        return ""
+    header = ("[WORK FILES] These files were created or modified during this run and still exist "
+              "under the challenge dir. Read/load them instead of re-deriving their contents:")
+    lines = [header]
+    budget = WORK_FILES_BLOCK_CAP - _WORK_FILES_TAIL_RESERVE
+    shown = 0
+    for path, size in files:
+        line = f"- {path} ({size} bytes)"
+        prospective = len("\n".join(lines)) + 1 + len(line)
+        if prospective > budget:
+            break
+        lines.append(line)
+        shown += 1
+    remaining = len(files) - shown
+    if remaining > 0:
+        lines.append(f"- … ({remaining} more files)")
+    result = "\n".join(lines)
+    return result[:WORK_FILES_BLOCK_CAP]
 
 
 def _is_reset_banner(m: dict) -> bool:
@@ -79,13 +145,39 @@ def sanitize_summary(text: str) -> str:
     return "\n".join(lines)
 
 
-def compact(messages: list[dict], llm, casefile, n: int) -> list[dict]:
+def _is_heading(line: str, tag: str) -> bool:
+    """True if `line`, once bullet/heading punctuation is stripped, starts with `tag`
+    (e.g. "(c)"). Guards against a fact bullet merely mentioning "(c)" mid-sentence
+    (e.g. a "Copyright (c) 1998" string dumped from the binary)."""
+    return line.strip().lstrip("#*- ").startswith(tag)
+
+
+def extract_unfinished(summary: str) -> str:
+    """Return the body under the "(c)" heading line (the line itself is a heading-shaped line
+    starting with "(c)", not just any line mentioning it) up to the next heading-shaped "(d)"
+    line found after it, or the end. Excludes the heading line itself; stripped; "" if no
+    "(c)" heading or no body remains."""
+    lines = summary.split("\n")
+    start = next((i for i, line in enumerate(lines) if _is_heading(line, "(c)")), None)
+    if start is None:
+        return ""
+    end = next((i for i in range(start + 1, len(lines)) if _is_heading(lines[i], "(d)")), len(lines))
+    return "\n".join(lines[start + 1:end]).strip()
+
+
+def compact(messages: list[dict], llm, casefile, n: int, work_files_block: str = "") -> list[dict]:
     head, middle, tail = split_messages(messages)
     if middle:
         summary = llm.complete(SUMMARY_PROMPT + serialize(middle))
         summary = sanitize_summary(summary.strip())
         casefile.add("log", f"### compaction {n}\n{summary}", bullet=False)
-    reset = {"role": "user", "content": RESET_TEXT + "\n\n" + casefile.read()}
+        todo = extract_unfinished(summary)
+        if todo:
+            casefile.replace_section("todo", todo)
+    content = RESET_TEXT + "\n\n" + casefile.read()
+    if work_files_block:
+        content += "\n\n" + work_files_block
+    reset = {"role": "user", "content": content}
     return head + [reset] + tail
 
 

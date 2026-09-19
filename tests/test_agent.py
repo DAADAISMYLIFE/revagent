@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from revagent.agent import Agent
+from revagent.agent import Agent, load_system_prompt
 from revagent.llm import ChatResponse, ContextOverflow, ToolCall
 
 
@@ -132,6 +132,28 @@ def test_compaction_triggers_over_threshold(tmp_path):
     seventh = llm.seen[6]
     assert seventh[2]["role"] == "user" and "[CONTEXT RESET]" in seventh[2]["content"]
     assert "- summary bullet" in seventh[2]["content"]
+
+
+def test_compaction_includes_work_files_created_during_run(tmp_path):
+    d = make_problem(tmp_path)
+
+    def write_table(ctx=None, **kw):
+        (d / "notes_table.json").write_text("{}")
+        return "wrote table"
+
+    script = [[("bash", {"cmd": f"echo {i}"})] for i in range(7)] + \
+             [[("submit_flag", {"flag": "DH{x}", "how_verified": "v"})]]
+    llm = ScriptedLLM(script, prompt_tokens=lambda n: 50_000 if n == 6 else 100)
+    agent = Agent(d, "desc", llm, max_steps=20, interactive=False)
+    agent.handlers["bash"] = write_table
+    r = agent.run()
+    assert r["compactions"] == 1
+    seventh = llm.seen[6]
+    assert "notes_table.json" in seventh[2]["content"]
+    assert "[WORK FILES]" in seventh[2]["content"]
+    lines = [json.loads(l) for l in (d / ".revagent" / "transcript.jsonl").read_text().splitlines()]
+    work_file_events = [m for m in lines if m.get("event") == "work_files"]
+    assert len(work_file_events) == 1 and work_file_events[0]["n"] >= 1
 
 
 def test_reset_message_logged(tmp_path):
@@ -517,7 +539,7 @@ def test_sandbox_ca_flag_without_sandbox_is_rejected(tmp_path, monkeypatch, caps
     assert "error: --sandbox-ca requires --sandbox" in capsys.readouterr().err
 
 
-def test_sandbox_ca_env_without_sandbox_is_rejected(tmp_path, monkeypatch, capsys):
+def test_sandbox_ca_env_without_sandbox_is_ignored(tmp_path, monkeypatch, capsys):
     from revagent import __main__ as main_mod
 
     d = tmp_path / "chal"
@@ -525,11 +547,28 @@ def test_sandbox_ca_env_without_sandbox_is_rejected(tmp_path, monkeypatch, capsy
     crt = tmp_path / "corp.crt"
     crt.write_text("cert")
     monkeypatch.setenv("REVAGENT_SANDBOX_CA", str(crt))
-    monkeypatch.setattr(main_mod, "load_secure",
-                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("not reached")))
+
+    class FakeAgent:
+        def __init__(self, *a, **kw):
+            pass
+
+        def run(self):
+            return {"status": "solved", "flag": "DH{x}", "how_verified": "v", "reason": "",
+                    "steps": 1, "compactions": 0, "prompt_tokens": 1, "completion_tokens": 1, "minutes": 0.1}
+
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: object())
+    monkeypatch.setattr(main_mod, "LLM", lambda secure: object())
+    monkeypatch.setattr(main_mod, "Agent", FakeAgent)
     rc = main_mod.main(["solve", str(d)])
-    assert rc == 2
-    assert "error: --sandbox-ca requires --sandbox" in capsys.readouterr().err
+    assert rc == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_system_prompt_loads_and_tells_agent_where_to_save_work_files():
+    t = load_system_prompt()
+    assert "submit_flag" in t
+    assert "never under `/tmp`" in t
+    assert "only files under the challenge directory are listed for you after a context reset" in t
 
 
 def test_bench_table_shared_helper(capsys):

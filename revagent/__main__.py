@@ -96,8 +96,7 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     sandbox = args.sandbox or args.sandbox_dev
 
-    ca_requested = args.sandbox_ca or os.environ.get("REVAGENT_SANDBOX_CA")
-    if ca_requested and not sandbox:
+    if args.sandbox_ca and not sandbox:
         print("error: --sandbox-ca requires --sandbox", file=sys.stderr)
         return 2
 
