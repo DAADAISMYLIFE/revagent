@@ -31,7 +31,8 @@ SHRINK_PROMPT = (
     "Rewrite this case file to about half its length. Keep EVERY concrete fact (addresses, constants, "
     "algorithms, verified inputs) and every open todo; drop repetition and narrative. Keep the exact "
     "markdown structure: '# Case: ...' then sections '## Facts', '## Hypotheses', '## Todo', '## Log'. "
-    "Output only the rewritten file.\n\n"
+    "Lines starting with '- [obs' or '- [critic' are the observation ledger: never delete them, only merge "
+    "exact duplicates. Output only the rewritten file.\n\n"
 )
 
 
@@ -184,7 +185,11 @@ def _reduce_log_block(block: list[str]) -> tuple[list[str], bool]:
     for idx, (tag, pstart) in enumerate(part_starts):
         pend = part_starts[idx + 1][1] if idx + 1 < len(part_starts) else len(rest)
         parts[tag] = rest[pstart:pend]
-    new_rest = parts.get("(a)", []) + parts.get("(d)", [])
+    is_ledger = lambda l: l.startswith("- [obs ") or l.startswith("- [critic ")
+    ledger = [l for l in rest if is_ledger(l)]
+    keep_a = [l for l in parts.get("(a)", []) if not is_ledger(l)]
+    keep_d = [l for l in parts.get("(d)", []) if not is_ledger(l)]
+    new_rest = keep_a + keep_d + ledger
     return [heading, *new_rest], True
 
 

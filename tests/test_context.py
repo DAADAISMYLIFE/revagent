@@ -471,3 +471,25 @@ def test_llm_complete_raises_budget_for_one_call_only(monkeypatch):
     assert llm.complete("p", max_tokens=16384, reasoning_effort="low") == "hi"
     assert seen == {"max": 16384, "effort": "low"} and llm.max_tokens == 8192
     assert llm.last_finish_reason == "length"
+
+
+def test_prune_log_keeps_obs_and_critic_bullets(tmp_path):
+    from revagent.context import prune_log
+    cf = CaseFile(tmp_path / "case.md", "p", "d")
+    for n in range(1, 6):
+        cf.add("log", f"### compaction {n}\n## (a) FACTS\n- fact {n}\n## (b) FAILED\n- fail {n}\n"
+                      f"## (c) UNFINISHED\n- todo {n}\n## (d) ARTIFACTS\n- art {n}", bullet=False)
+        cf.add("log", f"[obs step {n}] run_gui x.exe: windows: W")
+        cf.add("log", f"[critic step {n}] try clicking")
+    reduced = prune_log(cf, keep=3)
+    assert reduced == 2
+    text = cf.read()
+    for n in range(1, 6):
+        assert f"- [obs step {n}] run_gui x.exe: windows: W" in text
+        assert f"- [critic step {n}] try clicking" in text
+    assert "- fail 1" not in text and "- todo 1" not in text and "- fact 1" in text
+
+
+def test_shrink_prompt_mentions_obs_lines():
+    from revagent.context import SHRINK_PROMPT
+    assert "[obs" in SHRINK_PROMPT and "[critic" in SHRINK_PROMPT
