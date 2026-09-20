@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .casefile import CaseFile
 from .context import THRESHOLD, compact, format_work_files, list_work_files, shrink_casefile
+from .critic import CRITIC_IDLE_STEPS, CRITIC_MAX, progress_marker, run_critic
 from .llm import ContextOverflow, ToolCall
 from .tools import load_tools
 from .tools.base import ToolContext
@@ -60,6 +61,7 @@ class Agent:
         self.schemas, self.handlers = load_tools()
         self.transcript = open(self.work_dir / "transcript.jsonl", "a", encoding="utf-8")
         self.messages: list[dict] = []
+        self.critic_calls = 0
 
     # ---- bookkeeping -------------------------------------------------------
     def _log(self, obj: dict) -> None:
@@ -96,6 +98,16 @@ class Agent:
                 result = f"[tool error] {type(e).__name__}: {e}"
         return truncate(result, self.ctx.out_dir, self.ctx.next_out_id)
 
+    def _critic(self, step: int, cause: str) -> None:
+        if self.critic_calls >= CRITIC_MAX:
+            return
+        self.critic_calls += 1
+        self._log({"role": "_meta", "event": "critic", "step": step, "cause": cause, "n": self.critic_calls})
+        memo = run_critic(self.llm, self.casefile, self.messages, step)
+        if memo:
+            self._append({"role": "user", "content": "[critic] " + memo})
+            self._print(f"[{step}] -- critic ({cause}) --\n{memo[:600]}")
+
     def _compact(self, cause: str, compactions: int) -> list[dict]:
         self._log({"role": "_meta", "event": "compaction", "n": compactions, "cause": cause})
         files = list_work_files(self.problem_dir, self.run_start_ns)
@@ -121,6 +133,8 @@ class Agent:
         compactions = 0
         over_streak = 0
         status, reason, steps = "unsolved", "", 0
+        last_marker = progress_marker(self.casefile.read())
+        idle = 0
 
         try:
             try:
@@ -159,6 +173,7 @@ class Agent:
                         if over_streak == 2:
                             shrunk = shrink_casefile(self.casefile, self.llm)
                             self._log({"role": "_meta", "event": "shrink_casefile", "accepted": shrunk})
+                        self._critic(step, "compaction")
                         compactions += 1
                         self.messages = self._compact("overflow", compactions)
                         recent.clear()
@@ -205,6 +220,15 @@ class Agent:
                         self._append({"role": "user", "content": "You have repeated the same tool call 3 times. Read your notes and choose a different approach."})
                         recent.clear()
 
+                    marker = progress_marker(self.casefile.read())
+                    if marker != last_marker:
+                        last_marker, idle = marker, 0
+                    else:
+                        idle += 1
+                    if idle >= CRITIC_IDLE_STEPS:
+                        self._critic(step, "idle")
+                        idle = 0
+
                     if self.llm.last_prompt_tokens > THRESHOLD:
                         over_streak += 1
                         if over_streak >= 3:
@@ -213,6 +237,7 @@ class Agent:
                         if over_streak == 2:
                             shrunk = shrink_casefile(self.casefile, self.llm)
                             self._log({"role": "_meta", "event": "shrink_casefile", "accepted": shrunk})
+                        self._critic(step, "compaction")
                         compactions += 1
                         self.messages = self._compact("threshold", compactions)
                         recent.clear()

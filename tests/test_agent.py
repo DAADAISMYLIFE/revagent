@@ -130,7 +130,9 @@ def test_compaction_triggers_over_threshold(tmp_path):
     llm = ScriptedLLM(script, prompt_tokens=lambda n: 50_000 if n == 6 else 100)
     r = Agent(d, "desc", llm, max_steps=20, interactive=False).run()
     assert r["compactions"] == 1
-    assert len(llm.completes) == 1  # middle summarized once
+    # one of the two llm.complete calls is the pre-compaction critic; filter to the summarization call
+    summarize_calls = [p for p in llm.completes if "Extract, as terse bullets" in p]
+    assert len(summarize_calls) == 1  # middle summarized once
     seventh = llm.seen[6]
     assert seventh[2]["role"] == "user" and "[CONTEXT RESET]" in seventh[2]["content"]
     assert "- summary bullet" in seventh[2]["content"]
@@ -584,3 +586,33 @@ def test_bench_table_shared_helper(capsys):
 
     rc = main_mod._print_bench_table([("a", "unsolved", "step limit", 3, 1.5)])
     assert rc == 1
+
+
+def test_critic_runs_after_idle_steps_and_before_compaction(tmp_path, monkeypatch):
+    d = make_problem(tmp_path)
+    # 13 identical-shape bash calls that never add Facts/obs, then a compaction, then submit
+    calls = [[("bash", {"cmd": f"echo {i}"})] for i in range(13)]
+    script = calls + [[("bash", {"cmd": "echo after"})], [("submit_flag", {"flag": "DH{x}", "how_verified": "ran it"})]]
+    llm = ScriptedLLM(script, prompt_tokens=lambda n: 50_000 if n == 14 else 100)
+    memos = []
+    monkeypatch.setattr("revagent.agent.run_critic",
+                        lambda l, cf, msgs, step: memos.append(step) or f"memo@{step}")
+    a = Agent(d, "desc", llm, max_steps=40, interactive=False)
+    r = a.run()
+    assert r["status"] == "solved"
+    # idle trigger fired once at step 12 (12 steps without progress), compaction trigger at step 14
+    assert memos == [12, 14]
+    injected = [m for s in llm.seen for m in s if m.get("role") == "user" and m["content"].startswith("[critic] ")]
+    assert injected and injected[0]["content"] == "[critic] memo@12"
+
+
+def test_critic_capped_per_run(tmp_path, monkeypatch):
+    from revagent.critic import CRITIC_MAX
+    d = make_problem(tmp_path)
+    n = 12 * (CRITIC_MAX + 2)
+    script = [[("bash", {"cmd": f"echo {i}"})] for i in range(n)] + [[("submit_flag", {"flag": "DH{x}", "how_verified": "ok"})]]
+    llm = ScriptedLLM(script)
+    memos = []
+    monkeypatch.setattr("revagent.agent.run_critic", lambda l, cf, msgs, step: memos.append(step) or "m")
+    Agent(d, "desc", llm, max_steps=n + 5, interactive=False).run()
+    assert len(memos) == CRITIC_MAX
