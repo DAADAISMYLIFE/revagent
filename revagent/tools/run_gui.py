@@ -22,7 +22,8 @@ SCHEMA = {
             "GUI programs are event-driven: pass `actions` to drive them after the first capture. Each action is "
             "one string: 'click' / 'rclick' / 'dclick' (left / right / double click at the window centre, or at 'click X Y' where X Y is a screen pixel = PNG pixel), 'key NAME' (xdotool key, "
             "e.g. Return, space, a, F1), 'type TEXT', 'wait N'. Every click/key/type is followed by a capture "
-            "(one PNG each, OCR line in the report), so you can see how the picture changes with input. "
+"(one PNG each, OCR line, and what changed vs the previous capture: pixel count, bounding box and a "
+            "<NNN>.diff.png holding only the changed pixels, so static noise cancels out). "
             "The program is killed after the last capture; call again to re-run. Use run_binary for console PEs."
         ),
         "parameters": {
@@ -95,6 +96,30 @@ def _windows(env: dict) -> str:
         return "(timeout)"
     names = [l for l in (r.stdout or "").splitlines() if l.strip()]
     return ", ".join(names) or "(none)"
+
+
+def _diff_capture(prev: Path, cur: Path) -> str:
+    """Compare two captures; write cur's changed pixels to <cur>.diff.png (black on white) and describe them.
+    Static noise (lines, background) cancels out, so the diff image shows only what the input changed."""
+    try:
+        from PIL import Image, ImageChops
+    except ImportError:
+        return ""
+    try:
+        a = Image.open(prev).convert("L")
+        b = Image.open(cur).convert("L")
+        if a.size != b.size:
+            return "changed: (size differs)"
+        d = ImageChops.difference(a, b).point(lambda v: 255 if v > 40 else 0)
+        box = d.getbbox()
+        if box is None:
+            return "changed: nothing"
+        n = d.histogram()[255]
+        out = cur.with_name(cur.stem + ".diff.png")
+        d.point(lambda v: 0 if v else 255).save(out)
+        return f"changed: {n} px in bbox {box}  diff: .revagent/screens/{out.name}"
+    except Exception as e:  # a broken PNG must not abort the action loop
+        return f"changed: (diff failed: {e.__class__.__name__})"
 
 
 def _next_screenshot_path(screens: Path) -> Path:
@@ -194,6 +219,7 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5,
             info["ocr6"] = "(timeout)"
             info["ocr7"] = "(timeout)"
         action_lines = []
+        prev_png = png if (shot is not None and png.exists()) else None
         for i, spec in enumerate(action_specs, 1):
             parsed = _parse_action(spec)
             if parsed is None:
@@ -213,7 +239,9 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5,
             ashot = _run_quiet(["import", "-display", DISPLAY, "-window", "root", str(apng)], env, 30)
             if ashot is not None and apng.exists():
                 ocr = _ocr(apng, 7, env).replace("\n", " ")[:80]
-                action_lines.append(f"{i}. {spec}: .revagent/screens/{apng.name}  ocr7: {ocr}")
+                diff = _diff_capture(prev_png, apng) if prev_png else ""
+                action_lines.append(f"{i}. {spec}: .revagent/screens/{apng.name}  ocr7: {ocr}" + (f"  {diff}" if diff else ""))
+                prev_png = apng
             else:
                 action_lines.append(f"{i}. {spec}: capture failed")
         info["actions"] = "\n".join(action_lines)

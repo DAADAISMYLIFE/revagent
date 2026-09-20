@@ -701,3 +701,30 @@ def test_run_gui_actions_report_xdotool_failures(tmp_path, monkeypatch):
     assert "1. key RButton: NOT DELIVERED (xdotool failed: (symbol) No such key name 'RButton'. Ignoring it.)" in out
     assert "rclick" in out                      # the note names the mouse-button actions
     assert "2. click: .revagent/screens/002.png" in out   # no capture was spent on the failed action
+
+
+def test_run_gui_actions_report_diff_against_previous_capture(tmp_path, monkeypatch):
+    import subprocess as sp
+    from PIL import Image
+    calls = []
+    c = _gui_fixture(tmp_path, monkeypatch, calls)
+    real_run = run_gui.subprocess.run
+    frames = iter([0, 1, 1])   # first look, after click 1 (changed), after click 2 (same)
+
+    def shots(cmd, **kw):
+        if cmd[0] == "import":
+            im = Image.new("L", (40, 30), 255)
+            if next(frames):
+                for x in range(10, 20):
+                    for y in range(5, 8):
+                        im.putpixel((x, y), 0)
+            im.save(cmd[-1])
+            return sp.CompletedProcess(cmd, 0, "", "")
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", shots)
+    out = run_gui.run(c, path="g.exe", actions=["click", "click"])
+    assert "1. click: .revagent/screens/002.png" in out and "changed: 30 px in bbox (10, 5, 20, 8)  diff: .revagent/screens/002.diff.png" in out
+    assert "2. click: .revagent/screens/003.png" in out and "changed: nothing" in out
+    d = Image.open(c.work_dir / "screens" / "002.diff.png").convert("L")
+    assert d.getpixel((15, 6)) == 0 and d.getpixel((0, 0)) == 255
