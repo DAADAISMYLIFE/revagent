@@ -692,7 +692,8 @@ def test_run_gui_actions_report_xdotool_failures(tmp_path, monkeypatch):
     def failing_key(cmd, **kw):
         if cmd[:2] == ["xdotool", "key"]:
             calls.append(cmd)
-            return sp.CompletedProcess(cmd, 1, "", "(symbol) No such key name 'RButton'. Ignoring it.\n")
+            # real xdotool: exit 0, warning on stderr only
+            return sp.CompletedProcess(cmd, 0, "", "(symbol) No such key name 'RButton'. Ignoring it.\n")
         return real_run(cmd, **kw)
 
     monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", failing_key)

@@ -147,8 +147,10 @@ def _apply_action(verb: str, argv: list[str], env: dict) -> str:
         return ""
     if r is None:
         return "xdotool timed out"
-    if r.returncode != 0:
-        err = ((r.stderr or "") + (r.stdout or "")).strip().splitlines()
+    # xdotool exits 0 for an unknown keysym ("No such key name ... Ignoring it.") and only warns on stderr,
+    # so any stderr line counts as a failure: an input that was not delivered must not look like one that was.
+    err = [l for l in ((r.stderr or "") + (r.stdout or "")).strip().splitlines() if l.strip()]
+    if r.returncode != 0 or err:
         return "xdotool failed: " + (err[-1][:120] if err else f"exit {r.returncode}")
     return ""
 
