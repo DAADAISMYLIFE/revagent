@@ -167,10 +167,20 @@ def extract_unfinished(summary: str) -> str:
     return "\n".join(lines[start + 1:end]).strip()
 
 
+def _is_ledger_line(line: str) -> bool:
+    """True for an observation-ledger bullet appended by `casefile.add("log", ...)`:
+    `- [obs step N] ...` or `- [critic step N] ...`."""
+    return line.startswith("- [obs ") or line.startswith("- [critic ")
+
+
 def _reduce_log_block(block: list[str]) -> tuple[list[str], bool]:
     """`block[0]` is the "### compaction N" heading line; `block[1:]` is the (a)/(b)/(c)/(d)
-    summary body. Returns (new_block, changed): changed is False (block returned as-is) if the
-    block has no heading-shaped (b) or (c) part left to drop (already reduced, or never had one)."""
+    summary body, optionally followed by observation-ledger bullets (`- [obs `, `- [critic `)
+    appended after the block by later `casefile.add("log", ...)` calls. Returns (new_block,
+    changed): changed is False (block returned as-is) if the block has no heading-shaped (b) or
+    (c) part left to drop (already reduced, or never had one). When changed is True, ledger
+    bullets are always retained, exactly once each, in their original order, appended after the
+    kept (a)/(d) parts."""
     heading, rest = block[0], block[1:]
     tags = ("(a)", "(b)", "(c)", "(d)")
     part_starts = []
@@ -185,10 +195,9 @@ def _reduce_log_block(block: list[str]) -> tuple[list[str], bool]:
     for idx, (tag, pstart) in enumerate(part_starts):
         pend = part_starts[idx + 1][1] if idx + 1 < len(part_starts) else len(rest)
         parts[tag] = rest[pstart:pend]
-    is_ledger = lambda l: l.startswith("- [obs ") or l.startswith("- [critic ")
-    ledger = [l for l in rest if is_ledger(l)]
-    keep_a = [l for l in parts.get("(a)", []) if not is_ledger(l)]
-    keep_d = [l for l in parts.get("(d)", []) if not is_ledger(l)]
+    ledger = [l for l in rest if _is_ledger_line(l)]
+    keep_a = [l for l in parts.get("(a)", []) if not _is_ledger_line(l)]
+    keep_d = [l for l in parts.get("(d)", []) if not _is_ledger_line(l)]
     new_rest = keep_a + keep_d + ledger
     return [heading, *new_rest], True
 
@@ -199,8 +208,9 @@ def prune_log(casefile, keep: int = 3) -> int:
     last `keep` blocks verbatim. The case file is re-sent whole on every reset, so an unbounded
     Log makes resets progressively more expensive; this keeps old compactions' facts/artifacts
     without their now-stale failed-attempt/todo narrative. Text before the first block, and
-    blocks already reduced (no (b)/(c) part left), are left untouched. Returns the number of
-    blocks reduced."""
+    blocks already reduced (no (b)/(c) part left), are left untouched. Observation-ledger
+    bullets (`- [obs `, `- [critic `) that follow a reduced block are always retained, exactly
+    once each, in their original order. Returns the number of blocks reduced."""
     text = casefile.read()
     header = SECTIONS["log"]
     lines = text.split("\n")
