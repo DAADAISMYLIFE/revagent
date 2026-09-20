@@ -634,3 +634,15 @@ def test_bench_table_exit_code_with_runbook(capsys):
     from revagent.__main__ import _print_bench_table
     rc = _print_bench_table([("p", "runbook", ".revagent/runbook.md", 3, 0.1)])
     assert rc == 1 and "| p | runbook |" in capsys.readouterr().out
+
+
+def test_playbook_has_evidence_ladder_sections():
+    p = load_system_prompt()
+    assert "11. **Evidence ladder.**" in p
+    assert "**Nested binary" in p
+    assert "two_independent_readings" in p and "program_accepted" in p and "reimplementation_matches" in p
+    assert "handoff_runbook" in p and "[critic]" in p
+    assert "Fix the character set before classifying glyphs" in p
+    assert p.index("## 1. Triage") < p.index("run it once") < p.index("## 2. Locate the check")
+    for n in range(1, 11):
+        assert f"\n{n}. **" in p  # existing rules keep their numbers
