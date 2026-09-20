@@ -937,6 +937,18 @@ def test_submit_flag_same_flag_spam_guard(tmp_path):
     assert out == "[rejected] same flag 3× — change approach"
 
 
+def test_submit_flag_two_methods_accepted_after_spam_guard(tmp_path):
+    from revagent.tools import submit_flag
+    c = ctx_for(tmp_path)
+    for _ in range(3):
+        out = submit_flag.run(c, flag="DH{zzz}", how_verified="one method only", evidence="two_independent_readings")
+        assert out.startswith("[rejected] second independent reading required")
+    out = submit_flag.run(c, flag="DH{zzz}",
+                          how_verified="① read captures after real clicks\n② rebuilt from decoded bytes",
+                          evidence="two_independent_readings")
+    assert out.startswith("[accepted]") and c.flag == "DH{zzz}"
+
+
 def test_count_methods():
     from revagent.tools.submit_flag import count_methods
     assert count_methods("only one sentence here") == 1

@@ -3,6 +3,8 @@ import re
 FLAG_RE = re.compile(r"^[A-Za-z0-9_]+\{.+\}$")  # PREFIX{...}; the prefix comes from the challenge description (Dreamhack: DH)
 EVIDENCE_KINDS = ("program_accepted", "two_independent_readings", "reimplementation_matches")
 SAME_FLAG_LIMIT = 3
+# Format check only (spec §3.4): splits on separators a human would use to list steps, e.g. prose
+# like "step 2)" counts as a separator too — this is not a semantic check of what the methods are.
 _METHOD_SPLIT = re.compile(r"(?:\n|[①②③④⑤]|(?<!\d)\d\)\s)")
 
 SCHEMA = {
@@ -47,10 +49,10 @@ def run(ctx, flag: str, how_verified: str = "", evidence: str = "program_accepte
         return f"[rejected] evidence must be one of {', '.join(EVIDENCE_KINDS)}."
     if not how_verified.strip():
         return "[rejected] how_verified is empty. Verify first (run_binary or re-implemented check), then resubmit."
-    attempts = ctx.flag_attempts.get(flag, 0)
-    if attempts >= SAME_FLAG_LIMIT:
-        return "[rejected] same flag 3× — change approach"
     if evidence == "two_independent_readings" and count_methods(how_verified) < 2:
+        attempts = ctx.flag_attempts.get(flag, 0)
+        if attempts >= SAME_FLAG_LIMIT:
+            return "[rejected] same flag 3× — change approach"
         ctx.flag_attempts[flag] = attempts + 1
         return ("[rejected] second independent reading required: how_verified describes one method. A displayed flag "
                 "is accepted only when two DIFFERENT methods agree (e.g. ① read the captures after real input, "
