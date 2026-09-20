@@ -18,7 +18,8 @@ CRITIC_PROMPT = (
     "3. The single cheapest, most decisive next experiment, written as a concrete tool call "
     "(e.g. run_gui with actions [...], run_binary with stdin ..., bash ...).\n"
     "4. Is there tool evidence that this environment cannot execute the target ('[cannot run here]', "
-    "no window ever appeared, crash on start)? Quote it or say 'none'.\n"
+    "no window ever appeared, crash on start)? Quote it or say 'none'. If there is, say explicitly: "
+    "'the sandbox cannot run this program; handoff_runbook is allowed'.\n"
     "Prefer observation over decompilation. If a byte stream is being displayed, ask what it decodes to.\n\n"
 )
 
@@ -69,7 +70,8 @@ def run_critic(llm, casefile, messages: list[dict], step: int) -> str | None:
             pass
         return None
     memo = (memo or "").strip()
-    memo = "\n".join(memo.splitlines()[:6])
+    nonempty = [l for l in memo.splitlines() if l.strip()]
+    memo = "\n".join(nonempty[:6])
     if not memo:
         return None
     try:

@@ -353,6 +353,16 @@ def test_run_gui_without_wine(tmp_path, monkeypatch):
     assert run_gui.run(ctx_for(tmp_path), path="g.exe").startswith("[cannot run here]")
 
 
+def test_run_gui_cannot_run_here_appends_env_note_immediately(tmp_path, monkeypatch):
+    (tmp_path / "g.exe").write_bytes(b"MZ" + b"\0" * 50)
+    monkeypatch.setattr("revagent.tools.run_gui.shutil.which", lambda n: None)
+    c = ctx_for(tmp_path)
+    out = run_gui.run(c, path="g.exe")
+    assert out.startswith("[cannot run here]")
+    assert c.env_blocked is True
+    assert "[env]" in out and "handoff_runbook is now allowed" in out
+
+
 def test_run_gui_rejects_escape(tmp_path, monkeypatch):
     monkeypatch.setattr("revagent.tools.run_gui.shutil.which", lambda n: "/usr/bin/" + n)
     assert run_gui.run(ctx_for(tmp_path), path="/bin/true").startswith("[tool error] path escapes")
@@ -825,6 +835,19 @@ def test_note_start_failure_sets_env_blocked_on_second(tmp_path):
     assert c.env_blocked is True
 
 
+def test_env_note_empty_when_not_blocked(tmp_path):
+    c = ctx_for(tmp_path)
+    assert c.env_note() == ""
+
+
+def test_env_note_message_when_blocked(tmp_path):
+    c = ctx_for(tmp_path)
+    c.env_blocked = True
+    note = c.env_note()
+    assert note.startswith("\n[env] this environment could not start the program (2 attempts).")
+    assert "handoff_runbook is now allowed" in note
+
+
 def test_run_binary_observes_and_flags_cannot_run(tmp_path, monkeypatch):
     (tmp_path / "w.exe").write_bytes(b"MZ" + b"\0" * 60)
     monkeypatch.setattr("revagent.tools.run_binary.shutil.which", lambda n: None)
@@ -880,6 +903,25 @@ def test_run_binary_loader_failure_marker_twice_sets_env_blocked(tmp_path):
     assert c.env_blocked is True
 
 
+def test_run_binary_second_start_failure_appends_env_note_not_first(tmp_path):
+    (tmp_path / "chal").write_text(
+        "#!/bin/bash\necho 'error while loading shared libraries: libfoo.so.1' 1>&2\nexit 127\n"
+    )
+    c = ctx_for(tmp_path)
+    out1 = run_binary.run(c, path="chal")
+    assert "[env]" not in out1 and "handoff_runbook is now allowed" not in out1
+    out2 = run_binary.run(c, path="chal")
+    assert "[env]" in out2 and "handoff_runbook is now allowed" in out2
+
+
+def test_run_binary_cannot_run_here_appends_env_note_immediately(tmp_path, monkeypatch):
+    (tmp_path / "x.exe").write_bytes(b"MZ" + b"\0" * 100)
+    monkeypatch.setattr("revagent.tools.run_binary.shutil.which", lambda n: None)
+    out = run_binary.run(ctx_for(tmp_path), path="x.exe")
+    assert out.startswith("[cannot run here]")
+    assert "[env]" in out and "handoff_runbook is now allowed" in out
+
+
 def test_run_gui_observes_windows_and_change_counts(tmp_path, monkeypatch):
     calls = []
     c = _gui_fixture(tmp_path, monkeypatch, calls)
@@ -902,10 +944,12 @@ def test_run_gui_no_window_twice_sets_env_blocked(tmp_path, monkeypatch):
         return real_run(cmd, **kw)
 
     monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", no_windows)
-    run_gui.run(c, path="g.exe")
+    out1 = run_gui.run(c, path="g.exe")
     assert c.env_blocked is False
-    run_gui.run(c, path="g.exe")
+    assert "[env]" not in out1 and "handoff_runbook is now allowed" not in out1
+    out2 = run_gui.run(c, path="g.exe")
     assert c.env_blocked is True
+    assert "[env]" in out2 and "handoff_runbook is now allowed" in out2
 
 
 def test_submit_flag_two_readings_requires_two_methods(tmp_path):

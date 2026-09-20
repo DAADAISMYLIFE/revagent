@@ -1,8 +1,8 @@
 from pathlib import Path
 
 from revagent.casefile import CaseFile
-from revagent.critic import (CRITIC_IDLE_STEPS, CRITIC_MAX, CRITIC_MAX_TOKENS, progress_marker, render_recent,
-                             run_critic)
+from revagent.critic import (CRITIC_IDLE_STEPS, CRITIC_MAX, CRITIC_MAX_TOKENS, CRITIC_PROMPT, progress_marker,
+                             render_recent, run_critic)
 
 
 class FakeLLM:
@@ -56,3 +56,26 @@ def test_run_critic_failure_returns_none_and_logs(tmp_path):
     assert "- [critic step 3] (failed: RuntimeError)" in cf.read()
     cf2 = CaseFile(tmp_path / "c2.md", "p", "d")
     assert run_critic(FakeLLM(reply="   "), cf2, [], step=4) is None
+
+
+def test_run_critic_keeps_answer_4_despite_blank_line_separators(tmp_path):
+    # the model separates its four numbered answers with blank lines; the clamp must strip
+    # those before taking the first 6 lines, or answer 4 (the environment question) is lost.
+    cf = CaseFile(tmp_path / "c.md", "p", "d")
+    llm = FakeLLM(reply="1. a\n\n2. b\n\n3. c\n\n4. none")
+    memo = run_critic(llm, cf, [], step=1)
+    assert memo == "1. a\n2. b\n3. c\n4. none"
+    assert "4. none" in memo
+    assert "" not in memo.splitlines()
+
+
+def test_run_critic_clamps_to_first_6_nonempty_lines(tmp_path):
+    cf = CaseFile(tmp_path / "c.md", "p", "d")
+    reply = "\n\n".join(f"line{i}" for i in range(1, 11))  # 10 non-empty lines, blank-line separated
+    llm = FakeLLM(reply=reply)
+    memo = run_critic(llm, cf, [], step=2)
+    assert memo.splitlines() == [f"line{i}" for i in range(1, 7)]
+
+
+def test_critic_prompt_allows_handoff_runbook_on_env_question():
+    assert "handoff_runbook is allowed" in CRITIC_PROMPT

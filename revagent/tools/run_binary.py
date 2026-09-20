@@ -48,7 +48,7 @@ SCHEMA = {
 def run(ctx, path: str, args: list[str] | None = None, stdin: str = "", timeout: int = 10) -> str:
     out = _run(ctx, path, args, stdin, timeout)
     _observe(ctx, path, out)
-    return out
+    return out + ctx.env_note()
 
 
 def _observe(ctx, path: str, out: str) -> None:

@@ -45,3 +45,12 @@ class ToolContext:
         self.start_failures += 1
         if self.start_failures >= START_FAILURES_TO_BLOCK:
             self.env_blocked = True
+
+    def env_note(self) -> str:
+        """Appended to a run tool's returned text once env_blocked is set, so the agent is told
+        directly (not just via the [obs ...] ledger line) that handoff_runbook has opened up."""
+        if not self.env_blocked:
+            return ""
+        return ("\n[env] this environment could not start the program (2 attempts). If static analysis "
+                "cannot finish the job, handoff_runbook is now allowed: put everything you learned (input "
+                "format, what advances the program, character set, length) into its steps.")

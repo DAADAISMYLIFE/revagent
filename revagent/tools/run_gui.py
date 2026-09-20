@@ -233,7 +233,8 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5,
         if shutil.which(tool) is None:
             ctx.env_blocked = True
             ctx.observe(f"run_gui {path}: [cannot run here]")
-            return f"[cannot run here] {tool} is not installed on the host; run with --sandbox (the image has wine + Xvfb + OCR)."
+            return (f"[cannot run here] {tool} is not installed on the host; run with --sandbox (the image has "
+                    f"wine + Xvfb + OCR).") + ctx.env_note()
     problem_dir = ctx.problem_dir.resolve()
     p = (ctx.problem_dir / path).resolve()
     if not p.is_relative_to(problem_dir):
@@ -331,4 +332,5 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5,
             f"If the OCR is wrong, open the PNG(s) with pillow in bash and print dark/bright pixels as an ASCII grid."
             + ("" if action_specs else "\nThis was a passive look. GUI programs change state on input: if the picture is "
                                        "incomplete or waits for the user, call run_gui again with actions "
-                                       "(e.g. [\"click\",\"rclick\",\"key space\",\"type abc\",\"key Return\"]) and read every capture."))
+                                       "(e.g. [\"click\",\"rclick\",\"key space\",\"type abc\",\"key Return\"]) and read every capture.")
+            + ctx.env_note())
