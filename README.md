@@ -91,6 +91,7 @@ Design: [docs/superpowers/specs/2026-09-19-revagent-design.md](docs/superpowers/
 | quiz/ROVM (Dreamhack, XMAS{...}) | real | run1 unsolved (time limit): only 44 steps in 152 min because 32k truncation retries + a concurrent agent halved throughput; VM structure fully recovered (stack-based threaded VM, flag written by the 2nd syscall) — rerun pending |
 | bench/mini/win_console (mingw PE, console) | plumbing test | **solved** in the sandbox (8 steps, 0.9 min; run_binary under wine) |
 | bench/mini/win_gui (mingw PE, GUI) | plumbing test | **solved** in the sandbox (9 steps, 1.2 min; run_gui screenshot + OCR read the flag) |
+| bench/mini/win_gui_key (mingw PE, GUI, one char per keypress) | generalization test | **solved** in the sandbox (14 steps, 2.1 min; no hint: agent saw one char, chose `actions` with clicks/keys by itself) |
 
 ## Tests
 ```bash
