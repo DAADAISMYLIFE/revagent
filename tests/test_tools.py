@@ -18,7 +18,8 @@ def ctx_for(tmp_path, interactive=True):
 def test_registry_has_all_tools():
     schemas, handlers = load_tools()
     names = {s["function"]["name"] for s in schemas}
-    assert names == {"bash", "run_binary", "run_gui", "notes", "decompile", "summarize", "ask_user", "submit_flag"}
+    assert names == {"bash", "run_binary", "run_gui", "notes", "decompile", "summarize", "ask_user", "submit_flag",
+                     "handoff_runbook"}
     assert set(handlers) == names
     for s in schemas:
         assert s["type"] == "function" and "parameters" in s["function"]
@@ -956,3 +957,34 @@ def test_count_methods():
     assert count_methods("1) screen diff read 2) log rebuild") == 2
     assert count_methods("first line\nsecond line") == 2
     assert count_methods("") == 0
+
+
+def test_handoff_runbook_rejected_when_env_can_run(tmp_path):
+    from revagent.tools import handoff_runbook
+    c = ctx_for(tmp_path)
+    out = handoff_runbook.run(c, steps=["run it", "click 16 times"], expected_observation="16 hex glyphs",
+                              flag_rule="DH{<the 16 glyphs>}")
+    assert out.startswith("[rejected] the sandbox can run this program")
+    assert c.runbook_path is None and not (c.work_dir / "runbook.md").exists()
+
+
+def test_handoff_runbook_writes_file_when_env_blocked(tmp_path):
+    from revagent.tools import handoff_runbook
+    c = ctx_for(tmp_path)
+    c.env_blocked = True
+    out = handoff_runbook.run(c, steps=["Run CaptainHook.exe on Windows", "Left-click the window 16 times"],
+                              expected_observation="one 7-segment hex glyph per click",
+                              flag_rule="DH{<glyphs in order, O is 0>}")
+    assert out.startswith("[accepted] runbook written")
+    text = (c.work_dir / "runbook.md").read_text(encoding="utf-8")
+    assert text.splitlines()[0] == "UNVERIFIED — the agent could not execute the program in its environment"
+    assert "1. Run CaptainHook.exe on Windows" in text and "2. Left-click the window 16 times" in text
+    assert "## Expected observation" in text and "## Flag rule" in text
+    assert c.runbook_path == c.work_dir / "runbook.md"
+
+
+def test_handoff_runbook_needs_steps(tmp_path):
+    from revagent.tools import handoff_runbook
+    c = ctx_for(tmp_path)
+    c.env_blocked = True
+    assert handoff_runbook.run(c, steps=[], expected_observation="x", flag_rule="y").startswith("[rejected] steps is empty")

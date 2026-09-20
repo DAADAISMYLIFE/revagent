@@ -200,7 +200,7 @@ class Agent:
                     flag_just_set = False
                     for call in resp.tool_calls:
                         if flag_just_set:
-                            result = "[tool error] skipped: flag submitted"
+                            result = "[tool error] skipped: session ended"
                             self._append({"role": "tool", "tool_call_id": call.id, "content": result})
                             continue
                         self._print(f"[{step}] > {call.name} {call.raw_args[:160]}")
@@ -208,9 +208,12 @@ class Agent:
                         self._append({"role": "tool", "tool_call_id": call.id, "content": result})
                         head = "\n".join(result.splitlines()[:3])
                         self._print(f"[{step}] < {head[:300]}")
-                        if self.ctx.flag:
+                        if self.ctx.flag or self.ctx.runbook_path:
                             flag_just_set = True
                     self._print(f"[{step}] tokens: prompt={resp.prompt_tokens} completion={resp.completion_tokens}")
+                    if self.ctx.runbook_path:
+                        status = "runbook"
+                        break
                     if self.ctx.flag:
                         status = "solved"
                         break
@@ -255,6 +258,7 @@ class Agent:
                 "status": status,
                 "flag": self.ctx.flag,
                 "how_verified": self.ctx.how_verified,
+                "runbook": ".revagent/runbook.md" if self.ctx.runbook_path else None,
                 "reason": reason,
                 "steps": steps,
                 "compactions": compactions,
@@ -272,6 +276,9 @@ class Agent:
     def _report(self, result: dict) -> None:
         if result["status"] == "solved":
             self._print(f"\n\033[1mFLAG: {result['flag']}\033[0m\nverified: {result['how_verified']}")
+        elif result["status"] == "runbook":
+            self._print(f"\n\033[1mRUNBOOK: {result['runbook']}\033[0m (the sandbox could not execute the program)\n")
+            self._print((self.work_dir / "runbook.md").read_text(encoding="utf-8"))
         else:
             self._print(f"\n\033[1mUNSOLVED\033[0m ({result['reason']}). Case file:\n")
             self._print(self.casefile.read())

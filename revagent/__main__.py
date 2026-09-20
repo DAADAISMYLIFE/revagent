@@ -110,7 +110,7 @@ def main(argv=None) -> int:
         llm = LLM(load_secure(Path(args.secure) if args.secure else None))
         r = Agent(d, _read_desc(d, args.desc), llm, max_steps=args.max_steps, max_minutes=args.max_minutes,
                   interactive=not args.no_ask, show_thinking=args.show_thinking).run()
-        return 0 if r["status"] == "solved" else 1
+        return {"solved": 0, "runbook": 3}.get(r["status"], 1)
 
     if sandbox:
         rows = []
@@ -123,7 +123,7 @@ def main(argv=None) -> int:
                     rows.append((d.name, "error", f"container exited {rc}", 0, 0))
                     continue
                 r = _read_result(d)
-                rows.append((d.name, r.get("status", "error"), r.get("flag") or r.get("reason", ""),
+                rows.append((d.name, r.get("status", "error"), r.get("flag") or r.get("runbook") or r.get("reason", ""),
                               r.get("steps", 0), r.get("minutes", 0)))
             except Exception as e:
                 print(f"error: {d}: {e}", file=sys.stderr)
@@ -136,7 +136,7 @@ def main(argv=None) -> int:
         try:
             r = Agent(d, _read_desc(d, None), llm, max_steps=args.max_steps, max_minutes=args.max_minutes,
                       interactive=False, show_thinking=args.show_thinking).run()
-            rows.append((d.name, r["status"], r.get("flag") or r["reason"], r["steps"], r["minutes"]))
+            rows.append((d.name, r["status"], r.get("flag") or r.get("runbook") or r["reason"], r["steps"], r["minutes"]))
         except Exception as e:
             print(f"error: {d}: {e}", file=sys.stderr)
             rows.append((d.name, "error", str(e)[:80], 0, 0))

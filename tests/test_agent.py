@@ -616,3 +616,21 @@ def test_critic_capped_per_run(tmp_path, monkeypatch):
     monkeypatch.setattr("revagent.agent.run_critic", lambda l, cf, msgs, step: memos.append(step) or "m")
     Agent(d, "desc", llm, max_steps=n + 5, interactive=False).run()
     assert len(memos) == CRITIC_MAX
+
+
+def test_runbook_ends_run_with_runbook_status(tmp_path):
+    d = make_problem(tmp_path)
+    script = [[("handoff_runbook", {"steps": ["a"], "expected_observation": "b", "flag_rule": "c"})]]
+    llm = ScriptedLLM(script)
+    a = Agent(d, "desc", llm, max_steps=5, interactive=False)
+    a.ctx.env_blocked = True
+    r = a.run()
+    assert r["status"] == "runbook" and r["runbook"] == ".revagent/runbook.md" and r["flag"] is None
+    assert (d / ".revagent" / "runbook.md").exists()
+    assert json.loads((d / ".revagent" / "result.json").read_text())["status"] == "runbook"
+
+
+def test_bench_table_exit_code_with_runbook(capsys):
+    from revagent.__main__ import _print_bench_table
+    rc = _print_bench_table([("p", "runbook", ".revagent/runbook.md", 3, 0.1)])
+    assert rc == 1 and "| p | runbook |" in capsys.readouterr().out
