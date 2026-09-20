@@ -596,3 +596,48 @@ def test_run_gui_screenshot_numbering_skips_to_next_after_gaps(tmp_path, monkeyp
     out = run_gui.run(c, path="g.exe")
     assert (screens / "004.png").exists()
     assert ".revagent/screens/004.png" in out
+
+
+def test_run_gui_clicks_capture_each(tmp_path, monkeypatch):
+    import subprocess as sp
+    (tmp_path / "g.exe").write_bytes(b"MZ" + b"\0" * 50)
+    monkeypatch.setattr("revagent.tools.run_gui.shutil.which", lambda n: "/usr/bin/" + n)
+    monkeypatch.setattr("revagent.tools.run_gui.time.sleep", lambda s: None)
+    calls = []
+
+    class FakeProc:
+        pid = 7
+        returncode = None
+        def poll(self): return None
+        def communicate(self, timeout=None): return (b"", None)
+
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.Popen", lambda cmd, **kw: FakeProc())
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if cmd[0] == "import":
+            Path(cmd[-1]).write_bytes(b"\x89PNG")
+            return sp.CompletedProcess(cmd, 0, "", "")
+        if cmd[0] == "tesseract":
+            return sp.CompletedProcess(cmd, 0, "digit\n", "")
+        if cmd[0] == "xdotool" and "getwindowgeometry" in cmd:
+            return sp.CompletedProcess(cmd, 0, "Window 123\n  Position: 10,20 (screen: 0)\n  Geometry: 200x250\n", "")
+        if cmd[0] == "xdotool" and cmd[1] == "search":
+            return sp.CompletedProcess(cmd, 0, "CaptainHook\n", "")
+        return sp.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", fake_run)
+    monkeypatch.setattr("revagent.tools.run_gui.os.killpg", lambda pid, sig: None)
+    c = ctx_for(tmp_path)
+    out = run_gui.run(c, path="g.exe", wait_seconds=2, clicks=2)
+    pngs = sorted(p.name for p in (c.work_dir / "screens").glob("*.png"))
+    assert pngs == ["001.png", "002.png", "003.png"]
+    click_cmds = [x for x in calls if x[0] == "xdotool" and "click" in x]
+    assert len(click_cmds) == 2 and click_cmds[0][:4] == ["xdotool", "mousemove", "110", "145"]
+    assert "click 1: .revagent/screens/002.png" in out and "click 2: .revagent/screens/003.png" in out
+    assert "digit" in out
+
+
+def test_run_gui_clicks_clamped_and_optional(tmp_path, monkeypatch):
+    from revagent.tools.run_gui import MAX_CLICKS
+    assert MAX_CLICKS >= 16
