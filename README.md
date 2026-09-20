@@ -65,7 +65,7 @@ runs as root with network access; it is removed when the run ends. Artifacts wri
 `<challenge>/.revagent/` on a native ext4 path (e.g. inside WSL) come out root-owned, since the
 container runs as root. The challenge dir is mounted read-write, so a hostile binary can modify it;
 never use `--sandbox-dev` with untrusted binaries (it mounts this repo). Windows PE: console programs
-run under wine via `run_binary`; GUI programs via `run_gui` (Xvfb + screenshot + OCR, plus an `actions` input script: clicks, keys, typed text, one capture per input). The image is
+run under wine via `run_binary`; GUI programs via `run_gui` (Xvfb + screenshot + OCR, plus an `actions` input script: clicks, keys, typed text, with a capture and a change report (pixel count, bbox, noise-free diff PNG) per input). The image is
 about 8 GB (wine, Xvfb, OCR and mingw included).
 
 On networks with a TLS-inspecting proxy, pass the proxy's CA certificate with `--sandbox-ca /path/to/ca.crt`
