@@ -8,28 +8,34 @@ from pathlib import Path
 
 DISPLAY = os.environ.get("DISPLAY", ":99")
 MAX_WAIT = 60
-MAX_CLICKS = 32
+MAX_ACTIONS = 32
+ACTION_WAIT_MAX = 10
 
 SCHEMA = {
     "type": "function",
     "function": {
         "name": "run_gui",
         "description": (
-            "Run a GUI Windows program under wine on a virtual display, wait, optionally type text into it, "
-            "take a screenshot, and OCR it. Returns window names, two OCR readings (psm 6 block / psm 7 line) "
-            "and the PNG path under .revagent/screens/ so you can also read pixels with pillow via bash. "
-            "With clicks=N the tool left-clicks the window centre N times and captures after every click (one PNG each) — "
-            "use this when the program reveals one character per click. The program is killed after the last capture; "
-            "call again to re-run. Use run_binary for console PEs."
+            "Run a GUI Windows program under wine on a virtual display, wait, take a screenshot and OCR it. "
+            "Returns window names, two OCR readings (psm 6 block / psm 7 line) and the PNG path under "
+            ".revagent/screens/ so you can also read pixels with pillow via bash. "
+            "GUI programs are event-driven: pass `actions` to drive them after the first capture. Each action is "
+            "one string: 'click' (window centre), 'click X Y' (screen pixel = PNG pixel), 'key NAME' (xdotool key, "
+            "e.g. Return, space, a, F1), 'type TEXT', 'wait N'. Every click/key/type is followed by a capture "
+            "(one PNG each, OCR line in the report), so you can see how the picture changes with input. "
+            "The program is killed after the last capture; call again to re-run. Use run_binary for console PEs."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "exe path relative to the challenge dir"},
                 "args": {"type": "array", "items": {"type": "string"}},
-                "wait_seconds": {"type": "integer", "description": "seconds before the capture (default 5, max 60)"},
-                "type_text": {"type": "string", "description": "text typed into the focused window (then Enter) before a second wait and the capture"},
-                "clicks": {"type": "integer", "description": "number of left-clicks on the window centre after the first capture, capturing after each (default 0, max 32)"},
+                "wait_seconds": {"type": "integer", "description": "seconds before the first capture (default 5, max 60)"},
+                "actions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "input script run after the first capture, max 32 entries: 'click' | 'click X Y' | 'key NAME' | 'type TEXT' | 'wait N'",
+                },
             },
             "required": ["path"],
         },
@@ -97,8 +103,47 @@ def _next_screenshot_path(screens: Path) -> Path:
     return screens / f"{next_n:03d}.png"
 
 
-def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5, type_text: str = "",
-        clicks: int = 0) -> str:
+def _parse_action(spec: str) -> tuple[str, list[str]] | None:
+    """'click' | 'click X Y' | 'key NAME' | 'type TEXT' | 'wait N' -> (verb, argv) or None when malformed."""
+    parts = str(spec).strip().split(None, 1)
+    if not parts:
+        return None
+    verb, rest = parts[0].lower(), (parts[1] if len(parts) > 1 else "")
+    if verb == "click":
+        if not rest:
+            return "click", []
+        xy = rest.split()
+        if len(xy) == 2 and all(v.lstrip("-").isdigit() for v in xy):
+            return "click", xy
+        return None
+    if verb == "key" and rest and len(rest.split()) == 1:
+        return "key", [rest]
+    if verb == "type" and rest:
+        return "type", [rest]
+    if verb == "wait" and rest.isdigit():
+        return "wait", [str(min(int(rest), ACTION_WAIT_MAX))]
+    return None
+
+
+def _apply_action(verb: str, argv: list[str], env: dict) -> None:
+    if verb == "click":
+        if argv:
+            x, y = argv
+        else:
+            x, y = (str(v) for v in _window_center(env))
+        _run_quiet(["xdotool", "mousemove", x, y, "click", "1"], env, 10)
+    elif verb == "key":
+        _run_quiet(["xdotool", "search", "--onlyvisible", "--name", ".", "windowfocus", "%@"], env, 10)
+        _run_quiet(["xdotool", "key", "--", argv[0]], env, 10)
+    elif verb == "type":
+        _run_quiet(["xdotool", "search", "--onlyvisible", "--name", ".", "windowfocus", "%@"], env, 10)
+        _run_quiet(["xdotool", "type", "--delay", "20", "--", argv[0]], env, 30)
+    elif verb == "wait":
+        time.sleep(int(argv[0]))
+
+
+def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5,
+        actions: list[str] | None = None) -> str:
     for tool in ("wine", "import", "tesseract", "xdotool", "xdpyinfo"):
         if shutil.which(tool) is None:
             return f"[cannot run here] {tool} is not installed on the host; run with --sandbox (the image has wine + Xvfb + OCR)."
@@ -116,15 +161,10 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5, ty
     cmd = launch_cmd(p, list(args or []))
     proc = subprocess.Popen(cmd, cwd=str(ctx.problem_dir), env=env, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
-    info = {"tail": "", "clicks": ""}
-    n_clicks = 0
+    info = {"tail": "", "actions": ""}
+    action_specs = [str(a) for a in (actions or [])][:MAX_ACTIONS]
     try:
         time.sleep(wait)
-        if type_text:
-            _run_quiet(["xdotool", "search", "--onlyvisible", "--name", ".", "windowfocus", "%@"], env, 10)
-            _run_quiet(["xdotool", "type", "--delay", "20", "--", type_text], env, 30)
-            _run_quiet(["xdotool", "key", "Return"], env, 10)
-            time.sleep(min(wait, 5))
         screens = ctx.work_dir / "screens"
         screens.mkdir(parents=True, exist_ok=True)
         png = _next_screenshot_path(screens)
@@ -140,21 +180,26 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5, ty
             info["screenshot_line"] = "screenshot: failed (timeout)"
             info["ocr6"] = "(timeout)"
             info["ocr7"] = "(timeout)"
-        n_clicks = max(0, min(int(clicks or 0), MAX_CLICKS))
-        click_lines = []
-        if n_clicks:
-            cx, cy = _window_center(env)
-            for i in range(1, n_clicks + 1):
-                _run_quiet(["xdotool", "mousemove", str(cx), str(cy), "click", "1"], env, 10)
-                time.sleep(1)
-                cpng = _next_screenshot_path(screens)
-                cshot = _run_quiet(["import", "-display", DISPLAY, "-window", "root", str(cpng)], env, 30)
-                if cshot is not None and cpng.exists():
-                    ocr = _ocr(cpng, 7, env).replace("\n", " ")[:80]
-                    click_lines.append(f"click {i}: .revagent/screens/{cpng.name}  ocr7: {ocr}")
-                else:
-                    click_lines.append(f"click {i}: capture failed")
-        info["clicks"] = "\n".join(click_lines)
+        action_lines = []
+        for i, spec in enumerate(action_specs, 1):
+            parsed = _parse_action(spec)
+            if parsed is None:
+                action_lines.append(f"{i}. {spec!r}: ignored (expected 'click' | 'click X Y' | 'key NAME' | 'type TEXT' | 'wait N')")
+                continue
+            verb, argv = parsed
+            _apply_action(verb, argv, env)
+            if verb == "wait":
+                action_lines.append(f"{i}. wait {argv[0]}")
+                continue
+            time.sleep(1)
+            apng = _next_screenshot_path(screens)
+            ashot = _run_quiet(["import", "-display", DISPLAY, "-window", "root", str(apng)], env, 30)
+            if ashot is not None and apng.exists():
+                ocr = _ocr(apng, 7, env).replace("\n", " ")[:80]
+                action_lines.append(f"{i}. {spec}: .revagent/screens/{apng.name}  ocr7: {ocr}")
+            else:
+                action_lines.append(f"{i}. {spec}: capture failed")
+        info["actions"] = "\n".join(action_lines)
     finally:
         try:
             os.killpg(proc.pid, signal.SIGKILL)
@@ -174,8 +219,9 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5, ty
     return (f"launched: {' '.join(cmd)}\nprocess: {info['state']}\nwindows: {info['windows']}\n"
             f"{info['screenshot_line']}\n--- OCR psm6 (block) ---\n{info['ocr6']}\n"
             f"--- OCR psm7 (single line) ---\n{info['ocr7']}\n"
-            + (f"--- captures after clicks (centre {n_clicks} clicks) ---\n{info['clicks']}\n" if info.get("clicks") else "")
+            + (f"--- captures after actions ---\n{info['actions']}\n" if info.get("actions") else "")
             + f"--- program output (tail) ---\n{info['tail'] or '(none)'}\n"
             f"If the OCR is wrong, open the PNG(s) with pillow in bash and print dark/bright pixels as an ASCII grid."
-            + ("" if n_clicks else "\nIf the window shows only ONE character (programs often reveal the flag one character "
-                                    "per mouse click or key), call run_gui again with clicks=16 (or type_text) and read every capture."))
+            + ("" if action_specs else "\nThis was a passive look. GUI programs change state on input: if the picture is "
+                                       "incomplete or waits for the user, call run_gui again with actions "
+                                       "(e.g. [\"click\",\"click\",\"key space\",\"type abc\",\"key Return\"]) and read every capture."))

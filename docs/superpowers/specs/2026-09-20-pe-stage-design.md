@@ -68,3 +68,8 @@ run_gui(path=CaptainHook.exe, wait_seconds=6)
 ## 7. 범위 밖
 
 API 후킹(프록시 DLL), Windows Sandbox 경유 실행, 헬퍼 툴(calls/emulate/rasterize)은 3단계.
+
+
+## 수정 이력
+
+- 2026-09-20: `run_gui`의 `type_text`/`clicks` 파라미터를 일반 입력 스크립트 `actions`(`click` | `click X Y` | `key NAME` | `type TEXT` | `wait N`, 최대 32개, 입력마다 캡처)로 교체. 이유: 클릭 횟수 전용 파라미터와 "한 글자만 보이면 clicks=16" 힌트는 captain-hook 한 문제에 맞춘 오버핏이었다. 플레이북 규칙도 "인터랙티브 프로그램은 입력을 넣어 캡처를 비교한다"는 일반 원칙으로 바꿨고, 클릭이 아닌 키 입력으로 진행하는 미니 벤치 `win_gui_key`를 추가해 일반화를 검증한다.

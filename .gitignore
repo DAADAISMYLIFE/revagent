@@ -7,6 +7,7 @@ __pycache__/
 bench/mini/xor_check/xor_check
 bench/mini/win_console/win_console.exe
 bench/mini/win_gui/win_gui.exe
+bench/mini/win_gui_key/win_gui_key.exe
 .superpowers/
 *.crt
 *.key

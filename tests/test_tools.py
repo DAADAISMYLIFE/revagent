@@ -391,7 +391,7 @@ def test_run_gui_happy_path(tmp_path, monkeypatch):
     monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", fake_run)
     monkeypatch.setattr("revagent.tools.run_gui.os.killpg", lambda pid, sig: killed.append(pid))
     c = ctx_for(tmp_path)
-    out = run_gui.run(c, path="g.exe", args=["-x"], wait_seconds=3, type_text="hello")
+    out = run_gui.run(c, path="g.exe", args=["-x"], wait_seconds=3, actions=["type hello", "key Return"])
     popen = [x for x in calls if x[0] == "popen"][0]
     assert popen[1][:2] == ["wine", str((tmp_path / "g.exe").resolve())] and popen[1][2] == "-x" and popen[2] == ":99"
     run_calls = [x[1] for x in calls if x[0] == "run"]
@@ -598,12 +598,11 @@ def test_run_gui_screenshot_numbering_skips_to_next_after_gaps(tmp_path, monkeyp
     assert ".revagent/screens/004.png" in out
 
 
-def test_run_gui_clicks_capture_each(tmp_path, monkeypatch):
+def _gui_fixture(tmp_path, monkeypatch, calls):
     import subprocess as sp
     (tmp_path / "g.exe").write_bytes(b"MZ" + b"\0" * 50)
     monkeypatch.setattr("revagent.tools.run_gui.shutil.which", lambda n: "/usr/bin/" + n)
-    monkeypatch.setattr("revagent.tools.run_gui.time.sleep", lambda s: None)
-    calls = []
+    monkeypatch.setattr("revagent.tools.run_gui.time.sleep", lambda s: calls.append(["sleep", s]))
 
     class FakeProc:
         pid = 7
@@ -628,43 +627,46 @@ def test_run_gui_clicks_capture_each(tmp_path, monkeypatch):
 
     monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", fake_run)
     monkeypatch.setattr("revagent.tools.run_gui.os.killpg", lambda pid, sig: None)
-    c = ctx_for(tmp_path)
-    out = run_gui.run(c, path="g.exe", wait_seconds=2, clicks=2)
+    return ctx_for(tmp_path)
+
+
+def test_run_gui_actions_capture_after_each_input(tmp_path, monkeypatch):
+    calls = []
+    c = _gui_fixture(tmp_path, monkeypatch, calls)
+    out = run_gui.run(c, path="g.exe", wait_seconds=2,
+                      actions=["click", "click 300 40", "key space", "type ab c", "wait 2"])
     pngs = sorted(p.name for p in (c.work_dir / "screens").glob("*.png"))
-    assert pngs == ["001.png", "002.png", "003.png"]
-    click_cmds = [x for x in calls if x[0] == "xdotool" and "click" in x]
-    assert len(click_cmds) == 2 and click_cmds[0][:4] == ["xdotool", "mousemove", "110", "145"]
-    assert "click 1: .revagent/screens/002.png" in out and "click 2: .revagent/screens/003.png" in out
-    assert "digit" in out
+    assert pngs == ["001.png", "002.png", "003.png", "004.png", "005.png"]  # first look + 4 inputs, none for wait
+    xd = [x for x in calls if x[0] == "xdotool"]
+    assert ["xdotool", "mousemove", "110", "145", "click", "1"] in xd      # centre of 10,20 200x250
+    assert ["xdotool", "mousemove", "300", "40", "click", "1"] in xd
+    assert ["xdotool", "key", "--", "space"] in xd
+    assert ["xdotool", "type", "--delay", "20", "--", "ab c"] in xd
+    assert ["sleep", 2] in calls
+    assert "1. click: .revagent/screens/002.png  ocr7: digit" in out
+    assert "4. type ab c: .revagent/screens/005.png" in out and "5. wait 2" in out
+    assert "passive look" not in out
 
 
-def test_run_gui_clicks_clamped_and_optional(tmp_path, monkeypatch):
-    from revagent.tools.run_gui import MAX_CLICKS
-    assert MAX_CLICKS >= 16
+def test_run_gui_actions_malformed_are_reported_not_fatal(tmp_path, monkeypatch):
+    calls = []
+    c = _gui_fixture(tmp_path, monkeypatch, calls)
+    out = run_gui.run(c, path="g.exe", actions=["click x", "dance", "wait 99", "key"])
+    assert "1. 'click x': ignored" in out and "2. 'dance': ignored" in out and "4. 'key': ignored" in out
+    assert ["sleep", 10] in calls          # wait clamped to ACTION_WAIT_MAX
+    assert not [x for x in calls if x[0] == "xdotool" and "click" in x]
 
 
-def test_run_gui_report_hints_clicks_when_none_requested(tmp_path, monkeypatch):
-    import subprocess as sp
-    (tmp_path / "g.exe").write_bytes(b"MZ" + b"\0" * 50)
-    monkeypatch.setattr("revagent.tools.run_gui.shutil.which", lambda n: "/usr/bin/" + n)
-    monkeypatch.setattr("revagent.tools.run_gui.time.sleep", lambda s: None)
+def test_run_gui_actions_capped(tmp_path, monkeypatch):
+    from revagent.tools.run_gui import MAX_ACTIONS
+    calls = []
+    c = _gui_fixture(tmp_path, monkeypatch, calls)
+    run_gui.run(c, path="g.exe", actions=["click"] * (MAX_ACTIONS + 5))
+    assert len([x for x in calls if x[0] == "xdotool" and "click" in x]) == MAX_ACTIONS
 
-    class FakeProc:
-        pid = 7
-        returncode = None
-        def poll(self): return None
-        def communicate(self, timeout=None): return (b"", None)
 
-    monkeypatch.setattr("revagent.tools.run_gui.subprocess.Popen", lambda cmd, **kw: FakeProc())
-
-    def fake_run(cmd, **kw):
-        if cmd[0] == "import":
-            Path(cmd[-1]).write_bytes(b"\x89PNG")
-        return sp.CompletedProcess(cmd, 0, "x\n", "")
-
-    monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", fake_run)
-    monkeypatch.setattr("revagent.tools.run_gui.os.killpg", lambda pid, sig: None)
-    out = run_gui.run(ctx_for(tmp_path), path="g.exe")
-    assert "clicks=16" in out
-    out2 = run_gui.run(ctx_for(tmp_path), path="g.exe", clicks=1)
-    assert "clicks=16" not in out2
+def test_run_gui_passive_look_hints_actions(tmp_path, monkeypatch):
+    calls = []
+    c = _gui_fixture(tmp_path, monkeypatch, calls)
+    out = run_gui.run(c, path="g.exe")
+    assert "passive look" in out and "actions" in out

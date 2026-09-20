@@ -28,6 +28,12 @@ ctx = ToolContext(problem_dir=d, work_dir=w, casefile=CaseFile(w/"case.md","g","
 out = run_gui.run(ctx, path="win_gui.exe", wait_seconds=6)
 print(out[:400]); assert "DH" in out, "run_gui OCR did not find DH"
 print("run_gui ok")
+d = Path("/app/bench/mini/win_gui_key")
+ctx = ToolContext(problem_dir=d, work_dir=w, casefile=CaseFile(w/"case.md","g","d"), llm=None, interactive=False)
+out = run_gui.run(ctx, path="win_gui_key.exe", wait_seconds=6, actions=["key space"] * 16)
+last = [l for l in out.splitlines() if l.startswith("16. key space")]
+print(last); assert last and "DH{" in last[0], "run_gui actions did not reveal the key-driven flag"
+print("run_gui actions ok")
 PY
 '
 docker image inspect revagent-sandbox --format 'image size: {{.Size}} bytes'
