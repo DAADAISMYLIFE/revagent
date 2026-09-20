@@ -83,20 +83,25 @@ case file's Log; these lines are never deleted by compaction, only merged, so th
 trail survives context rebuilds. A critic reviews the transcript before each compaction and again
 after 12 idle steps (no case-file progress), appending its own `- [critic step N] ...` line to the
 same ledger. `submit_flag` requires an `evidence` kind — `program_accepted` (the binary showed the
-success message for this input), `reimplementation_matches` (a faithful re-implementation of the
-check accepts it and intermediate values match), or `two_independent_readings` (the flag is
-displayed and was read by two different methods that agree) — and rejects flags that don't back up
-their claimed kind. When the sandbox provably cannot execute the target (`run_binary`/`run_gui`
+success message for this input), `two_independent_readings` (the flag is displayed and was read by
+two different methods that agree), or `reimplementation_matches` (a faithful re-implementation of
+the check accepts it and intermediate values match) — and rejects flags that don't back up their
+claimed kind. When the sandbox provably cannot execute the target (`run_binary`/`run_gui`
 report `[cannot run here]` or repeated start failures set `ctx.env_blocked`), `handoff_runbook` is
 the last resort: it ends the session with a numbered procedure for a human to run on a real machine.
 
 Design: [docs/superpowers/specs/2026-09-19-revagent-design.md](docs/superpowers/specs/2026-09-19-revagent-design.md).
 
 ### Run statuses
-Each run ends with one of three statuses, written to `result.json` and used as the process exit
-code by `bench`/`--sandbox` batch runs: `solved` (exit 0, flag accepted), `unsolved` (exit 1, step
-or time budget ran out, or an error), `runbook` (exit 3, `handoff_runbook` was accepted because the
-sandbox could not execute the target).
+Each run ends with one of three statuses, written to `result.json`: `solved` (flag accepted),
+`unsolved` (step or time budget ran out, or an error), `runbook` (`handoff_runbook` was accepted
+because the sandbox could not execute the target).
+
+`solve` (including `solve --sandbox`) turns the status into its exit code: 0 for `solved`, 1 for
+`unsolved`, 3 for `runbook`. `bench` does not: it prints a result table and exits 0 only when every
+row is `solved`, 1 otherwise. The bench table has a fourth status of its own, `wrong` — the run
+reported `solved` but the flag does not match the expected one in the suite’s `ANSWERS.md`; it counts as
+a failure for the exit code.
 
 ## Bench
 | challenge | level | result |

@@ -457,7 +457,7 @@ def test_llm_complete_raises_budget_for_one_call_only(monkeypatch):
     from revagent.llm import LLM
     llm = LLM.__new__(LLM)
     llm.max_tokens = 8192
-    llm.tokens_in = llm.tokens_out = 0
+    llm.total_prompt_tokens = llm.total_completion_tokens = llm.last_prompt_tokens = 0
     seen = {}
 
     def fake_create(**kw):

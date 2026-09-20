@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from revagent.casefile import CaseFile
 from revagent.critic import (CRITIC_IDLE_STEPS, CRITIC_MAX, CRITIC_MAX_TOKENS, CRITIC_PROMPT, progress_marker,
                              render_recent, run_critic)
