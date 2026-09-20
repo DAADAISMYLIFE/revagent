@@ -53,7 +53,7 @@ RUN pip install pillow==12.3.0
 ENV DISPLAY=:99 WINEDEBUG=fixme-all WINEPREFIX=/root/.wine
 RUN (Xvfb :99 -screen 0 1280x800x24 -nolisten tcp >/dev/null 2>&1 &) && sleep 2 \
     && wineboot -u && wineserver -w \
-    && (pkill Xvfb || true)
+    && (pkill Xvfb || true) && sleep 1 && rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 
 # Agent code. Editable install so `-v <repo>:/app` overrides code at runtime. openai pinned to the
 # version pip last resolved for this image (I2): reproducible builds, no silent API drift.

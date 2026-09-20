@@ -9,6 +9,7 @@ if [ -f "$CA" ]; then
   export PIP_CERT=/etc/ssl/certs/ca-certificates.crt
 fi
 if ! xdpyinfo -display "${DISPLAY:-:99}" >/dev/null 2>&1; then
+  rm -f "/tmp/.X${DISPLAY#:}-lock" "/tmp/.X11-unix/X${DISPLAY#:}" 2>/dev/null || true   # stale lock from the image build
   Xvfb "${DISPLAY:-:99}" -screen 0 1280x800x24 -nolisten tcp >/dev/null 2>&1 &
   for i in 1 2 3 4 5 6 7 8 9 10; do xdpyinfo -display "${DISPLAY:-:99}" >/dev/null 2>&1 && break; sleep 0.5; done
   xdpyinfo -display "${DISPLAY:-:99}" >/dev/null 2>&1 || echo "warning: Xvfb did not start; run_gui will fail" >&2
