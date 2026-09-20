@@ -176,4 +176,6 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5, ty
             f"--- OCR psm7 (single line) ---\n{info['ocr7']}\n"
             + (f"--- captures after clicks (centre {n_clicks} clicks) ---\n{info['clicks']}\n" if info.get("clicks") else "")
             + f"--- program output (tail) ---\n{info['tail'] or '(none)'}\n"
-            f"If the OCR is wrong, open the PNG(s) with pillow in bash and print dark/bright pixels as an ASCII grid.")
+            f"If the OCR is wrong, open the PNG(s) with pillow in bash and print dark/bright pixels as an ASCII grid."
+            + ("" if n_clicks else "\nIf the window shows only ONE character (programs often reveal the flag one character "
+                                    "per mouse click or key), call run_gui again with clicks=16 (or type_text) and read every capture."))

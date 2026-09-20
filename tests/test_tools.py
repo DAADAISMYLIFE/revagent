@@ -641,3 +641,30 @@ def test_run_gui_clicks_capture_each(tmp_path, monkeypatch):
 def test_run_gui_clicks_clamped_and_optional(tmp_path, monkeypatch):
     from revagent.tools.run_gui import MAX_CLICKS
     assert MAX_CLICKS >= 16
+
+
+def test_run_gui_report_hints_clicks_when_none_requested(tmp_path, monkeypatch):
+    import subprocess as sp
+    (tmp_path / "g.exe").write_bytes(b"MZ" + b"\0" * 50)
+    monkeypatch.setattr("revagent.tools.run_gui.shutil.which", lambda n: "/usr/bin/" + n)
+    monkeypatch.setattr("revagent.tools.run_gui.time.sleep", lambda s: None)
+
+    class FakeProc:
+        pid = 7
+        returncode = None
+        def poll(self): return None
+        def communicate(self, timeout=None): return (b"", None)
+
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.Popen", lambda cmd, **kw: FakeProc())
+
+    def fake_run(cmd, **kw):
+        if cmd[0] == "import":
+            Path(cmd[-1]).write_bytes(b"\x89PNG")
+        return sp.CompletedProcess(cmd, 0, "x\n", "")
+
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", fake_run)
+    monkeypatch.setattr("revagent.tools.run_gui.os.killpg", lambda pid, sig: None)
+    out = run_gui.run(ctx_for(tmp_path), path="g.exe")
+    assert "clicks=16" in out
+    out2 = run_gui.run(ctx_for(tmp_path), path="g.exe", clicks=1)
+    assert "clicks=16" not in out2
