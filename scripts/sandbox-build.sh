@@ -34,6 +34,12 @@ out = run_gui.run(ctx, path="win_gui_key.exe", wait_seconds=6, actions=["key spa
 last = [l for l in out.splitlines() if l.startswith("16. key space")]
 print(last); assert last and "DH{" in last[0], "run_gui actions did not reveal the key-driven flag"
 print("run_gui actions ok")
+d = Path("/app/bench/mini/win_gui_nodll")
+ctx = ToolContext(problem_dir=d, work_dir=w, casefile=CaseFile(w/"case.md","g","d"), llm=None, interactive=False)
+out = run_gui.run(ctx, path="win_gui_nodll.exe", wait_seconds=4)
+out = run_gui.run(ctx, path="win_gui_nodll.exe", wait_seconds=4)
+assert ctx.env_blocked, "two window-less launches should set env_blocked"
+print("env_blocked ok")
 PY
 '
 docker image inspect revagent-sandbox --format 'image size: {{.Size}} bytes'

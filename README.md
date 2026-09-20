@@ -72,12 +72,31 @@ On networks with a TLS-inspecting proxy, pass the proxy's CA certificate with `-
 (or set `REVAGENT_SANDBOX_CA`). It is bind-mounted read-only at run time and never stored in the image.
 
 ## How it works
-Single ReAct loop, eight tools (`bash`, `decompile`, `run_binary`, `run_gui`, `notes`, `summarize`,
-`ask_user`, `submit_flag`). The case file is the agent's external memory: when the prompt passes
-44k tokens the middle of the conversation is summarized into it and the context is rebuilt from
-system prompt + task + case file + last 4 tool exchanges. Thinking stays on (`reasoning_effort=medium`).
+Single ReAct loop, nine tools (`bash`, `decompile`, `run_binary`, `run_gui`, `notes`, `summarize`,
+`ask_user`, `submit_flag`, `handoff_runbook`). The case file is the agent's external memory: when the
+prompt passes 44k tokens the middle of the conversation is summarized into it and the context is
+rebuilt from system prompt + task + case file + last 4 tool exchanges. Thinking stays on
+(`reasoning_effort=medium`).
+
+Every `run_binary`/`run_gui` call appends an observation-ledger line (`- [obs step N] ...`) to the
+case file's Log; these lines are never deleted by compaction, only merged, so the run's evidence
+trail survives context rebuilds. A critic reviews the transcript before each compaction and again
+after 12 idle steps (no case-file progress), appending its own `- [critic step N] ...` line to the
+same ledger. `submit_flag` requires an `evidence` kind — `program_accepted` (the binary showed the
+success message for this input), `reimplementation_matches` (a faithful re-implementation of the
+check accepts it and intermediate values match), or `two_independent_readings` (the flag is
+displayed and was read by two different methods that agree) — and rejects flags that don't back up
+their claimed kind. When the sandbox provably cannot execute the target (`run_binary`/`run_gui`
+report `[cannot run here]` or repeated start failures set `ctx.env_blocked`), `handoff_runbook` is
+the last resort: it ends the session with a numbered procedure for a human to run on a real machine.
 
 Design: [docs/superpowers/specs/2026-09-19-revagent-design.md](docs/superpowers/specs/2026-09-19-revagent-design.md).
+
+### Run statuses
+Each run ends with one of three statuses, written to `result.json` and used as the process exit
+code by `bench`/`--sandbox` batch runs: `solved` (exit 0, flag accepted), `unsolved` (exit 1, step
+or time budget ran out, or an error), `runbook` (exit 3, `handoff_runbook` was accepted because the
+sandbox could not execute the target).
 
 ## Bench
 | challenge | level | result |
@@ -93,6 +112,7 @@ Design: [docs/superpowers/specs/2026-09-19-revagent-design.md](docs/superpowers/
 | bench/mini/win_console (mingw PE, console) | plumbing test | **solved** in the sandbox (8 steps, 0.9 min; run_binary under wine) |
 | bench/mini/win_gui (mingw PE, GUI) | plumbing test | **solved** in the sandbox (9 steps, 1.2 min; run_gui screenshot + OCR read the flag) |
 | bench/mini/win_gui_key (mingw PE, GUI, one char per keypress) | generalization test | **solved** in the sandbox (14 steps, 2.1 min; no hint: agent saw one char, chose `actions` with clicks/keys by itself) |
+| bench/mini/win_gui_nodll (mingw PE, missing DLL import) | runbook-path test | pending |
 
 ## Tests
 ```bash
