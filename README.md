@@ -52,7 +52,7 @@ Run each challenge in a disposable container with the full toolchain (Ghidra, gd
 radare2, qemu-user, libssl1.1). The agent code runs unchanged inside; artifacts land in `<challenge>/.revagent/` on the host.
 
 ```bash
-bash scripts/sandbox-build.sh                                   # once; ~4.3 GB, 10–20 min
+bash scripts/sandbox-build.sh                                   # once; ~8 GB, 10–20 min
 ~/.revagent-venv/bin/revagent solve --sandbox path/to/challenge --no-ask
 ~/.revagent-venv/bin/revagent bench --sandbox chal1 chal2
 ~/.revagent-venv/bin/revagent solve --sandbox-dev path/to/challenge   # mounts this repo at /app: edit code, no rebuild
@@ -63,18 +63,45 @@ Requirements: Docker Desktop with WSL integration enabled for this distro. Crede
 visible to any local docker-group user via `docker inspect` on the running container. The container
 runs as root with network access; it is removed when the run ends. Artifacts written back into
 `<challenge>/.revagent/` on a native ext4 path (e.g. inside WSL) come out root-owned, since the
-container runs as root. The image is about 4.3 GB. Windows PE execution (wine) is the next stage and not included yet.
+container runs as root. The challenge dir is mounted read-write, so a hostile binary can modify it;
+never use `--sandbox-dev` with untrusted binaries (it mounts this repo). Windows PE: console programs
+run under wine via `run_binary`; GUI programs via `run_gui` (Xvfb + screenshot + OCR, plus an `actions` input script: clicks, keys, typed text, with a capture and a change report (pixel count, bbox, noise-free diff PNG) per input). The image is
+about 8 GB (wine, Xvfb, OCR and mingw included).
 
 On networks with a TLS-inspecting proxy, pass the proxy's CA certificate with `--sandbox-ca /path/to/ca.crt`
 (or set `REVAGENT_SANDBOX_CA`). It is bind-mounted read-only at run time and never stored in the image.
 
 ## How it works
-Single ReAct loop, seven tools (`bash`, `decompile`, `run_binary`, `notes`, `summarize`,
-`ask_user`, `submit_flag`). The case file is the agent's external memory: when the prompt passes
-44k tokens the middle of the conversation is summarized into it and the context is rebuilt from
-system prompt + task + case file + last 4 tool exchanges. Thinking stays on (`reasoning_effort=medium`).
+Single ReAct loop, nine tools (`bash`, `decompile`, `run_binary`, `run_gui`, `notes`, `summarize`,
+`ask_user`, `submit_flag`, `handoff_runbook`). The case file is the agent's external memory: when the
+prompt passes 44k tokens the middle of the conversation is summarized into it and the context is
+rebuilt from system prompt + task + case file + last 4 tool exchanges. Thinking stays on
+(`reasoning_effort=medium`).
+
+Every `run_binary`/`run_gui` call appends an observation-ledger line (`- [obs step N] ...`) to the
+case file's Log; these lines are never deleted by compaction, only merged, so the run's evidence
+trail survives context rebuilds. A critic reviews the transcript before each compaction and again
+after 12 idle steps (no case-file progress), appending its own `- [critic step N] ...` line to the
+same ledger. `submit_flag` requires an `evidence` kind — `program_accepted` (the binary showed the
+success message for this input), `two_independent_readings` (the flag is displayed and was read by
+two different methods that agree), or `reimplementation_matches` (a faithful re-implementation of
+the check accepts it and intermediate values match) — and rejects flags that don't back up their
+claimed kind. When the sandbox provably cannot execute the target (`run_binary`/`run_gui`
+report `[cannot run here]` or repeated start failures set `ctx.env_blocked`), `handoff_runbook` is
+the last resort: it ends the session with a numbered procedure for a human to run on a real machine.
 
 Design: [docs/superpowers/specs/2026-09-19-revagent-design.md](docs/superpowers/specs/2026-09-19-revagent-design.md).
+
+### Run statuses
+Each run ends with one of three statuses, written to `result.json`: `solved` (flag accepted),
+`unsolved` (step or time budget ran out, or an error), `runbook` (`handoff_runbook` was accepted
+because the sandbox could not execute the target).
+
+`solve` (including `solve --sandbox`) turns the status into its exit code: 0 for `solved`, 1 for
+`unsolved`, 3 for `runbook`. `bench` does not: it prints a result table and exits 0 only when every
+row is `solved`, 1 otherwise. The bench table has a fourth status of its own, `wrong` — the run
+reported `solved` but the flag does not match the expected one in the suite’s `ANSWERS.md`; it counts as
+a failure for the exit code.
 
 ## Bench
 | challenge | level | result |
@@ -84,8 +111,14 @@ Design: [docs/superpowers/specs/2026-09-19-revagent-design.md](docs/superpowers/
 | quiz/revlogin (Dreamhack) | real | run1 unsolved (step limit, 150 steps); run2 with playbook v2 **solved** (154 steps, 53.4 min, 5 compactions) |
 | quiz/multipoint (Dreamhack) **sandbox** | real | fresh case file, `--sandbox`: **solved** (48 steps, 13.0 min, 0 compactions) |
 | quiz/revlogin (Dreamhack) **sandbox** | real | fresh case file, `--sandbox`: **solved** (57+70 steps across a pod outage, 26.3 min total, 2 compactions; binary runs directly thanks to libssl1.1, no shim detour) |
-| quiz/captain-hook (Dreamhack, Windows PE) | real | unsolved after 4 runs (host ×2, sandbox ×2, ~500 steps total): flag is drawn as 7-segment digits via GdipDrawLineI; static analysis exhausted, needs stage 2 (wine + screenshot/OCR) |
+| quiz/captain-hook (Dreamhack, Windows PE) | real | **unsolved by the agent** after 8 runs (~700 steps; runs 5–8 with the `actions`-capable `run_gui`). Run 8 submitted `DH{4K58900003000000}` (rejected). Reference solution by a Claude subagent: the on-screen hex stream (one char per left click, 18 432 chars) is an embedded UPX-packed PE decrypted from file offset 0x1E1F0 with a Lehmer-PRNG XOR pad; running that inner PE shows `DH{H0000KER}` (confirmed on Dreamhack). Lessons folded into the evidence-ladder spec: fix the glyph alphabet before reading, decode emitted byte streams and identify nested binaries, two independent readings before submit |
+| quiz/damnida (Dreamhack, ELF PIE, custom obfuscator) | real | run1 unsolved: 238 steps, 8 compactions, killed by the host wrapper at 133 min before the 120-min limit fired (a bash tool call can take up to 15 min, so the wrapper must allow max-minutes + 15). Progress kept in the case file: self-modifying RWX region holds a tail-call VM chain (each handler transforms an accumulator, then jumps via vtable[acc>>3]); found the read(0,256) site, the Correct/Wrong dispatch and the XOR/add constants; the inversion is still open |
+| quiz/captain-hook run 9 (evidence-ladder build, fresh case file) | real | **unsolved**: 191 steps, 84 min, 13 compactions; submitted `DH{8152da9f0e3b4c67}` (wrong) with evidence `reimplementation_matches` and no real re-implementation, so the two-readings rule was bypassed by self-classification. What worked: observed the program at step 2, drove it with clicks/keys by step 11, identified the hex alphabet by step 30, critic memos (8, the cap) correctly named the repeated pixel-dump and static loops. What did not: the model wrote one Fact all run (the ledger held 9 `[obs]` lines), kept re-deriving glyph values from decompiled C, and never asked what the 18 432-char stream *was*. Post-merge idea: `reimplementation_matches` should cite a matched intermediate value from a run |
 | quiz/ROVM (Dreamhack, XMAS{...}) | real | run1 unsolved (time limit): only 44 steps in 152 min because 32k truncation retries + a concurrent agent halved throughput; VM structure fully recovered (stack-based threaded VM, flag written by the 2nd syscall) — rerun pending |
+| bench/mini/win_console (mingw PE, console) | plumbing test | **solved** in the sandbox (8 steps, 0.9 min; run_binary under wine) |
+| bench/mini/win_gui (mingw PE, GUI) | plumbing test | **solved** in the sandbox (9 steps, 1.2 min; run_gui screenshot + OCR read the flag) |
+| bench/mini/win_gui_key (mingw PE, GUI, one char per keypress) | generalization test | **solved** in the sandbox (14 steps, 2.1 min; no hint: agent saw one char, chose `actions` with clicks/keys by itself); evidence-ladder build: run 1 **wrong** flag `DH{k3y_driv3n_ui}` (read `1` from pixels, retyped it as `i` — now caught by the bench `ANSWERS.md` check and the assemble-in-code rule), run 2 solved (12 steps, 3.5 min, two readings) |
+| bench/mini/win_gui_32 (mingw PE32, image has wine64 only) | runbook-path test | **solved** by static XOR decode (17 steps, 2.5 min): run_binary answered `[cannot run here]`, the gate opened and the `[env]` note was shown, but the agent recovered the flag statically, which the playbook ranks above a hand-off. The `runbook` terminal status is therefore validated only by the agent-level test and the in-container tool checks, not yet by a live run |
 
 ## Tests
 ```bash

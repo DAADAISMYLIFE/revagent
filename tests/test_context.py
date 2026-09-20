@@ -12,7 +12,7 @@ class FakeLLM:
         self.reply = reply
         self.prompts = []
 
-    def complete(self, prompt, system=None):
+    def complete(self, prompt, system=None, **kw):
         self.prompts.append(prompt)
         return self.reply
 
@@ -123,7 +123,7 @@ def test_shrink_casefile_llm_exception_returns_false(tmp_path):
     before = cf.read()
 
     class BoomLLM:
-        def complete(self, prompt, system=None):
+        def complete(self, prompt, system=None, **kw):
             raise RuntimeError("server down")
 
     assert shrink_casefile(cf, BoomLLM()) is False
@@ -215,6 +215,15 @@ def test_list_work_files_skips_excluded_dirs_and_files(tmp_path):
     assert "case.md.bak" not in paths
     assert "transcript.jsonl" not in paths
     assert "result.json" not in paths
+
+
+def test_list_work_files_skips_screens_subtree(tmp_path):
+    since = time.time_ns()
+    (tmp_path / ".revagent" / "screens").mkdir(parents=True)
+    (tmp_path / ".revagent" / "screens" / "001.png").write_bytes(b"\x89PNG")
+    files = list_work_files(tmp_path, since)
+    paths = [p for p, _ in files]
+    assert not any(p.startswith(".revagent/screens") for p in paths)
 
 
 def test_list_work_files_honours_since_ns(tmp_path):
@@ -421,3 +430,68 @@ def test_list_work_files_skips_non_regular_files(tmp_path):
     paths = [p for p, _ in files]
     assert "real.json" in paths
     assert "a_fifo" not in paths
+
+
+def test_shrink_casefile_uses_big_budget_and_rejects_length_cutoff(tmp_path):
+    from revagent.context import SHRINK_MAX_TOKENS
+    cf = CaseFile(tmp_path / "case.md", "p", "d")
+    cf.add("facts", "x")
+    before = cf.read()
+
+    class RecordingLLM:
+        def __init__(self, finish):
+            self.kw = None
+            self.last_finish_reason = finish
+        def complete(self, prompt, system=None, **kw):
+            self.kw = kw
+            return "# Case: p\n\n## Facts\n- short\n\n## Hypotheses\n\n## Todo\n\n## Log\n- ok\n"
+
+    llm = RecordingLLM("length")
+    assert shrink_casefile(cf, llm) is False and cf.read() == before
+    assert llm.kw["max_tokens"] >= 16384 == SHRINK_MAX_TOKENS and llm.kw["reasoning_effort"] == "low"
+    assert shrink_casefile(cf, RecordingLLM("stop")) is True
+
+
+def test_llm_complete_raises_budget_for_one_call_only(monkeypatch):
+    from types import SimpleNamespace
+    from revagent.llm import LLM
+    llm = LLM.__new__(LLM)
+    llm.max_tokens = 8192
+    llm.total_prompt_tokens = llm.total_completion_tokens = llm.last_prompt_tokens = 0
+    seen = {}
+
+    def fake_create(**kw):
+        seen["max"] = llm.max_tokens
+        seen["effort"] = kw.get("reasoning_effort")
+        msg = SimpleNamespace(content="hi", reasoning=None)
+        return SimpleNamespace(choices=[SimpleNamespace(message=msg, finish_reason="length")], usage=None)
+
+    monkeypatch.setattr(llm, "_create", fake_create)
+    monkeypatch.setattr(llm, "_account", lambda resp: (0, 0))
+    assert llm.complete("p", max_tokens=16384, reasoning_effort="low") == "hi"
+    assert seen == {"max": 16384, "effort": "low"} and llm.max_tokens == 8192
+    assert llm.last_finish_reason == "length"
+
+
+def test_prune_log_keeps_obs_and_critic_bullets(tmp_path):
+    from revagent.context import prune_log
+    cf = CaseFile(tmp_path / "case.md", "p", "d")
+    for n in range(1, 6):
+        cf.add("log", f"### compaction {n}\n## (a) FACTS\n- fact {n}\n## (b) FAILED\n- fail {n}\n"
+                      f"## (c) UNFINISHED\n- todo {n}\n## (d) ARTIFACTS\n- art {n}", bullet=False)
+        cf.add("log", f"[obs step {n}] run_gui x.exe: windows: W")
+        cf.add("log", f"[critic step {n}] try clicking")
+    reduced = prune_log(cf, keep=3)
+    assert reduced == 2
+    text = cf.read()
+    for n in range(1, 6):
+        assert f"- [obs step {n}] run_gui x.exe: windows: W" in text
+        assert f"- [critic step {n}] try clicking" in text
+        assert text.count(f"- [obs step {n}] run_gui x.exe: windows: W") == 1
+        assert text.count(f"- [critic step {n}] try clicking") == 1
+    assert "- fail 1" not in text and "- todo 1" not in text and "- fact 1" in text
+
+
+def test_shrink_prompt_mentions_obs_lines():
+    from revagent.context import SHRINK_PROMPT
+    assert "[obs" in SHRINK_PROMPT and "[critic" in SHRINK_PROMPT

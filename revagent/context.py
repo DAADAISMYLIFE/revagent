@@ -11,6 +11,7 @@ KEEP_RECENT = 4
 PER_MSG_CAP = 1_500
 TOTAL_CAP = 90_000
 SHRINK_INPUT_CAP = 60_000
+SHRINK_MAX_TOKENS = 16384   # a half-length rewrite of a 50 KB case file needs ~8k output tokens plus thinking
 
 RESET_TEXT = ("[CONTEXT RESET] Your context was compacted. The case file below is everything that "
               "survived. Read it, then continue from the Todo section. Keep writing conclusions to notes.")
@@ -30,12 +31,13 @@ SHRINK_PROMPT = (
     "Rewrite this case file to about half its length. Keep EVERY concrete fact (addresses, constants, "
     "algorithms, verified inputs) and every open todo; drop repetition and narrative. Keep the exact "
     "markdown structure: '# Case: ...' then sections '## Facts', '## Hypotheses', '## Todo', '## Log'. "
-    "Output only the rewritten file.\n\n"
+    "Lines starting with '- [obs' or '- [critic' are the observation ledger: never delete them, only merge "
+    "exact duplicates. Output only the rewritten file.\n\n"
 )
 
 
 EXCLUDED_DIR_NAMES = {".git", "__pycache__"}
-EXCLUDED_SUBTREES = {Path(".revagent/out"), Path(".revagent/ghidra")}
+EXCLUDED_SUBTREES = {Path(".revagent/out"), Path(".revagent/ghidra"), Path(".revagent/screens")}
 EXCLUDED_FILE_NAMES = {"case.md", "case.md.bak", "transcript.jsonl", "result.json"}
 
 
@@ -165,10 +167,20 @@ def extract_unfinished(summary: str) -> str:
     return "\n".join(lines[start + 1:end]).strip()
 
 
+def _is_ledger_line(line: str) -> bool:
+    """True for an observation-ledger bullet appended by `casefile.add("log", ...)`:
+    `- [obs step N] ...` or `- [critic step N] ...`."""
+    return line.startswith("- [obs ") or line.startswith("- [critic ")
+
+
 def _reduce_log_block(block: list[str]) -> tuple[list[str], bool]:
     """`block[0]` is the "### compaction N" heading line; `block[1:]` is the (a)/(b)/(c)/(d)
-    summary body. Returns (new_block, changed): changed is False (block returned as-is) if the
-    block has no heading-shaped (b) or (c) part left to drop (already reduced, or never had one)."""
+    summary body, optionally followed by observation-ledger bullets (`- [obs `, `- [critic `)
+    appended after the block by later `casefile.add("log", ...)` calls. Returns (new_block,
+    changed): changed is False (block returned as-is) if the block has no heading-shaped (b) or
+    (c) part left to drop (already reduced, or never had one). When changed is True, ledger
+    bullets are always retained, exactly once each, in their original order, appended after the
+    kept (a)/(d) parts."""
     heading, rest = block[0], block[1:]
     tags = ("(a)", "(b)", "(c)", "(d)")
     part_starts = []
@@ -183,7 +195,10 @@ def _reduce_log_block(block: list[str]) -> tuple[list[str], bool]:
     for idx, (tag, pstart) in enumerate(part_starts):
         pend = part_starts[idx + 1][1] if idx + 1 < len(part_starts) else len(rest)
         parts[tag] = rest[pstart:pend]
-    new_rest = parts.get("(a)", []) + parts.get("(d)", [])
+    ledger = [l for l in rest if _is_ledger_line(l)]
+    keep_a = [l for l in parts.get("(a)", []) if not _is_ledger_line(l)]
+    keep_d = [l for l in parts.get("(d)", []) if not _is_ledger_line(l)]
+    new_rest = keep_a + keep_d + ledger
     return [heading, *new_rest], True
 
 
@@ -193,8 +208,9 @@ def prune_log(casefile, keep: int = 3) -> int:
     last `keep` blocks verbatim. The case file is re-sent whole on every reset, so an unbounded
     Log makes resets progressively more expensive; this keeps old compactions' facts/artifacts
     without their now-stale failed-attempt/todo narrative. Text before the first block, and
-    blocks already reduced (no (b)/(c) part left), are left untouched. Returns the number of
-    blocks reduced."""
+    blocks already reduced (no (b)/(c) part left), are left untouched. Observation-ledger
+    bullets (`- [obs `, `- [critic `) that follow a reduced block are always retained, exactly
+    once each, in their original order. Returns the number of blocks reduced."""
     text = casefile.read()
     header = SECTIONS["log"]
     lines = text.split("\n")
@@ -262,9 +278,11 @@ def shrink_casefile(casefile, llm) -> bool:
     if len(input_text) > SHRINK_INPUT_CAP:
         input_text = input_text[:SHRINK_INPUT_CAP] + "\n[… truncated …]"
     try:
-        new = llm.complete(SHRINK_PROMPT + input_text).strip()
+        new = llm.complete(SHRINK_PROMPT + input_text, max_tokens=SHRINK_MAX_TOKENS, reasoning_effort="low").strip()
     except Exception:
         return False
+    if getattr(llm, "last_finish_reason", None) == "length":
+        return False  # cut off by the token budget: a truncated case file would silently lose facts
     required_headers = ("## Facts", "## Hypotheses", "## Todo", "## Log")
     if not (new.startswith("# Case:") and all(h in new for h in required_headers)):
         return False

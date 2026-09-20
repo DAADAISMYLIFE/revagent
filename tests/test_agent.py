@@ -48,7 +48,7 @@ class ScriptedLLM:
             msg["content"] = ""
         return ChatResponse(msg["content"], "thinking...", tcs, msg, pt, 10, finish_reason)
 
-    def complete(self, prompt, system=None):
+    def complete(self, prompt, system=None, **kw):
         self.completes.append(prompt)
         return "- summary bullet"
 
@@ -130,7 +130,9 @@ def test_compaction_triggers_over_threshold(tmp_path):
     llm = ScriptedLLM(script, prompt_tokens=lambda n: 50_000 if n == 6 else 100)
     r = Agent(d, "desc", llm, max_steps=20, interactive=False).run()
     assert r["compactions"] == 1
-    assert len(llm.completes) == 1  # middle summarized once
+    # one of the two llm.complete calls is the pre-compaction critic; filter to the summarization call
+    summarize_calls = [p for p in llm.completes if "Extract, as terse bullets" in p]
+    assert len(summarize_calls) == 1  # middle summarized once
     seventh = llm.seen[6]
     assert seventh[2]["role"] == "user" and "[CONTEXT RESET]" in seventh[2]["content"]
     assert "- summary bullet" in seventh[2]["content"]
@@ -285,6 +287,33 @@ def test_bench_isolates_errors(tmp_path, monkeypatch, capsys):
     assert rc == 1
     assert "error" in out
     assert "solved" in out
+
+
+def test_bench_host_downgrades_wrong_flag_via_answers_md(tmp_path, monkeypatch, capsys):
+    from revagent import __main__ as main_mod
+
+    suite = tmp_path / "mini"
+    suite.mkdir()
+    (suite / "ANSWERS.md").write_text("| win_gui_key | DH{k3y_dr1v3n_ui} |\n")
+    d1 = suite / "win_gui_key"
+    d1.mkdir()
+
+    class FakeAgent:
+        def __init__(self, d, desc, llm, **kw):
+            pass
+
+        def run(self):
+            return {"status": "solved", "flag": "DH{k3y_driv3n_ui}", "how_verified": "v", "reason": "",
+                    "steps": 5, "compactions": 0, "prompt_tokens": 1, "completion_tokens": 1, "minutes": 2.0}
+
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **kw: object())
+    monkeypatch.setattr(main_mod, "LLM", lambda secure: object())
+    monkeypatch.setattr(main_mod, "Agent", FakeAgent)
+
+    rc = main_mod.main(["bench", str(d1)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "| win_gui_key | wrong | got DH{k3y_driv3n_ui}, expected DH{k3y_dr1v3n_ui} | 5 | 2.0 |" in out
 
 
 def test_truncated_thinking_retries_with_bigger_budget(tmp_path):
@@ -476,6 +505,32 @@ def test_bench_sandbox_runs_each_dir(tmp_path, monkeypatch, capsys):
     assert "| b | unsolved | step limit | 3 | 1.5 |" in out
 
 
+def test_bench_sandbox_downgrades_wrong_flag_via_answers_md(tmp_path, monkeypatch, capsys):
+    import json
+    from revagent import __main__ as main_mod
+    from revagent.llm import Secure
+
+    suite = tmp_path / "mini"
+    suite.mkdir()
+    (suite / "ANSWERS.md").write_text("| win_gui_key | DH{k3y_dr1v3n_ui} |\n")
+    d1 = suite / "win_gui_key"
+    d1.mkdir()
+
+    def fake_run(cmd, env_extra=None):
+        (d1 / ".revagent").mkdir(exist_ok=True)
+        (d1 / ".revagent" / "result.json").write_text(json.dumps(
+            {"status": "solved", "flag": "DH{k3y_driv3n_ui}", "reason": "", "steps": 5, "minutes": 2.0}))
+        return 0
+
+    monkeypatch.setattr(main_mod, "check_docker", lambda: None)
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: Secure("k", "https://h", "m"))
+    monkeypatch.setattr(main_mod, "run_sandbox", fake_run)
+    rc = main_mod.main(["bench", "--sandbox", str(d1)])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "| win_gui_key | wrong | got DH{k3y_driv3n_ui}, expected DH{k3y_dr1v3n_ui} | 5 | 2.0 |" in out
+
+
 def test_bench_sandbox_reports_container_failure_not_stale_result(tmp_path, monkeypatch, capsys):
     import json
     from revagent import __main__ as main_mod
@@ -584,3 +639,99 @@ def test_bench_table_shared_helper(capsys):
 
     rc = main_mod._print_bench_table([("a", "unsolved", "step limit", 3, 1.5)])
     assert rc == 1
+
+
+def test_critic_runs_after_idle_steps_and_before_compaction(tmp_path, monkeypatch):
+    d = make_problem(tmp_path)
+    # 13 identical-shape bash calls that never add Facts/obs, then a compaction, then submit
+    calls = [[("bash", {"cmd": f"echo {i}"})] for i in range(13)]
+    script = calls + [[("bash", {"cmd": "echo after"})], [("submit_flag", {"flag": "DH{x}", "how_verified": "ran it", "evidence": "program_accepted"})]]
+    llm = ScriptedLLM(script, prompt_tokens=lambda n: 50_000 if n == 14 else 100)
+    memos = []
+    monkeypatch.setattr("revagent.agent.run_critic",
+                        lambda l, cf, msgs, step: memos.append(step) or f"memo@{step}")
+    a = Agent(d, "desc", llm, max_steps=40, interactive=False)
+    r = a.run()
+    assert r["status"] == "solved"
+    # idle trigger fired once at step 12 (12 steps without progress), compaction trigger at step 14
+    assert memos == [12, 14]
+    injected = [m for s in llm.seen for m in s if m.get("role") == "user" and m["content"].startswith("[critic] ")]
+    assert injected and injected[0]["content"] == "[critic] memo@12"
+
+
+def test_critic_capped_per_run(tmp_path, monkeypatch):
+    from revagent.critic import CRITIC_MAX
+    d = make_problem(tmp_path)
+    n = 12 * (CRITIC_MAX + 2)
+    script = [[("bash", {"cmd": f"echo {i}"})] for i in range(n)] + [[("submit_flag", {"flag": "DH{x}", "how_verified": "ok", "evidence": "program_accepted"})]]
+    llm = ScriptedLLM(script)
+    memos = []
+    monkeypatch.setattr("revagent.agent.run_critic", lambda l, cf, msgs, step: memos.append(step) or "m")
+    Agent(d, "desc", llm, max_steps=n + 5, interactive=False).run()
+    assert len(memos) == CRITIC_MAX
+
+
+def test_runbook_ends_run_with_runbook_status(tmp_path):
+    d = make_problem(tmp_path)
+    script = [[("handoff_runbook", {"steps": ["a"], "expected_observation": "b", "flag_rule": "c"})]]
+    llm = ScriptedLLM(script)
+    a = Agent(d, "desc", llm, max_steps=5, interactive=False)
+    a.ctx.env_blocked = True
+    r = a.run()
+    assert r["status"] == "runbook" and r["runbook"] == ".revagent/runbook.md" and r["flag"] is None
+    assert (d / ".revagent" / "runbook.md").exists()
+    assert json.loads((d / ".revagent" / "result.json").read_text())["status"] == "runbook"
+
+
+def test_bench_table_exit_code_with_runbook(capsys):
+    from revagent.__main__ import _print_bench_table
+    rc = _print_bench_table([("p", "runbook", ".revagent/runbook.md", 3, 0.1)])
+    assert rc == 1 and "| p | runbook |" in capsys.readouterr().out
+
+
+def test_playbook_has_evidence_ladder_sections():
+    p = load_system_prompt()
+    assert "11. **Evidence ladder.**" in p
+    assert "**Nested binary" in p
+    assert "two_independent_readings" in p and "program_accepted" in p and "reimplementation_matches" in p
+    assert "handoff_runbook" in p and "[critic]" in p
+    assert "Fix the character set before classifying glyphs" in p
+    assert p.index("## 1. Triage") < p.index("run it once") < p.index("## 2. Locate the check")
+    for n in range(1, 11):
+        assert f"\n{n}. **" in p  # existing rules keep their numbers
+
+
+def test_playbook_says_assemble_flag_in_code():
+    p = load_system_prompt()
+    assert "Assemble the final flag IN CODE" in p
+
+
+def test_unreadable_case_file_mid_run_does_not_end_the_run(tmp_path):
+    # I3: the per-step progress_marker read is the only case-file read on the step path. The model
+    # has an unrestricted bash and .revagent is inside its cwd, so `rm -rf .revagent` is reachable;
+    # it used to turn a recoverable mistake into "error: FileNotFoundError" and a lost run.
+    d = make_problem(tmp_path)
+    llm = ScriptedLLM([
+        [("bash", {"cmd": "rm -f .revagent/case.md"})],
+        [("bash", {"cmd": "echo still here"})],
+        [("submit_flag", {"flag": "DH{x}", "how_verified": "v", "evidence": "program_accepted"})],
+    ])
+    agent = Agent(d, "desc", llm, max_steps=10, interactive=False)
+    r = agent.run()
+    assert r["status"] in ("solved", "unsolved")
+    assert not r["reason"].startswith("error:")
+    assert r["steps"] >= 2          # the run continued past the deleted case file
+    events = [json.loads(l) for l in (d / ".revagent" / "transcript.jsonl").read_text().splitlines()]
+    assert any(e.get("event") == "casefile_unreadable" for e in events)
+
+
+def test_report_survives_an_unreadable_runbook(tmp_path, capsys):
+    # M12: _report ran outside the try/finally, so an OSError there crashed solve() after
+    # result.json had already been written.
+    d = make_problem(tmp_path)
+    agent = Agent(d, "desc", ScriptedLLM([]), max_steps=1, interactive=False)
+    agent._report({"status": "runbook", "runbook": ".revagent/runbook.md", "reason": "",
+                   "steps": 1, "compactions": 0, "prompt_tokens": 1, "completion_tokens": 1,
+                   "minutes": 0.1})
+    out = capsys.readouterr().out
+    assert "could not read" in out and "runbook.md" in out

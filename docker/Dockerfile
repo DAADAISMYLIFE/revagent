@@ -44,6 +44,17 @@ RUN GHIDRA_URL=$GHIDRA_URL bash /tmp/scripts/install_ghidra.sh \
 RUN pip install angr==10.0.0 z3-solver==5.1.0.0 unicorn==2.1.2 capstone==5.0.9 pwntools==4.15.0 \
       pefile==2024.8.26 pycryptodome==3.23.0
 
+# ---- Stage 2: Windows PE execution (wine on Xvfb) + OCR + mingw for test PEs ----
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      wine wine64 xvfb xdotool x11-utils imagemagick tesseract-ocr tesseract-ocr-eng \
+      mingw-w64 fonts-dejavu-core procps \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip install pillow==12.3.0
+ENV DISPLAY=:99 WINEDEBUG=fixme-all WINEPREFIX=/root/.wine
+RUN (Xvfb :99 -screen 0 1280x800x24 -nolisten tcp >/dev/null 2>&1 &) && sleep 2 \
+    && wineboot -u && wineserver -w \
+    && (pkill Xvfb || true) && sleep 1 && rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
+
 # Agent code. Editable install so `-v <repo>:/app` overrides code at runtime. openai pinned to the
 # version pip last resolved for this image (I2): reproducible builds, no silent API drift.
 COPY . /app
@@ -55,5 +66,3 @@ RUN chmod +x /usr/local/bin/revagent-entrypoint
 WORKDIR /work
 ENTRYPOINT ["/usr/local/bin/revagent-entrypoint"]
 CMD ["--help"]
-
-# ---- Stage 2 (PE verification) layer goes here: wine64 xvfb tesseract-ocr imagemagick ----

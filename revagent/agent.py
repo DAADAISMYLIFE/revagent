@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .casefile import CaseFile
 from .context import THRESHOLD, compact, format_work_files, list_work_files, shrink_casefile
+from .critic import CRITIC_IDLE_STEPS, CRITIC_MAX, progress_marker, run_critic
 from .llm import ContextOverflow, ToolCall
 from .tools import load_tools
 from .tools.base import ToolContext
@@ -60,6 +61,7 @@ class Agent:
         self.schemas, self.handlers = load_tools()
         self.transcript = open(self.work_dir / "transcript.jsonl", "a", encoding="utf-8")
         self.messages: list[dict] = []
+        self.critic_calls = 0
 
     # ---- bookkeeping -------------------------------------------------------
     def _log(self, obj: dict) -> None:
@@ -96,6 +98,16 @@ class Agent:
                 result = f"[tool error] {type(e).__name__}: {e}"
         return truncate(result, self.ctx.out_dir, self.ctx.next_out_id)
 
+    def _critic(self, step: int, cause: str) -> None:
+        if self.critic_calls >= CRITIC_MAX:
+            return
+        self.critic_calls += 1
+        self._log({"role": "_meta", "event": "critic", "step": step, "cause": cause, "n": self.critic_calls})
+        memo = run_critic(self.llm, self.casefile, self.messages, step)
+        if memo:
+            self._append({"role": "user", "content": "[critic] " + memo})
+            self._print(f"[{step}] -- critic ({cause}) --\n{memo[:600]}")
+
     def _compact(self, cause: str, compactions: int) -> list[dict]:
         self._log({"role": "_meta", "event": "compaction", "n": compactions, "cause": cause})
         files = list_work_files(self.problem_dir, self.run_start_ns)
@@ -121,6 +133,8 @@ class Agent:
         compactions = 0
         over_streak = 0
         status, reason, steps = "unsolved", "", 0
+        last_marker = progress_marker(self.casefile.read())
+        idle = 0
 
         try:
             try:
@@ -128,6 +142,7 @@ class Agent:
                 self._append({"role": "user", "content": self._task_message()})
                 for step in range(1, self.max_steps + 1):
                     steps = step
+                    self.ctx.step = step
                     if time.time() - start > self.max_minutes * 60:
                         reason = "time limit"
                         steps = step - 1
@@ -158,6 +173,7 @@ class Agent:
                         if over_streak == 2:
                             shrunk = shrink_casefile(self.casefile, self.llm)
                             self._log({"role": "_meta", "event": "shrink_casefile", "accepted": shrunk})
+                        self._critic(step, "compaction")
                         compactions += 1
                         self.messages = self._compact("overflow", compactions)
                         recent.clear()
@@ -184,7 +200,7 @@ class Agent:
                     flag_just_set = False
                     for call in resp.tool_calls:
                         if flag_just_set:
-                            result = "[tool error] skipped: flag submitted"
+                            result = "[tool error] skipped: session ended"
                             self._append({"role": "tool", "tool_call_id": call.id, "content": result})
                             continue
                         self._print(f"[{step}] > {call.name} {call.raw_args[:160]}")
@@ -192,9 +208,12 @@ class Agent:
                         self._append({"role": "tool", "tool_call_id": call.id, "content": result})
                         head = "\n".join(result.splitlines()[:3])
                         self._print(f"[{step}] < {head[:300]}")
-                        if self.ctx.flag:
+                        if self.ctx.flag or self.ctx.runbook_path:
                             flag_just_set = True
                     self._print(f"[{step}] tokens: prompt={resp.prompt_tokens} completion={resp.completion_tokens}")
+                    if self.ctx.runbook_path:
+                        status = "runbook"
+                        break
                     if self.ctx.flag:
                         status = "solved"
                         break
@@ -204,6 +223,23 @@ class Agent:
                         self._append({"role": "user", "content": "You have repeated the same tool call 3 times. Read your notes and choose a different approach."})
                         recent.clear()
 
+                    try:
+                        marker = progress_marker(self.casefile.read())
+                    except OSError as e:
+                        # the model has an unrestricted bash and .revagent sits inside its cwd, so
+                        # it can delete its own case file. That is a tool-level mistake to recover
+                        # from, not a reason to lose the run: count the step as "no progress".
+                        marker = last_marker
+                        self._log({"role": "_meta", "event": "casefile_unreadable",
+                                   "step": step, "error": f"{type(e).__name__}: {e}"[:200]})
+                    if marker != last_marker:
+                        last_marker, idle = marker, 0
+                    else:
+                        idle += 1
+                    if idle >= CRITIC_IDLE_STEPS:
+                        self._critic(step, "idle")
+                        idle = 0
+
                     if self.llm.last_prompt_tokens > THRESHOLD:
                         over_streak += 1
                         if over_streak >= 3:
@@ -212,6 +248,7 @@ class Agent:
                         if over_streak == 2:
                             shrunk = shrink_casefile(self.casefile, self.llm)
                             self._log({"role": "_meta", "event": "shrink_casefile", "accepted": shrunk})
+                        self._critic(step, "compaction")
                         compactions += 1
                         self.messages = self._compact("threshold", compactions)
                         recent.clear()
@@ -229,6 +266,7 @@ class Agent:
                 "status": status,
                 "flag": self.ctx.flag,
                 "how_verified": self.ctx.how_verified,
+                "runbook": ".revagent/runbook.md" if self.ctx.runbook_path else None,
                 "reason": reason,
                 "steps": steps,
                 "compactions": compactions,
@@ -246,6 +284,12 @@ class Agent:
     def _report(self, result: dict) -> None:
         if result["status"] == "solved":
             self._print(f"\n\033[1mFLAG: {result['flag']}\033[0m\nverified: {result['how_verified']}")
+        elif result["status"] == "runbook":
+            self._print(f"\n\033[1mRUNBOOK: {result['runbook']}\033[0m (the sandbox could not execute the program)\n")
+            try:
+                self._print((self.work_dir / "runbook.md").read_text(encoding="utf-8"))
+            except OSError as e:  # result.json is already on disk; do not crash solve() over the echo
+                self._print(f"(could not read runbook.md: {type(e).__name__}: {e})")
         else:
             self._print(f"\n\033[1mUNSOLVED\033[0m ({result['reason']}). Case file:\n")
             self._print(self.casefile.read())
