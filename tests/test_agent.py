@@ -48,7 +48,7 @@ class ScriptedLLM:
             msg["content"] = ""
         return ChatResponse(msg["content"], "thinking...", tcs, msg, pt, 10, finish_reason)
 
-    def complete(self, prompt, system=None):
+    def complete(self, prompt, system=None, **kw):
         self.completes.append(prompt)
         return "- summary bullet"
 

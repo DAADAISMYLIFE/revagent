@@ -169,8 +169,18 @@ class LLM:
         finish = getattr(choice, "finish_reason", None) or "stop"
         return ChatResponse(content, reasoning, calls, msg, p, c, finish)
 
-    def complete(self, prompt: str, system: str | None = None) -> str:
+    def complete(self, prompt: str, system: str | None = None, max_tokens: int | None = None,
+                 reasoning_effort: str | None = None) -> str:
+        """One-shot completion. `max_tokens` raises the budget for this call only (thinking tokens count
+        toward it). Sets `self.last_finish_reason` so callers can detect a reply cut off by the budget."""
         msgs = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
-        resp = self._create(messages=msgs)
+        old_max = self.max_tokens
+        if max_tokens:
+            self.max_tokens = max(old_max, int(max_tokens))
+        try:
+            resp = self._create(messages=msgs, reasoning_effort=reasoning_effort)
+        finally:
+            self.max_tokens = old_max
         self._account(resp)
+        self.last_finish_reason = getattr(resp.choices[0], "finish_reason", None)
         return resp.choices[0].message.content or ""

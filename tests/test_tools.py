@@ -243,7 +243,7 @@ class FakeLLM:
     def __init__(self):
         self.prompts = []
 
-    def complete(self, prompt, system=None):
+    def complete(self, prompt, system=None, **kw):
         self.prompts.append(prompt)
         return "SUMMARY"
 

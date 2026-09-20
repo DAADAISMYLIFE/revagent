@@ -11,6 +11,7 @@ KEEP_RECENT = 4
 PER_MSG_CAP = 1_500
 TOTAL_CAP = 90_000
 SHRINK_INPUT_CAP = 60_000
+SHRINK_MAX_TOKENS = 16384   # a half-length rewrite of a 50 KB case file needs ~8k output tokens plus thinking
 
 RESET_TEXT = ("[CONTEXT RESET] Your context was compacted. The case file below is everything that "
               "survived. Read it, then continue from the Todo section. Keep writing conclusions to notes.")
@@ -262,9 +263,11 @@ def shrink_casefile(casefile, llm) -> bool:
     if len(input_text) > SHRINK_INPUT_CAP:
         input_text = input_text[:SHRINK_INPUT_CAP] + "\n[… truncated …]"
     try:
-        new = llm.complete(SHRINK_PROMPT + input_text).strip()
+        new = llm.complete(SHRINK_PROMPT + input_text, max_tokens=SHRINK_MAX_TOKENS, reasoning_effort="low").strip()
     except Exception:
         return False
+    if getattr(llm, "last_finish_reason", None) == "length":
+        return False  # cut off by the token budget: a truncated case file would silently lose facts
     required_headers = ("## Facts", "## Hypotheses", "## Todo", "## Log")
     if not (new.startswith("# Case:") and all(h in new for h in required_headers)):
         return False
