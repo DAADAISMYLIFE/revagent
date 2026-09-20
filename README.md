@@ -89,8 +89,8 @@ Design: [docs/superpowers/specs/2026-09-19-revagent-design.md](docs/superpowers/
 | quiz/revlogin (Dreamhack) **sandbox** | real | fresh case file, `--sandbox`: **solved** (57+70 steps across a pod outage, 26.3 min total, 2 compactions; binary runs directly thanks to libssl1.1, no shim detour) |
 | quiz/captain-hook (Dreamhack, Windows PE) | real | unsolved after 4 runs (host ×2, sandbox ×2, ~500 steps total): flag is drawn as 7-segment digits via GdipDrawLineI; static analysis exhausted, needs stage 2 (wine + screenshot/OCR) |
 | quiz/ROVM (Dreamhack, XMAS{...}) | real | run1 unsolved (time limit): only 44 steps in 152 min because 32k truncation retries + a concurrent agent halved throughput; VM structure fully recovered (stack-based threaded VM, flag written by the 2nd syscall) — rerun pending |
-| bench/mini/win_console (mingw PE, console) | plumbing test | pending |
-| bench/mini/win_gui (mingw PE, GUI) | plumbing test | pending |
+| bench/mini/win_console (mingw PE, console) | plumbing test | **solved** in the sandbox (8 steps, 0.9 min; run_binary under wine) |
+| bench/mini/win_gui (mingw PE, GUI) | plumbing test | **solved** in the sandbox (9 steps, 1.2 min; run_gui screenshot + OCR read the flag) |
 
 ## Tests
 ```bash
