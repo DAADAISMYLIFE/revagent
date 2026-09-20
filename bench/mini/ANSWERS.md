@@ -4,4 +4,4 @@
 | win_console | DH{w1ne_c0ns0le} |
 | win_gui | DH{gui_p41nt_0k} |
 | win_gui_key | DH{k3y_dr1v3n_ui} |
-| win_gui_nodll | (no flag embedded; expected status: runbook) |
+| win_gui_32 | DH{w1n32_runb00k} (PE32; expected status: runbook, or solved by static XOR decode) |

@@ -22,7 +22,7 @@ docker run --rm --entrypoint bash revagent-sandbox -c '
 from pathlib import Path
 from revagent.casefile import CaseFile
 from revagent.tools.base import ToolContext
-from revagent.tools import run_gui
+from revagent.tools import run_gui, run_binary
 d = Path("/app/bench/mini/win_gui"); w = Path("/tmp/wg"); w.mkdir(exist_ok=True)
 ctx = ToolContext(problem_dir=d, work_dir=w, casefile=CaseFile(w/"case.md","g","d"), llm=None, interactive=False)
 out = run_gui.run(ctx, path="win_gui.exe", wait_seconds=6)
@@ -34,11 +34,11 @@ out = run_gui.run(ctx, path="win_gui_key.exe", wait_seconds=6, actions=["key spa
 last = [l for l in out.splitlines() if l.startswith("16. key space")]
 print(last); assert last and "DH{" in last[0], "run_gui actions did not reveal the key-driven flag"
 print("run_gui actions ok")
-d = Path("/app/bench/mini/win_gui_nodll")
+d = Path("/app/bench/mini/win_gui_32")
 ctx = ToolContext(problem_dir=d, work_dir=w, casefile=CaseFile(w/"case.md","g","d"), llm=None, interactive=False)
-out = run_gui.run(ctx, path="win_gui_nodll.exe", wait_seconds=4)
-out = run_gui.run(ctx, path="win_gui_nodll.exe", wait_seconds=4)
-assert ctx.env_blocked, "two window-less launches should set env_blocked"
+out = run_binary.run(ctx, path="win_gui_32.exe")
+assert out.startswith("[cannot run here]"), "PE32 should be refused by run_binary"
+assert ctx.env_blocked, "PE32 run_binary should set env_blocked"
 print("env_blocked ok")
 PY
 '

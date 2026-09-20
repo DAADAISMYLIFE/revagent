@@ -112,7 +112,7 @@ sandbox could not execute the target).
 | bench/mini/win_console (mingw PE, console) | plumbing test | **solved** in the sandbox (8 steps, 0.9 min; run_binary under wine) |
 | bench/mini/win_gui (mingw PE, GUI) | plumbing test | **solved** in the sandbox (9 steps, 1.2 min; run_gui screenshot + OCR read the flag) |
 | bench/mini/win_gui_key (mingw PE, GUI, one char per keypress) | generalization test | **solved** in the sandbox (14 steps, 2.1 min; no hint: agent saw one char, chose `actions` with clicks/keys by itself) |
-| bench/mini/win_gui_nodll (mingw PE, missing DLL import) | runbook-path test | pending |
+| bench/mini/win_gui_32 (mingw PE32, image has wine64 only) | runbook-path test | pending |
 
 ## Tests
 ```bash
