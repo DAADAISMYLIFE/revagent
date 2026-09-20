@@ -9,10 +9,14 @@ x86_64-w64-mingw32-gcc -O1 -s -municode -mwindows -o "$HERE/win_gui_key/win_gui_
 # the linker looked for `__imp_NoSuchExport` and never found it). Build a real stub DLL that exports
 # NoSuchExport instead, link the exe against it, then delete the DLL: the import table still names
 # nosuchdll_zz.dll, but the file is gone, so the loader fails before WinMain runs.
-cat > "$HERE/win_gui_nodll/stub.c" <<'EOF'
+# The stub sources/artifacts live under a scratch dir (not the bench tree) and are removed by a
+# trap on exit, so a failed link (or any other error under `set -e`) can never leave them behind
+# in the host tree.
+STUB_DIR="$(mktemp -d)"
+trap 'rm -rf "$STUB_DIR"' EXIT
+cat > "$STUB_DIR/stub.c" <<'EOF'
 __declspec(dllexport) int __stdcall NoSuchExport(int x) { return x; }
 EOF
-x86_64-w64-mingw32-gcc -shared -o "$HERE/win_gui_nodll/nosuchdll_zz.dll" "$HERE/win_gui_nodll/stub.c" -Wl,--out-implib,"$HERE/win_gui_nodll/libnosuchdll_zz.a"
-x86_64-w64-mingw32-gcc -O1 -s -municode -mwindows -o "$HERE/win_gui_nodll/win_gui_nodll.exe" "$HERE/src/win_gui_nodll.c" -L"$HERE/win_gui_nodll" -lnosuchdll_zz
-rm -f "$HERE/win_gui_nodll/stub.c" "$HERE/win_gui_nodll/nosuchdll_zz.dll" "$HERE/win_gui_nodll/libnosuchdll_zz.a"
+x86_64-w64-mingw32-gcc -shared -o "$STUB_DIR/nosuchdll_zz.dll" "$STUB_DIR/stub.c" -Wl,--out-implib,"$STUB_DIR/libnosuchdll_zz.a"
+x86_64-w64-mingw32-gcc -O1 -s -municode -mwindows -o "$HERE/win_gui_nodll/win_gui_nodll.exe" "$HERE/src/win_gui_nodll.c" -L"$STUB_DIR" -lnosuchdll_zz
 echo "built win_console.exe, win_gui.exe, win_gui_key.exe and win_gui_nodll.exe"
