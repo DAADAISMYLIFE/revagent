@@ -71,23 +71,23 @@ def _ocr(png: Path, psm: int, env: dict) -> str:
 
 def _window_center(env: dict) -> tuple[int, int]:
     """Centre of the first visible window (falls back to (100, 120) when geometry cannot be read)."""
-    r = _run_quiet(["xdotool", "search", "--onlyvisible", "--name", ".", "getwindowgeometry", "%1"], env, 10)
-    x = y = w = h = None
-    for line in ((r.stdout if r else "") or "").splitlines():
-        line = line.strip()
-        if line.startswith("Position:"):
-            try:
-                x, y = (int(v) for v in line.split()[1].split(","))
-            except ValueError:
-                pass
-        elif line.startswith("Geometry:"):
-            try:
-                w, h = (int(v) for v in line.split()[1].split("x"))
-            except ValueError:
-                pass
-    if None in (x, y, w, h):
+    g = _window_geometry(env)
+    if g is None:
         return 100, 120
+    x, y, w, h = g
     return x + w // 2, y + h // 2
+
+
+def _reset_display(env: dict) -> str:
+    """Kill wine processes left on the display by earlier launches (e.g. `wine x.exe &` from bash): their
+    windows would overlap the capture and the report would describe the wrong program. Returns a note."""
+    before = _windows(env)
+    if before == "(none)" or before == "(timeout)":
+        return ""
+    if shutil.which("wineserver"):
+        _run_quiet(["wineserver", "-k"], env, 20)
+        time.sleep(1)
+    return f"killed leftover wine windows before launch: {before}"
 
 
 def _windows(env: dict) -> str:
@@ -96,6 +96,48 @@ def _windows(env: dict) -> str:
         return "(timeout)"
     names = [l for l in (r.stdout or "").splitlines() if l.strip()]
     return ", ".join(names) or "(none)"
+
+
+def _window_geometry(env: dict) -> tuple[int, int, int, int] | None:
+    r = _run_quiet(["xdotool", "search", "--onlyvisible", "--name", ".", "getwindowgeometry", "%1"], env, 10)
+    x = y = w = h = None
+    for line in ((r.stdout if r else "") or "").splitlines():
+        line = line.strip()
+        try:
+            if line.startswith("Position:"):
+                x, y = (int(v) for v in line.split()[1].split(","))
+            elif line.startswith("Geometry:"):
+                w, h = (int(v) for v in line.split()[1].split("x"))
+        except ValueError:
+            pass
+    if None in (x, y, w, h):
+        return None
+    return x, y, w, h
+
+
+def _window_content(png: Path, geom: tuple[int, int, int, int] | None) -> str:
+    """How much is drawn inside the window: pixels that differ from the window's dominant colour.
+    A blank window (uniform colour) is reported explicitly so an empty OCR is not mistaken for a
+    rendering quirk of wine while the program actually drew nothing."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return ""
+    try:
+        im = Image.open(png).convert("L")
+        if geom:
+            x, y, w, h = geom
+            im = im.crop((max(0, x), max(0, y), min(im.width, x + w), min(im.height, y + h)))
+        hist = im.histogram()
+        total = sum(hist)
+        if not total:
+            return ""
+        drawn = total - max(hist)
+        if drawn == 0:
+            return "window content: blank (uniform colour; the program drew nothing visible)"
+        return f"window content: {drawn} px differ from the background ({100 * drawn / total:.1f}%)"
+    except Exception:
+        return ""
 
 
 def _diff_capture(prev: Path, cur: Path) -> str:
@@ -196,6 +238,7 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5,
     if not _display_ok(env):
         return f"[tool error] no display at {DISPLAY}; the sandbox entrypoint should have started Xvfb"
     wait = max(1, min(int(wait_seconds), MAX_WAIT))
+    reset_note = _reset_display(env)
     cmd = launch_cmd(p, list(args or []))
     proc = subprocess.Popen(cmd, cwd=str(ctx.problem_dir), env=env, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
@@ -211,7 +254,8 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5,
         info["state"] = ("still running at capture" if proc.poll() is None
                           else f"exited (code {proc.returncode}) before capture")
         if shot is not None and png.exists():
-            info["screenshot_line"] = f"screenshot: .revagent/screens/{png.name}"
+            content = _window_content(png, _window_geometry(env))
+            info["screenshot_line"] = f"screenshot: .revagent/screens/{png.name}" + (f"\n{content}" if content else "")
             info["ocr6"] = _ocr(png, 6, env)
             info["ocr7"] = _ocr(png, 7, env)
         else:
@@ -261,7 +305,7 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5,
                 pass
         except Exception:
             pass
-    return (f"launched: {' '.join(cmd)}\nprocess: {info['state']}\nwindows: {info['windows']}\n"
+    return ((reset_note + "\n") if reset_note else "") + (f"launched: {' '.join(cmd)}\nprocess: {info['state']}\nwindows: {info['windows']}\n"
             f"{info['screenshot_line']}\n--- OCR psm6 (block) ---\n{info['ocr6']}\n"
             f"--- OCR psm7 (single line) ---\n{info['ocr7']}\n"
             + (f"--- captures after actions ---\n{info['actions']}\n" if info.get("actions") else "")

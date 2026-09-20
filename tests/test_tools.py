@@ -728,3 +728,70 @@ def test_run_gui_actions_report_diff_against_previous_capture(tmp_path, monkeypa
     assert "2. click: .revagent/screens/003.png" in out and "changed: nothing" in out
     d = Image.open(c.work_dir / "screens" / "002.diff.png").convert("L")
     assert d.getpixel((15, 6)) == 0 and d.getpixel((0, 0)) == 255
+
+
+def test_run_gui_kills_leftover_windows_before_launch(tmp_path, monkeypatch):
+    import subprocess as sp
+    calls = []
+    c = _gui_fixture(tmp_path, monkeypatch, calls)
+    real_run = run_gui.subprocess.run
+    state = {"launched": False}
+
+    def run_with_leftovers(cmd, **kw):
+        if cmd[0] == "xdotool" and cmd[1] == "search" and cmd[-2] == "getwindowname" and not state["launched"]:
+            return sp.CompletedProcess(cmd, 0, "Old1\nOld2\n", "")
+        if cmd[0] == "wineserver":
+            calls.append(cmd); state["launched"] = True
+            return sp.CompletedProcess(cmd, 0, "", "")
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", run_with_leftovers)
+    out = run_gui.run(c, path="g.exe")
+    assert ["wineserver", "-k"] in calls
+    assert out.startswith("killed leftover wine windows before launch: Old1, Old2\n")
+    assert "windows: CaptainHook" in out
+
+
+def test_run_gui_no_leftovers_no_kill(tmp_path, monkeypatch):
+    import subprocess as sp
+    calls = []
+    c = _gui_fixture(tmp_path, monkeypatch, calls)
+    real_run = run_gui.subprocess.run
+    seen = {"n": 0}
+
+    def run_first_none(cmd, **kw):
+        if cmd[0] == "xdotool" and cmd[1] == "search" and cmd[-2] == "getwindowname":
+            seen["n"] += 1
+            if seen["n"] == 1:
+                return sp.CompletedProcess(cmd, 0, "", "")
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", run_first_none)
+    out = run_gui.run(c, path="g.exe")
+    assert not [x for x in calls if x[0] == "wineserver"] and "killed leftover" not in out
+
+
+def test_run_gui_reports_blank_and_drawn_window_content(tmp_path, monkeypatch):
+    import subprocess as sp
+    from PIL import Image
+    calls = []
+    c = _gui_fixture(tmp_path, monkeypatch, calls)
+    real_run = run_gui.subprocess.run
+    drawn = {"on": False}
+
+    def shots(cmd, **kw):
+        if cmd[0] == "import":
+            im = Image.new("L", (400, 400), 255)
+            if drawn["on"]:
+                for x in range(50, 70):
+                    im.putpixel((x, 100), 0)
+            im.save(cmd[-1])
+            return sp.CompletedProcess(cmd, 0, "", "")
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", shots)
+    out = run_gui.run(c, path="g.exe")
+    assert "window content: blank (uniform colour; the program drew nothing visible)" in out
+    drawn["on"] = True
+    out2 = run_gui.run(c, path="g.exe")
+    assert "window content: 20 px differ from the background" in out2   # window is 200x250 at 10,20
