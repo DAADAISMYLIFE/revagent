@@ -223,7 +223,15 @@ class Agent:
                         self._append({"role": "user", "content": "You have repeated the same tool call 3 times. Read your notes and choose a different approach."})
                         recent.clear()
 
-                    marker = progress_marker(self.casefile.read())
+                    try:
+                        marker = progress_marker(self.casefile.read())
+                    except OSError as e:
+                        # the model has an unrestricted bash and .revagent sits inside its cwd, so
+                        # it can delete its own case file. That is a tool-level mistake to recover
+                        # from, not a reason to lose the run: count the step as "no progress".
+                        marker = last_marker
+                        self._log({"role": "_meta", "event": "casefile_unreadable",
+                                   "step": step, "error": f"{type(e).__name__}: {e}"[:200]})
                     if marker != last_marker:
                         last_marker, idle = marker, 0
                     else:
@@ -278,7 +286,10 @@ class Agent:
             self._print(f"\n\033[1mFLAG: {result['flag']}\033[0m\nverified: {result['how_verified']}")
         elif result["status"] == "runbook":
             self._print(f"\n\033[1mRUNBOOK: {result['runbook']}\033[0m (the sandbox could not execute the program)\n")
-            self._print((self.work_dir / "runbook.md").read_text(encoding="utf-8"))
+            try:
+                self._print((self.work_dir / "runbook.md").read_text(encoding="utf-8"))
+            except OSError as e:  # result.json is already on disk; do not crash solve() over the echo
+                self._print(f"(could not read runbook.md: {type(e).__name__}: {e})")
         else:
             self._print(f"\n\033[1mUNSOLVED\033[0m ({result['reason']}). Case file:\n")
             self._print(self.casefile.read())

@@ -2,10 +2,12 @@
 answers four fixed questions. It runs before every compaction and after CRITIC_IDLE_STEPS steps without
 new Facts/observations. Its memo is advice injected as a user message, not an instruction the loop enforces."""
 from .casefile import SECTIONS
+from .context import sanitize_summary
 
 CRITIC_IDLE_STEPS = 12
 CRITIC_MAX = 8
 CRITIC_MAX_TOKENS = 4096
+CRITIC_MAX_LINES = 6
 RECENT_ARG_CHARS = 200
 RECENT_RESULT_CHARS = 300
 
@@ -59,9 +61,20 @@ def render_recent(messages: list[dict], n: int = CRITIC_IDLE_STEPS) -> str:
 
 
 def run_critic(llm, casefile, messages: list[dict], step: int) -> str | None:
-    """One critic call. Appends '- [critic step N] memo' to the Log and returns the memo, or None."""
-    prompt = CRITIC_PROMPT + "CASE FILE:\n" + casefile.read() + "\n\nRECENT TOOL CALLS:\n" + render_recent(messages)
+    """One critic call. Writes one '- [critic step N] <line>' ledger bullet per memo line and
+    returns the memo, or None.
+
+    The memo is model text going into the case file, so it gets the same `sanitize_summary` guard
+    as a compaction summary: a line that exactly matches a canonical header ("## Facts" — question
+    1 asks the critic to quote the case file) would otherwise split the Log section. One bullet per
+    line, rather than one bullet with indented continuations, is what makes the memo survive
+    `prune_log`: `_is_ledger_line` then holds for every line of it by construction.
+
+    Reading the case file and rendering the recent calls happen inside the try, so a case file the
+    model deleted degrades to None + a "(failed: ...)" ledger line instead of ending the run."""
     try:
+        prompt = (CRITIC_PROMPT + "CASE FILE:\n" + casefile.read()
+                  + "\n\nRECENT TOOL CALLS:\n" + render_recent(messages))
         memo = llm.complete(prompt, max_tokens=CRITIC_MAX_TOKENS, reasoning_effort="low")
     except Exception as e:
         try:
@@ -71,11 +84,14 @@ def run_critic(llm, casefile, messages: list[dict], step: int) -> str | None:
         return None
     memo = (memo or "").strip()
     nonempty = [l for l in memo.splitlines() if l.strip()]
-    memo = "\n".join(nonempty[:6])
-    if not memo:
+    memo = sanitize_summary("\n".join(nonempty[:CRITIC_MAX_LINES]))
+    if not memo.strip():
         return None
-    try:
-        casefile.add("log", f"[critic step {step}] {memo}")
-    except Exception:
-        pass
+    for line in memo.splitlines():
+        if not line.strip():
+            continue
+        try:
+            casefile.add("log", f"[critic step {step}] {line}")
+        except Exception:
+            pass
     return memo

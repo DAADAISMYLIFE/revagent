@@ -79,3 +79,74 @@ def test_run_critic_clamps_to_first_6_nonempty_lines(tmp_path):
 
 def test_critic_prompt_allows_handoff_runbook_on_env_question():
     assert "handoff_runbook is allowed" in CRITIC_PROMPT
+
+
+def test_run_critic_writes_one_ledger_bullet_per_memo_line(tmp_path):
+    # I2: a multi-line memo written as one bullet leaves continuation lines that _is_ledger_line
+    # does not match, so prune_log detaches answers 2-4 from the memo. One bullet per line makes
+    # the memo prune-safe by construction.
+    cf = CaseFile(tmp_path / "c.md", "p", "d")
+    llm = FakeLLM(reply="1. line one\n2. line two\n3. line three\n4. none")
+    memo = run_critic(llm, cf, [], step=7)
+    assert memo == "1. line one\n2. line two\n3. line three\n4. none"
+    bullets = [l for l in cf.read().splitlines() if l.startswith("- [critic step 7] ")]
+    assert bullets == [
+        "- [critic step 7] 1. line one",
+        "- [critic step 7] 2. line two",
+        "- [critic step 7] 3. line three",
+        "- [critic step 7] 4. none",
+    ]
+    assert not any(l.startswith("  ") and l.strip() for l in cf.read().splitlines())
+
+
+def test_run_critic_memo_is_sanitized_so_a_header_line_is_not_a_boundary(tmp_path):
+    # I2: question 1 asks the critic to quote the case file, so a bare "## Facts" line is reachable.
+    cf = CaseFile(tmp_path / "c.md", "p", "d")
+    cf.add("facts", "before the critic ran")
+    llm = FakeLLM(reply="1. quoting the case file:\n## Facts\n3. rerun it\n4. none")
+    run_critic(llm, cf, [], step=9)
+    text = cf.read()
+    assert len([l for l in text.splitlines() if l.strip() == "## Facts"]) == 1
+    assert "- [critic step 9] ### Facts" in text
+    cf.add("facts", "after the critic ran")
+    lines = cf.read().splitlines()
+    facts = lines.index("## Facts")
+    log = lines.index("## Log")
+    assert facts < lines.index("- after the critic ran") < log
+
+
+def test_prune_log_keeps_every_critic_bullet_once(tmp_path):
+    from revagent.context import prune_log
+    cf = CaseFile(tmp_path / "c.md", "p", "d")
+    for n in range(1, 6):
+        cf.add("log", f"### compaction {n}\n## (a) FACTS\n- fact {n}\n## (b) FAILED\n- fail {n}\n"
+                      f"## (c) UNFINISHED\n- todo {n}\n## (d) ARTIFACTS\n- art {n}", bullet=False)
+        run_critic(FakeLLM(), cf, [], step=n)
+    prune_log(cf, keep=3)
+    text = cf.read()
+    for n in range(1, 6):
+        for answer in ("1. obs contradicts plan", "2. repeated 3x", "3. run_gui with clicks", "4. none"):
+            assert text.count(f"- [critic step {n}] {answer}") == 1
+
+
+def test_run_critic_survives_an_unreadable_case_file(tmp_path):
+    # I3: casefile.read() is on the critic path; an OSError there must degrade to None, not escape.
+    cf = CaseFile(tmp_path / "c.md", "p", "d")
+    real_read, fired = cf.read, []
+
+    def raise_once():
+        if not fired:
+            fired.append(True)
+            raise OSError("gone")
+        return real_read()
+
+    cf.read = raise_once
+    assert run_critic(FakeLLM(), cf, [], step=5) is None
+    assert "- [critic step 5] (failed: OSError)" in real_read()
+
+
+def test_run_critic_ledger_write_failure_is_swallowed(tmp_path):
+    # ... and when even the fallback ledger write fails, run_critic still returns quietly.
+    cf = CaseFile(tmp_path / "c.md", "p", "d")
+    cf.read = lambda: (_ for _ in ()).throw(OSError("gone"))
+    assert run_critic(FakeLLM(), cf, [], step=6) is None

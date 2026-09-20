@@ -704,3 +704,34 @@ def test_playbook_has_evidence_ladder_sections():
 def test_playbook_says_assemble_flag_in_code():
     p = load_system_prompt()
     assert "Assemble the final flag IN CODE" in p
+
+
+def test_unreadable_case_file_mid_run_does_not_end_the_run(tmp_path):
+    # I3: the per-step progress_marker read is the only case-file read on the step path. The model
+    # has an unrestricted bash and .revagent is inside its cwd, so `rm -rf .revagent` is reachable;
+    # it used to turn a recoverable mistake into "error: FileNotFoundError" and a lost run.
+    d = make_problem(tmp_path)
+    llm = ScriptedLLM([
+        [("bash", {"cmd": "rm -f .revagent/case.md"})],
+        [("bash", {"cmd": "echo still here"})],
+        [("submit_flag", {"flag": "DH{x}", "how_verified": "v", "evidence": "program_accepted"})],
+    ])
+    agent = Agent(d, "desc", llm, max_steps=10, interactive=False)
+    r = agent.run()
+    assert r["status"] in ("solved", "unsolved")
+    assert not r["reason"].startswith("error:")
+    assert r["steps"] >= 2          # the run continued past the deleted case file
+    events = [json.loads(l) for l in (d / ".revagent" / "transcript.jsonl").read_text().splitlines()]
+    assert any(e.get("event") == "casefile_unreadable" for e in events)
+
+
+def test_report_survives_an_unreadable_runbook(tmp_path, capsys):
+    # M12: _report ran outside the try/finally, so an OSError there crashed solve() after
+    # result.json had already been written.
+    d = make_problem(tmp_path)
+    agent = Agent(d, "desc", ScriptedLLM([]), max_steps=1, interactive=False)
+    agent._report({"status": "runbook", "runbook": ".revagent/runbook.md", "reason": "",
+                   "steps": 1, "compactions": 0, "prompt_tokens": 1, "completion_tokens": 1,
+                   "minutes": 0.1})
+    out = capsys.readouterr().out
+    assert "could not read" in out and "runbook.md" in out
