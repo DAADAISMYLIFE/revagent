@@ -289,6 +289,33 @@ def test_bench_isolates_errors(tmp_path, monkeypatch, capsys):
     assert "solved" in out
 
 
+def test_bench_host_downgrades_wrong_flag_via_answers_md(tmp_path, monkeypatch, capsys):
+    from revagent import __main__ as main_mod
+
+    suite = tmp_path / "mini"
+    suite.mkdir()
+    (suite / "ANSWERS.md").write_text("| win_gui_key | DH{k3y_dr1v3n_ui} |\n")
+    d1 = suite / "win_gui_key"
+    d1.mkdir()
+
+    class FakeAgent:
+        def __init__(self, d, desc, llm, **kw):
+            pass
+
+        def run(self):
+            return {"status": "solved", "flag": "DH{k3y_driv3n_ui}", "how_verified": "v", "reason": "",
+                    "steps": 5, "compactions": 0, "prompt_tokens": 1, "completion_tokens": 1, "minutes": 2.0}
+
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **kw: object())
+    monkeypatch.setattr(main_mod, "LLM", lambda secure: object())
+    monkeypatch.setattr(main_mod, "Agent", FakeAgent)
+
+    rc = main_mod.main(["bench", str(d1)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "| win_gui_key | wrong | got DH{k3y_driv3n_ui}, expected DH{k3y_dr1v3n_ui} | 5 | 2.0 |" in out
+
+
 def test_truncated_thinking_retries_with_bigger_budget(tmp_path):
     d = make_problem(tmp_path)
     llm = ScriptedLLM([
@@ -478,6 +505,32 @@ def test_bench_sandbox_runs_each_dir(tmp_path, monkeypatch, capsys):
     assert "| b | unsolved | step limit | 3 | 1.5 |" in out
 
 
+def test_bench_sandbox_downgrades_wrong_flag_via_answers_md(tmp_path, monkeypatch, capsys):
+    import json
+    from revagent import __main__ as main_mod
+    from revagent.llm import Secure
+
+    suite = tmp_path / "mini"
+    suite.mkdir()
+    (suite / "ANSWERS.md").write_text("| win_gui_key | DH{k3y_dr1v3n_ui} |\n")
+    d1 = suite / "win_gui_key"
+    d1.mkdir()
+
+    def fake_run(cmd, env_extra=None):
+        (d1 / ".revagent").mkdir(exist_ok=True)
+        (d1 / ".revagent" / "result.json").write_text(json.dumps(
+            {"status": "solved", "flag": "DH{k3y_driv3n_ui}", "reason": "", "steps": 5, "minutes": 2.0}))
+        return 0
+
+    monkeypatch.setattr(main_mod, "check_docker", lambda: None)
+    monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: Secure("k", "https://h", "m"))
+    monkeypatch.setattr(main_mod, "run_sandbox", fake_run)
+    rc = main_mod.main(["bench", "--sandbox", str(d1)])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "| win_gui_key | wrong | got DH{k3y_driv3n_ui}, expected DH{k3y_dr1v3n_ui} | 5 | 2.0 |" in out
+
+
 def test_bench_sandbox_reports_container_failure_not_stale_result(tmp_path, monkeypatch, capsys):
     import json
     from revagent import __main__ as main_mod
@@ -646,3 +699,8 @@ def test_playbook_has_evidence_ladder_sections():
     assert p.index("## 1. Triage") < p.index("run it once") < p.index("## 2. Locate the check")
     for n in range(1, 11):
         assert f"\n{n}. **" in p  # existing rules keep their numbers
+
+
+def test_playbook_says_assemble_flag_in_code():
+    p = load_system_prompt()
+    assert "Assemble the final flag IN CODE" in p

@@ -75,6 +75,29 @@ def _read_result(d: Path) -> dict:
         return {"status": "error", "reason": f"bad result.json: {e}", "flag": None, "steps": 0, "minutes": 0}
 
 
+def check_answer(problem_dir: Path, status: str, flag: str | None) -> tuple[str, str | None]:
+    """Cross-check a bench result against bench/<suite>/ANSWERS.md, a markdown table
+    `| <challenge dir name> | <expected flag> |`. If the row exists and the run was
+    reported `solved` with a flag that does not match, downgrade it to `wrong` and
+    explain why. Anything else (no ANSWERS.md, no matching row, non-solved status,
+    a matching flag) passes through unchanged: (status, None)."""
+    answers = problem_dir.parent / "ANSWERS.md"
+    if not answers.is_file():
+        return status, None
+    expected = None
+    for line in answers.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) >= 2 and cells[0] == problem_dir.name:
+            expected = cells[1]
+            break
+    if expected is None or status != "solved" or flag == expected:
+        return status, None
+    return "wrong", f"got {flag}, expected {expected}"
+
+
 def _print_bench_table(rows) -> int:
     print("\n| challenge | status | flag/reason | steps | min |\n|---|---|---|---|---|")
     for row in rows:
@@ -123,7 +146,8 @@ def main(argv=None) -> int:
                     rows.append((d.name, "error", f"container exited {rc}", 0, 0))
                     continue
                 r = _read_result(d)
-                rows.append((d.name, r.get("status", "error"), r.get("flag") or r.get("runbook") or r.get("reason", ""),
+                status, note = check_answer(d, r.get("status", "error"), r.get("flag"))
+                rows.append((d.name, status, note or (r.get("flag") or r.get("runbook") or r.get("reason", "")),
                               r.get("steps", 0), r.get("minutes", 0)))
             except Exception as e:
                 print(f"error: {d}: {e}", file=sys.stderr)
@@ -136,7 +160,9 @@ def main(argv=None) -> int:
         try:
             r = Agent(d, _read_desc(d, None), llm, max_steps=args.max_steps, max_minutes=args.max_minutes,
                       interactive=False, show_thinking=args.show_thinking).run()
-            rows.append((d.name, r["status"], r.get("flag") or r.get("runbook") or r["reason"], r["steps"], r["minutes"]))
+            status, note = check_answer(d, r["status"], r.get("flag"))
+            rows.append((d.name, status, note or (r.get("flag") or r.get("runbook") or r["reason"]),
+                         r["steps"], r["minutes"]))
         except Exception as e:
             print(f"error: {d}: {e}", file=sys.stderr)
             rows.append((d.name, "error", str(e)[:80], 0, 0))
