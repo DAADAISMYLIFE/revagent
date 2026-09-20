@@ -7,9 +7,10 @@ import subprocess
 from .bash import MAX_TIMEOUT, run_cmd
 
 # Substrings that indicate the OS/loader could not even start the target (as opposed to the
-# target running and exiting non-zero because the guess was wrong). Only these — plus a
-# signal-terminated exit code — count as a start failure; "exit 1, no output" is a normal
-# wrong-answer pattern for check binaries and must not trip env_blocked.
+# target running and exiting non-zero because the guess was wrong). Only these, in a short
+# loader-shaped body — plus a fatal-signal exit status with no output at all — count as a start
+# failure; "exit 1, no output" and "exit 255, prints Wrong" are normal wrong-answer patterns for
+# check binaries and must not trip env_blocked.
 START_FAILURE_MARKERS = (
     "error while loading shared libraries",
     "cannot execute binary file",
@@ -19,6 +20,12 @@ START_FAILURE_MARKERS = (
     "Bad EXE format",
     "not a valid Win32",
 )
+
+# Exit statuses that mean "killed by a fatal signal": bash reports 128+N, run_cmd -N.
+# ILL(4), ABRT(6), BUS(7), FPE(8), SEGV(11).
+FATAL_SIGNAL_STATUSES = {132, 134, 135, 136, 139}
+# A loader failure says its piece and stops; a program printing more than this is running.
+MAX_START_FAILURE_BODY_LINES = 3
 
 SCHEMA = {
     "type": "function",
@@ -69,16 +76,25 @@ def _observe(ctx, path: str, out: str) -> None:
 
 
 def _is_start_failure(code: str, body: str) -> bool:
-    """True only when the process was killed by a signal (negative or >=128 exit code, the two
-    forms run_cmd/bash can report) or the output names a loader/exec failure. A plain nonzero
-    exit with no output is an ordinary wrong-answer result, not a start failure."""
+    """True only when the evidence says the OS/loader never got the program running.
+
+    Both rules are gated on the program's own output, because a program that printed something
+    ran. The numeric rule covers a fatal-signal death only (run_cmd reports it as -N, bash as
+    128+N) and only with no output at all: `exit(255)` / `return -1` from a failed check is one
+    of the commonest shapes in CTF binaries and is an ordinary wrong answer, not a start failure.
+    The marker rule needs a loader-shaped body (at most MAX_START_FAILURE_BODY_LINES non-empty
+    lines), so "No such file or directory" printed by the program among its own output does not
+    count either."""
     try:
         n = int(code)
     except ValueError:
         n = None
-    if n is not None and (n < 0 or n >= 128):
-        return True
-    return any(marker in body for marker in START_FAILURE_MARKERS)
+    lines = [l for l in body.splitlines() if l.strip()]
+    if not lines:
+        return n is not None and (n < 0 or n in FATAL_SIGNAL_STATUSES)
+    if len(lines) <= MAX_START_FAILURE_BODY_LINES:
+        return any(marker in body for marker in START_FAILURE_MARKERS)
+    return False
 
 
 def _run(ctx, path: str, args: list[str] | None = None, stdin: str = "", timeout: int = 10) -> str:

@@ -883,6 +883,46 @@ def test_run_binary_wrong_answer_twice_does_not_set_env_blocked(tmp_path):
     assert c.start_failures == 0
 
 
+def test_run_binary_nonzero_exit_with_output_twice_does_not_set_env_blocked(tmp_path):
+    # I1: `return -1` from a failed check is reported by bash as exit 255. A binary that prints a
+    # wrong-answer message and exits 255 is running fine; it must not open the runbook gate.
+    (tmp_path / "chal").write_text("#!/bin/bash\necho 'Wrong password'\nexit 255\n")
+    c = ctx_for(tmp_path)
+    out1 = run_binary.run(c, path="chal")
+    assert "[exit 255]" in out1 and c.env_blocked is False
+    run_binary.run(c, path="chal")
+    assert c.env_blocked is False and c.start_failures == 0
+
+
+def test_run_binary_start_failure_marker_inside_long_output_is_ignored(tmp_path):
+    # I1: "No such file or directory" printed by the program itself among ten lines of its own
+    # output is program behaviour, not a loader failure.
+    (tmp_path / "chal").write_text(
+        "#!/bin/bash\n"
+        "echo 'banner'\n"
+        "echo 'opening the vault'\n"
+        "echo 'No such file or directory'\n"
+        "for i in 4 5 6 7 8 9 10; do echo \"line $i\"; done\n"
+        "exit 1\n"
+    )
+    c = ctx_for(tmp_path)
+    run_binary.run(c, path="chal")
+    assert c.env_blocked is False
+    run_binary.run(c, path="chal")
+    assert c.env_blocked is False and c.start_failures == 0
+
+
+def test_is_start_failure_rules(tmp_path):
+    from revagent.tools.run_binary import _is_start_failure
+    assert _is_start_failure("-11", "") is True          # run_cmd reports a signal death as -N
+    assert _is_start_failure("139", "") is True          # ... bash as 128+N
+    assert _is_start_failure("134", "") is True
+    assert _is_start_failure("139", "Wrong") is False    # output means the program ran
+    assert _is_start_failure("255", "") is False         # plain nonzero exit is a wrong answer
+    assert _is_start_failure("127", "bash: ./x: No such file or directory") is True
+    assert _is_start_failure("1", "a\nb\nc\nd\nNo such file or directory") is False
+
+
 def test_run_binary_signal_kill_twice_sets_env_blocked(tmp_path):
     (tmp_path / "chal").write_text("#!/bin/bash\nkill -SEGV $$\n")
     c = ctx_for(tmp_path)
