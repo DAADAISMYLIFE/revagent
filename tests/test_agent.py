@@ -592,7 +592,7 @@ def test_critic_runs_after_idle_steps_and_before_compaction(tmp_path, monkeypatc
     d = make_problem(tmp_path)
     # 13 identical-shape bash calls that never add Facts/obs, then a compaction, then submit
     calls = [[("bash", {"cmd": f"echo {i}"})] for i in range(13)]
-    script = calls + [[("bash", {"cmd": "echo after"})], [("submit_flag", {"flag": "DH{x}", "how_verified": "ran it"})]]
+    script = calls + [[("bash", {"cmd": "echo after"})], [("submit_flag", {"flag": "DH{x}", "how_verified": "ran it", "evidence": "program_accepted"})]]
     llm = ScriptedLLM(script, prompt_tokens=lambda n: 50_000 if n == 14 else 100)
     memos = []
     monkeypatch.setattr("revagent.agent.run_critic",
@@ -610,7 +610,7 @@ def test_critic_capped_per_run(tmp_path, monkeypatch):
     from revagent.critic import CRITIC_MAX
     d = make_problem(tmp_path)
     n = 12 * (CRITIC_MAX + 2)
-    script = [[("bash", {"cmd": f"echo {i}"})] for i in range(n)] + [[("submit_flag", {"flag": "DH{x}", "how_verified": "ok"})]]
+    script = [[("bash", {"cmd": f"echo {i}"})] for i in range(n)] + [[("submit_flag", {"flag": "DH{x}", "how_verified": "ok", "evidence": "program_accepted"})]]
     llm = ScriptedLLM(script)
     memos = []
     monkeypatch.setattr("revagent.agent.run_critic", lambda l, cf, msgs, step: memos.append(step) or "m")

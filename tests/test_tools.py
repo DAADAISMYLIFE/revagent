@@ -905,3 +905,42 @@ def test_run_gui_no_window_twice_sets_env_blocked(tmp_path, monkeypatch):
     assert c.env_blocked is False
     run_gui.run(c, path="g.exe")
     assert c.env_blocked is True
+
+
+def test_submit_flag_two_readings_requires_two_methods(tmp_path):
+    from revagent.tools import submit_flag
+    c = ctx_for(tmp_path)
+    out = submit_flag.run(c, flag="DH{abc}", how_verified="read it from the screenshot with pillow",
+                          evidence="two_independent_readings")
+    assert out.startswith("[rejected] second independent reading required") and c.flag is None
+    out = submit_flag.run(c, flag="DH{abc}", evidence="two_independent_readings",
+                          how_verified="① rasterised the click-diff PNGs and read 16 glyphs\n"
+                                       "② gate constants form a 0..15 permutation, so the alphabet is hex; log coordinates rebuilt the same string")
+    assert out.startswith("[accepted]") and c.flag == "DH{abc}"
+
+
+def test_submit_flag_evidence_enum_and_default(tmp_path):
+    from revagent.tools import submit_flag
+    c = ctx_for(tmp_path)
+    assert submit_flag.run(c, flag="DH{a}", how_verified="x", evidence="vibes").startswith("[rejected] evidence must be one of")
+    assert submit_flag.run(c, flag="DH{a}", how_verified="run_binary printed Correct").startswith("[accepted]")
+    assert submit_flag.SCHEMA["function"]["parameters"]["properties"]["evidence"]["enum"] == list(submit_flag.EVIDENCE_KINDS)
+
+
+def test_submit_flag_same_flag_spam_guard(tmp_path):
+    from revagent.tools import submit_flag
+    c = ctx_for(tmp_path)
+    for _ in range(3):
+        out = submit_flag.run(c, flag="DH{zzz}", how_verified="one method only", evidence="two_independent_readings")
+        assert out.startswith("[rejected] second independent reading required")
+    out = submit_flag.run(c, flag="DH{zzz}", how_verified="one method only", evidence="two_independent_readings")
+    assert out == "[rejected] same flag 3× — change approach"
+
+
+def test_count_methods():
+    from revagent.tools.submit_flag import count_methods
+    assert count_methods("only one sentence here") == 1
+    assert count_methods("① a\n② b") == 2
+    assert count_methods("1) screen diff read 2) log rebuild") == 2
+    assert count_methods("first line\nsecond line") == 2
+    assert count_methods("") == 0
