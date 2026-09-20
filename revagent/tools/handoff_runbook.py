@@ -37,11 +37,15 @@ def run(ctx, steps: list[str], expected_observation: str, flag_rule: str) -> str
     steps = [str(s).strip() for s in (steps or []) if str(s).strip()]
     if not steps:
         return "[rejected] steps is empty. Give the human a numbered procedure."
-    body = [RUNBOOK_HEADER, "", f"# Runbook: {ctx.problem_dir.name}", "", "## Steps"]
+    body = [RUNBOOK_HEADER]
+    blocked = list(getattr(ctx, "env_blocked_paths", []) or [])
+    if blocked:  # env_blocked is global for the run; name what actually failed to start
+        body.append("Blocked target(s): " + ", ".join(blocked))
+    body += ["", f"# Runbook: {ctx.problem_dir.name}", "", "## Steps"]
     body += [f"{i}. {s}" for i, s in enumerate(steps, 1)]
     body += ["", "## Expected observation", expected_observation.strip() or "(none given)", "",
              "## Flag rule", flag_rule.strip() or "(none given)", ""]
     path = Path(ctx.work_dir) / "runbook.md"
     path.write_text("\n".join(body), encoding="utf-8")
     ctx.runbook_path = path
-    return f"[accepted] runbook written to .revagent/runbook.md; the session will end now."
+    return "[accepted] runbook written to .revagent/runbook.md; the session will end now."

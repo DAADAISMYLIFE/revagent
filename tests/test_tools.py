@@ -1072,3 +1072,99 @@ def test_handoff_runbook_needs_steps(tmp_path):
     c = ctx_for(tmp_path)
     c.env_blocked = True
     assert handoff_runbook.run(c, steps=[], expected_observation="x", flag_rule="y").startswith("[rejected] steps is empty")
+
+
+def test_run_gui_action_budget_skips_the_rest(tmp_path, monkeypatch):
+    # I6: MAX_ACTIONS=32 with up to ~110s of tool timeouts each can spend the whole run budget
+    # inside one tool call, and agent.py's max_minutes check only runs between steps.
+    calls = []
+    c = _gui_fixture(tmp_path, monkeypatch, calls)
+    ticks = iter([0.0, 1.0] + [10_000.0] * 50)   # deadline set at 0.0, first action inside it
+    monkeypatch.setattr("revagent.tools.run_gui.time.monotonic", lambda: next(ticks))
+    out = run_gui.run(c, path="g.exe", actions=["click", "key space", "key Return", "type abc"])
+    assert "1. click: .revagent/screens/002.png" in out
+    assert "2. key space: skipped (action budget exhausted)" in out
+    assert "3. key Return: skipped (action budget exhausted)" in out
+    assert "4. type abc: skipped (action budget exhausted)" in out
+    assert ["xdotool", "key", "--", "Return"] not in calls
+
+
+def test_run_gui_action_budget_constant():
+    assert run_gui.ACTION_BUDGET_SECONDS == 300
+
+
+def test_reset_display_note_only_claims_a_kill_it_performed(tmp_path, monkeypatch):
+    # M2: the wineserver -k call is conditional, the "killed ..." note was not.
+    import subprocess as sp
+    monkeypatch.setattr("revagent.tools.run_gui.time.sleep", lambda s: None)
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.run",
+                        lambda cmd, **kw: sp.CompletedProcess(cmd, 0, "OldWindow\n", ""))
+    env = {"DISPLAY": ":99"}
+    monkeypatch.setattr("revagent.tools.run_gui.shutil.which", lambda n: "/usr/bin/wineserver")
+    assert run_gui._reset_display(env) == "killed leftover wine windows before launch: OldWindow"
+    monkeypatch.setattr("revagent.tools.run_gui.shutil.which", lambda n: None)
+    assert run_gui._reset_display(env) == "leftover wine windows present (wineserver not found): OldWindow"
+
+
+def test_run_gui_ledger_counts_only_real_pixel_diffs(tmp_path, monkeypatch):
+    # M3: "changed: (size differs)" / "changed: (diff failed: ...)" inflated the changed count.
+    calls = []
+    c = _gui_fixture(tmp_path, monkeypatch, calls)
+    diffs = iter(["changed: 42 px in bbox (1, 2, 3, 4)  diff: .revagent/screens/x.diff.png",
+                  "changed: (size differs)",
+                  "changed: (diff failed: OSError)",
+                  "changed: nothing"])
+    monkeypatch.setattr("revagent.tools.run_gui._diff_capture", lambda a, b: next(diffs))
+    c.step = 2
+    run_gui.run(c, path="g.exe", actions=["click", "click", "click", "click"])
+    line = next(l for l in c.casefile.read().splitlines() if l.startswith("- [obs step 2] run_gui"))
+    assert "inputs: 4 (changed 1, unchanged 1, undelivered 0)" in line
+
+
+def test_run_binary_records_blocked_path(tmp_path, monkeypatch):
+    # I4-lite: env_blocked is global and permanent, so the runbook must at least name what
+    # was blocked. Both the [cannot run here] path and the 2-strike path record it.
+    (tmp_path / "inner.exe").write_bytes(b"MZ" + b"\0" * 60)
+    monkeypatch.setattr("revagent.tools.run_binary.shutil.which", lambda n: None)
+    c = ctx_for(tmp_path)
+    out = run_binary.run(c, path="inner.exe")
+    assert c.env_blocked_paths == ["inner.exe"]
+    assert "could not start the program (2 attempts): inner.exe." in out
+    assert "handoff_runbook is now allowed" in out
+    run_binary.run(c, path="inner.exe")
+    assert c.env_blocked_paths == ["inner.exe"]   # deduped
+
+
+def test_run_binary_two_strike_path_records_blocked_path(tmp_path):
+    (tmp_path / "chal").write_text(
+        "#!/bin/bash\necho 'error while loading shared libraries: libfoo.so.1' 1>&2\nexit 127\n"
+    )
+    c = ctx_for(tmp_path)
+    run_binary.run(c, path="chal")
+    assert c.env_blocked_paths == []
+    run_binary.run(c, path="chal")
+    assert c.env_blocked is True and c.env_blocked_paths == ["chal"]
+
+
+def test_env_blocked_paths_default_empty(tmp_path):
+    assert ctx_for(tmp_path).env_blocked_paths == []
+
+
+def test_handoff_runbook_names_the_blocked_targets(tmp_path):
+    from revagent.tools import handoff_runbook
+    c = ctx_for(tmp_path)
+    c.env_blocked = True
+    c.env_blocked_paths = ["stage2/inner.exe", "outer.exe"]
+    handoff_runbook.run(c, steps=["run it"], expected_observation="a window", flag_rule="read it")
+    text = (c.work_dir / "runbook.md").read_text()
+    assert text.splitlines()[0] == handoff_runbook.RUNBOOK_HEADER
+    assert text.splitlines()[1] == "Blocked target(s): stage2/inner.exe, outer.exe"
+
+
+def test_revagent_secure_is_scrubbed_from_child_environments(tmp_path, monkeypatch):
+    # M11: QWEN/URL/MODEL were scrubbed but not the variable naming the file they live in.
+    monkeypatch.setenv("REVAGENT_SECURE", "/home/u/.secure")
+    monkeypatch.setenv("QWEN", "sk_x")
+    out = bash.run(ctx_for(tmp_path), cmd="echo [$REVAGENT_SECURE][$QWEN]")
+    assert "[][]" in out
+    assert "REVAGENT_SECURE" in run_gui.SCRUB_ENV and "REVAGENT_SECURE" in bash.SCRUB_ENV

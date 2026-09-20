@@ -1,15 +1,23 @@
 """Run a GUI Windows PE under wine on the sandbox's Xvfb display, then screenshot + OCR it."""
 import os
+import re
 import shutil
 import signal
 import subprocess
 import time
 from pathlib import Path
 
+from .bash import SCRUB_ENV
+
 DISPLAY = os.environ.get("DISPLAY", ":99")
 MAX_WAIT = 60
 MAX_ACTIONS = 32
 ACTION_WAIT_MAX = 10
+# Wall-clock cap on the action loop. Each action can spend ~110s in tool timeouts (xdotool +
+# wait + import + tesseract), and agent.py's max_minutes check only runs between steps, so
+# without this one wedged call could eat the whole run budget.
+ACTION_BUDGET_SECONDS = 300
+PIXEL_CHANGE_RE = re.compile(r"changed: \d+ px")
 
 SCHEMA = {
     "type": "function",
@@ -87,7 +95,8 @@ def _reset_display(env: dict) -> str:
     if shutil.which("wineserver"):
         _run_quiet(["wineserver", "-k"], env, 20)
         time.sleep(1)
-    return f"killed leftover wine windows before launch: {before}"
+        return f"killed leftover wine windows before launch: {before}"
+    return f"leftover wine windows present (wineserver not found): {before}"
 
 
 def _windows(env: dict) -> str:
@@ -231,7 +240,7 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5,
         actions: list[str] | None = None) -> str:
     for tool in ("wine", "import", "tesseract", "xdotool", "xdpyinfo"):
         if shutil.which(tool) is None:
-            ctx.env_blocked = True
+            ctx.block_env(path)
             ctx.observe(f"run_gui {path}: [cannot run here]")
             return (f"[cannot run here] {tool} is not installed on the host; run with --sandbox (the image has "
                     f"wine + Xvfb + OCR).") + ctx.env_note()
@@ -241,7 +250,7 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5,
         return f"[tool error] path escapes the challenge directory: {path}"
     if not p.is_file():
         return f"[tool error] no such file: {path}"
-    scrubbed = {k: v for k, v in os.environ.items() if k not in ("QWEN", "URL", "MODEL")}
+    scrubbed = {k: v for k, v in os.environ.items() if k not in SCRUB_ENV}
     env = {**scrubbed, "DISPLAY": DISPLAY, "WINEDEBUG": "-all"}
     if not _display_ok(env):
         return f"[tool error] no display at {DISPLAY}; the sandbox entrypoint should have started Xvfb"
@@ -273,7 +282,11 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5,
             info["ocr7"] = "(timeout)"
         action_lines = []
         prev_png = png if (shot is not None and png.exists()) else None
+        deadline = time.monotonic() + ACTION_BUDGET_SECONDS
         for i, spec in enumerate(action_specs, 1):
+            if time.monotonic() > deadline:
+                action_lines.append(f"{i}. {spec}: skipped (action budget exhausted)")
+                continue
             parsed = _parse_action(spec)
             if parsed is None:
                 action_lines.append(f"{i}. {spec!r}: ignored (expected 'click'|'rclick'|'dclick' [X Y] | 'key NAME' | 'type TEXT' | 'wait N')")
@@ -315,7 +328,7 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5,
         except Exception:
             pass
     n_inputs = sum(1 for s in action_specs if (_parse_action(s) or ("wait", []))[0] != "wait")
-    n_changed = sum(1 for l in info["actions"].splitlines() if "changed:" in l and "changed: nothing" not in l)
+    n_changed = sum(1 for l in info["actions"].splitlines() if PIXEL_CHANGE_RE.search(l))
     n_unchanged = sum(1 for l in info["actions"].splitlines() if "changed: nothing" in l)
     n_undelivered = info["actions"].count("NOT DELIVERED")
     last_png = _last_capture_name(screens)
@@ -323,7 +336,7 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5,
                 f"{info.get('state', '?')}; inputs: {n_inputs} (changed {n_changed}, unchanged {n_unchanged}, "
                 f"undelivered {n_undelivered}); captures: {first_png_name}-{last_png}")
     if info.get("windows") in ("(none)", "(timeout)"):
-        ctx.note_start_failure()
+        ctx.note_start_failure(path)
     return ((reset_note + "\n") if reset_note else "") + (f"launched: {' '.join(cmd)}\nprocess: {info['state']}\nwindows: {info['windows']}\n"
             f"{info['screenshot_line']}\n--- OCR psm6 (block) ---\n{info['ocr6']}\n"
             f"--- OCR psm7 (single line) ---\n{info['ocr7']}\n"

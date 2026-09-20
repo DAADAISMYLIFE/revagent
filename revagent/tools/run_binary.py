@@ -60,7 +60,7 @@ def run(ctx, path: str, args: list[str] | None = None, stdin: str = "", timeout:
 
 def _observe(ctx, path: str, out: str) -> None:
     if out.startswith("[cannot run here]"):
-        ctx.env_blocked = True
+        ctx.block_env(path)
         ctx.observe(f"run_binary {path}: [cannot run here]")
         return
     if out.startswith("[tool error]"):
@@ -71,7 +71,7 @@ def _observe(ctx, path: str, out: str) -> None:
     body = "\n".join(out.splitlines()[1:]).strip()
     stdout_first = body.splitlines()[0][:80] if body else ""
     if _is_start_failure(code, body):
-        ctx.note_start_failure()
+        ctx.note_start_failure(path)
     ctx.observe(f"run_binary {path}: exit {code}, stdout {stdout_first!r}")
 
 
