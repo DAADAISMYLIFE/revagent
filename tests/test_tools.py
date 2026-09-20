@@ -643,6 +643,7 @@ def test_run_gui_actions_capture_after_each_input(tmp_path, monkeypatch):
     assert ["xdotool", "key", "--", "space"] in xd
     assert ["xdotool", "type", "--delay", "20", "--", "ab c"] in xd
     assert ["sleep", 2] in calls
+    assert "NOT DELIVERED" not in out
     assert "1. click: .revagent/screens/002.png  ocr7: digit" in out
     assert "4. type ab c: .revagent/screens/005.png" in out and "5. wait 2" in out
     assert "passive look" not in out
@@ -670,3 +671,32 @@ def test_run_gui_passive_look_hints_actions(tmp_path, monkeypatch):
     c = _gui_fixture(tmp_path, monkeypatch, calls)
     out = run_gui.run(c, path="g.exe")
     assert "passive look" in out and "actions" in out
+
+
+def test_run_gui_actions_right_and_double_click(tmp_path, monkeypatch):
+    calls = []
+    c = _gui_fixture(tmp_path, monkeypatch, calls)
+    out = run_gui.run(c, path="g.exe", actions=["rclick", "dclick 5 6"])
+    xd = [x for x in calls if x[0] == "xdotool" and "mousemove" in x]
+    assert xd == [["xdotool", "mousemove", "110", "145", "click", "3"],
+                  ["xdotool", "mousemove", "5", "6", "click", "--repeat", "2", "1"]]
+    assert "1. rclick: .revagent/screens/002.png" in out and "2. dclick 5 6: .revagent/screens/003.png" in out
+
+
+def test_run_gui_actions_report_xdotool_failures(tmp_path, monkeypatch):
+    import subprocess as sp
+    calls = []
+    c = _gui_fixture(tmp_path, monkeypatch, calls)
+    real_run = run_gui.subprocess.run
+
+    def failing_key(cmd, **kw):
+        if cmd[:2] == ["xdotool", "key"]:
+            calls.append(cmd)
+            return sp.CompletedProcess(cmd, 1, "", "(symbol) No such key name 'RButton'. Ignoring it.\n")
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", failing_key)
+    out = run_gui.run(c, path="g.exe", actions=["key RButton", "click"])
+    assert "1. key RButton: NOT DELIVERED (xdotool failed: (symbol) No such key name 'RButton'. Ignoring it.)" in out
+    assert "rclick" in out                      # the note names the mouse-button actions
+    assert "2. click: .revagent/screens/002.png" in out   # no capture was spent on the failed action

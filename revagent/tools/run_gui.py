@@ -20,7 +20,7 @@ SCHEMA = {
             "Returns window names, two OCR readings (psm 6 block / psm 7 line) and the PNG path under "
             ".revagent/screens/ so you can also read pixels with pillow via bash. "
             "GUI programs are event-driven: pass `actions` to drive them after the first capture. Each action is "
-            "one string: 'click' (window centre), 'click X Y' (screen pixel = PNG pixel), 'key NAME' (xdotool key, "
+            "one string: 'click' / 'rclick' / 'dclick' (left / right / double click at the window centre, or at 'click X Y' where X Y is a screen pixel = PNG pixel), 'key NAME' (xdotool key, "
             "e.g. Return, space, a, F1), 'type TEXT', 'wait N'. Every click/key/type is followed by a capture "
             "(one PNG each, OCR line in the report), so you can see how the picture changes with input. "
             "The program is killed after the last capture; call again to re-run. Use run_binary for console PEs."
@@ -34,7 +34,7 @@ SCHEMA = {
                 "actions": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "input script run after the first capture, max 32 entries: 'click' | 'click X Y' | 'key NAME' | 'type TEXT' | 'wait N'",
+                    "description": "input script run after the first capture, max 32 entries: 'click'|'rclick'|'dclick' [X Y] | 'key NAME' | 'type TEXT' | 'wait N'",
                 },
             },
             "required": ["path"],
@@ -109,12 +109,12 @@ def _parse_action(spec: str) -> tuple[str, list[str]] | None:
     if not parts:
         return None
     verb, rest = parts[0].lower(), (parts[1] if len(parts) > 1 else "")
-    if verb == "click":
+    if verb in ("click", "rclick", "dclick"):
         if not rest:
-            return "click", []
+            return verb, []
         xy = rest.split()
         if len(xy) == 2 and all(v.lstrip("-").isdigit() for v in xy):
-            return "click", xy
+            return verb, xy
         return None
     if verb == "key" and rest and len(rest.split()) == 1:
         return "key", [rest]
@@ -125,21 +125,32 @@ def _parse_action(spec: str) -> tuple[str, list[str]] | None:
     return None
 
 
-def _apply_action(verb: str, argv: list[str], env: dict) -> None:
-    if verb == "click":
+CLICK_ARGS = {"click": ["click", "1"], "rclick": ["click", "3"], "dclick": ["click", "--repeat", "2", "1"]}
+
+
+def _apply_action(verb: str, argv: list[str], env: dict) -> str:
+    """Perform one parsed action; returns '' on success or a short failure note (xdotool error text)."""
+    if verb in CLICK_ARGS:
         if argv:
             x, y = argv
         else:
             x, y = (str(v) for v in _window_center(env))
-        _run_quiet(["xdotool", "mousemove", x, y, "click", "1"], env, 10)
+        r = _run_quiet(["xdotool", "mousemove", x, y, *CLICK_ARGS[verb]], env, 10)
     elif verb == "key":
         _run_quiet(["xdotool", "search", "--onlyvisible", "--name", ".", "windowfocus", "%@"], env, 10)
-        _run_quiet(["xdotool", "key", "--", argv[0]], env, 10)
+        r = _run_quiet(["xdotool", "key", "--", argv[0]], env, 10)
     elif verb == "type":
         _run_quiet(["xdotool", "search", "--onlyvisible", "--name", ".", "windowfocus", "%@"], env, 10)
-        _run_quiet(["xdotool", "type", "--delay", "20", "--", argv[0]], env, 30)
-    elif verb == "wait":
+        r = _run_quiet(["xdotool", "type", "--delay", "20", "--", argv[0]], env, 30)
+    else:  # wait
         time.sleep(int(argv[0]))
+        return ""
+    if r is None:
+        return "xdotool timed out"
+    if r.returncode != 0:
+        err = ((r.stderr or "") + (r.stdout or "")).strip().splitlines()
+        return "xdotool failed: " + (err[-1][:120] if err else f"exit {r.returncode}")
+    return ""
 
 
 def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5,
@@ -184,12 +195,16 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5,
         for i, spec in enumerate(action_specs, 1):
             parsed = _parse_action(spec)
             if parsed is None:
-                action_lines.append(f"{i}. {spec!r}: ignored (expected 'click' | 'click X Y' | 'key NAME' | 'type TEXT' | 'wait N')")
+                action_lines.append(f"{i}. {spec!r}: ignored (expected 'click'|'rclick'|'dclick' [X Y] | 'key NAME' | 'type TEXT' | 'wait N')")
                 continue
             verb, argv = parsed
-            _apply_action(verb, argv, env)
+            fail = _apply_action(verb, argv, env)
             if verb == "wait":
                 action_lines.append(f"{i}. wait {argv[0]}")
+                continue
+            if fail:
+                action_lines.append(f"{i}. {spec}: NOT DELIVERED ({fail}); key names are xdotool keysyms such as "
+                                    f"Return, space, Escape, F1, a; mouse buttons are click/rclick/dclick")
                 continue
             time.sleep(1)
             apng = _next_screenshot_path(screens)
@@ -224,4 +239,4 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5,
             f"If the OCR is wrong, open the PNG(s) with pillow in bash and print dark/bright pixels as an ASCII grid."
             + ("" if action_specs else "\nThis was a passive look. GUI programs change state on input: if the picture is "
                                        "incomplete or waits for the user, call run_gui again with actions "
-                                       "(e.g. [\"click\",\"click\",\"key space\",\"type abc\",\"key Return\"]) and read every capture."))
+                                       "(e.g. [\"click\",\"rclick\",\"key space\",\"type abc\",\"key Return\"]) and read every capture."))
