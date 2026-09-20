@@ -847,6 +847,38 @@ def test_run_binary_observes_exit_and_first_line(tmp_path):
     assert c.env_blocked is False
 
 
+def test_run_binary_wrong_answer_twice_does_not_set_env_blocked(tmp_path):
+    # exit 1 with no output is the normal "wrong guess" shape for a check binary; two of these
+    # must not falsely trip env_blocked for the rest of the run.
+    (tmp_path / "chal").write_text("#!/bin/bash\nexit 1\n")
+    c = ctx_for(tmp_path)
+    run_binary.run(c, path="chal")
+    assert c.env_blocked is False
+    run_binary.run(c, path="chal")
+    assert c.env_blocked is False
+    assert c.start_failures == 0
+
+
+def test_run_binary_signal_kill_twice_sets_env_blocked(tmp_path):
+    (tmp_path / "chal").write_text("#!/bin/bash\nkill -SEGV $$\n")
+    c = ctx_for(tmp_path)
+    run_binary.run(c, path="chal")
+    assert c.env_blocked is False
+    run_binary.run(c, path="chal")
+    assert c.env_blocked is True
+
+
+def test_run_binary_loader_failure_marker_twice_sets_env_blocked(tmp_path):
+    (tmp_path / "chal").write_text(
+        "#!/bin/bash\necho 'error while loading shared libraries: libfoo.so.1' 1>&2\nexit 127\n"
+    )
+    c = ctx_for(tmp_path)
+    run_binary.run(c, path="chal")
+    assert c.env_blocked is False
+    run_binary.run(c, path="chal")
+    assert c.env_blocked is True
+
+
 def test_run_gui_observes_windows_and_change_counts(tmp_path, monkeypatch):
     calls = []
     c = _gui_fixture(tmp_path, monkeypatch, calls)

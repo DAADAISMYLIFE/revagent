@@ -6,6 +6,20 @@ import subprocess
 
 from .bash import MAX_TIMEOUT, run_cmd
 
+# Substrings that indicate the OS/loader could not even start the target (as opposed to the
+# target running and exiting non-zero because the guess was wrong). Only these — plus a
+# signal-terminated exit code — count as a start failure; "exit 1, no output" is a normal
+# wrong-answer pattern for check binaries and must not trip env_blocked.
+START_FAILURE_MARKERS = (
+    "error while loading shared libraries",
+    "cannot execute binary file",
+    "Exec format error",
+    "No such file or directory",
+    "err:module:",
+    "Bad EXE format",
+    "not a valid Win32",
+)
+
 SCHEMA = {
     "type": "function",
     "function": {
@@ -49,9 +63,22 @@ def _observe(ctx, path: str, out: str) -> None:
     code = m.group(1) if m else "?"
     body = "\n".join(out.splitlines()[1:]).strip()
     stdout_first = body.splitlines()[0][:80] if body else ""
-    if code not in ("0", "?") and not body:
+    if _is_start_failure(code, body):
         ctx.note_start_failure()
     ctx.observe(f"run_binary {path}: exit {code}, stdout {stdout_first!r}")
+
+
+def _is_start_failure(code: str, body: str) -> bool:
+    """True only when the process was killed by a signal (negative or >=128 exit code, the two
+    forms run_cmd/bash can report) or the output names a loader/exec failure. A plain nonzero
+    exit with no output is an ordinary wrong-answer result, not a start failure."""
+    try:
+        n = int(code)
+    except ValueError:
+        n = None
+    if n is not None and (n < 0 or n >= 128):
+        return True
+    return any(marker in body for marker in START_FAILURE_MARKERS)
 
 
 def _run(ctx, path: str, args: list[str] | None = None, stdin: str = "", timeout: int = 10) -> str:
