@@ -170,6 +170,11 @@ def _next_screenshot_path(screens: Path) -> Path:
     return screens / f"{next_n:03d}.png"
 
 
+def _last_capture_name(screens: Path) -> str:
+    existing = sorted(int(f.stem) for f in screens.glob("*.png") if f.stem.isdigit())
+    return f"{existing[-1]:03d}" if existing else "?"
+
+
 def _parse_action(spec: str) -> tuple[str, list[str]] | None:
     """'click' | 'click X Y' | 'key NAME' | 'type TEXT' | 'wait N' -> (verb, argv) or None when malformed."""
     parts = str(spec).strip().split(None, 1)
@@ -226,6 +231,8 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5,
         actions: list[str] | None = None) -> str:
     for tool in ("wine", "import", "tesseract", "xdotool", "xdpyinfo"):
         if shutil.which(tool) is None:
+            ctx.env_blocked = True
+            ctx.observe(f"run_gui {path}: [cannot run here]")
             return f"[cannot run here] {tool} is not installed on the host; run with --sandbox (the image has wine + Xvfb + OCR)."
     problem_dir = ctx.problem_dir.resolve()
     p = (ctx.problem_dir / path).resolve()
@@ -249,6 +256,7 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5,
         screens = ctx.work_dir / "screens"
         screens.mkdir(parents=True, exist_ok=True)
         png = _next_screenshot_path(screens)
+        first_png_name = png.stem
         shot = _run_quiet(["import", "-display", DISPLAY, "-window", "root", str(png)], env, 30)
         info["windows"] = _windows(env)
         info["state"] = ("still running at capture" if proc.poll() is None
@@ -305,6 +313,16 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5,
                 pass
         except Exception:
             pass
+    n_inputs = sum(1 for s in action_specs if (_parse_action(s) or ("wait", []))[0] != "wait")
+    n_changed = sum(1 for l in info["actions"].splitlines() if "changed:" in l and "changed: nothing" not in l)
+    n_unchanged = sum(1 for l in info["actions"].splitlines() if "changed: nothing" in l)
+    n_undelivered = info["actions"].count("NOT DELIVERED")
+    last_png = _last_capture_name(screens)
+    ctx.observe(f"run_gui {path}{' ' + ' '.join(args) if args else ''}: windows: {info.get('windows', '?')}; "
+                f"{info.get('state', '?')}; inputs: {n_inputs} (changed {n_changed}, unchanged {n_unchanged}, "
+                f"undelivered {n_undelivered}); captures: {first_png_name}-{last_png}")
+    if info.get("windows") in ("(none)", "(timeout)"):
+        ctx.note_start_failure()
     return ((reset_note + "\n") if reset_note else "") + (f"launched: {' '.join(cmd)}\nprocess: {info['state']}\nwindows: {info['windows']}\n"
             f"{info['screenshot_line']}\n--- OCR psm6 (block) ---\n{info['ocr6']}\n"
             f"--- OCR psm7 (single line) ---\n{info['ocr7']}\n"

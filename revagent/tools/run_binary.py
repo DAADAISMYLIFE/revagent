@@ -1,4 +1,5 @@
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -31,6 +32,29 @@ SCHEMA = {
 
 
 def run(ctx, path: str, args: list[str] | None = None, stdin: str = "", timeout: int = 10) -> str:
+    out = _run(ctx, path, args, stdin, timeout)
+    _observe(ctx, path, out)
+    return out
+
+
+def _observe(ctx, path: str, out: str) -> None:
+    if out.startswith("[cannot run here]"):
+        ctx.env_blocked = True
+        ctx.observe(f"run_binary {path}: [cannot run here]")
+        return
+    if out.startswith("[tool error]"):
+        return
+    first = out.splitlines()[0] if out else ""
+    m = re.match(r"\[exit (-?\d+)\]", first)
+    code = m.group(1) if m else "?"
+    body = "\n".join(out.splitlines()[1:]).strip()
+    stdout_first = body.splitlines()[0][:80] if body else ""
+    if code not in ("0", "?") and not body:
+        ctx.note_start_failure()
+    ctx.observe(f"run_binary {path}: exit {code}, stdout {stdout_first!r}")
+
+
+def _run(ctx, path: str, args: list[str] | None = None, stdin: str = "", timeout: int = 10) -> str:
     problem_dir = ctx.problem_dir.resolve()
     p = (ctx.problem_dir / path).resolve()
     if not p.is_relative_to(problem_dir):

@@ -128,6 +128,7 @@ class Agent:
                 self._append({"role": "user", "content": self._task_message()})
                 for step in range(1, self.max_steps + 1):
                     steps = step
+                    self.ctx.step = step
                     if time.time() - start > self.max_minutes * 60:
                         reason = "time limit"
                         steps = step - 1

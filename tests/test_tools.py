@@ -1,5 +1,6 @@
 import os
 import stat
+import subprocess
 from pathlib import Path
 
 from revagent.casefile import CaseFile
@@ -795,3 +796,80 @@ def test_run_gui_reports_blank_and_drawn_window_content(tmp_path, monkeypatch):
     drawn["on"] = True
     out2 = run_gui.run(c, path="g.exe")
     assert "window content: 20 px differ from the background" in out2   # window is 200x250 at 10,20
+
+
+def test_observe_appends_ledger_line_to_log(tmp_path):
+    c = ctx_for(tmp_path)
+    c.step = 7
+    c.observe("run_binary chal: exit 0, stdout 'Wrong'")
+    log = c.casefile.read().split("## Log")[1]
+    assert "- [obs step 7] run_binary chal: exit 0, stdout 'Wrong'" in log
+    facts = c.casefile.read().split("## Facts")[1].split("## Hypotheses")[0]
+    assert "[obs" not in facts
+
+
+def test_observe_flattens_newlines_and_survives_write_errors(tmp_path, monkeypatch):
+    c = ctx_for(tmp_path)
+    c.observe("line one\nline two")
+    assert "- [obs step 0] line one line two" in c.casefile.read()
+    monkeypatch.setattr(c.casefile, "add", lambda *a, **k: (_ for _ in ()).throw(OSError("locked")))
+    c.observe("still fine")  # must not raise
+
+
+def test_note_start_failure_sets_env_blocked_on_second(tmp_path):
+    c = ctx_for(tmp_path)
+    c.note_start_failure()
+    assert c.env_blocked is False and c.start_failures == 1
+    c.note_start_failure()
+    assert c.env_blocked is True
+
+
+def test_run_binary_observes_and_flags_cannot_run(tmp_path, monkeypatch):
+    (tmp_path / "w.exe").write_bytes(b"MZ" + b"\0" * 60)
+    monkeypatch.setattr("revagent.tools.run_binary.shutil.which", lambda n: None)
+    monkeypatch.setattr("revagent.tools.run_binary.subprocess.run",
+                        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, "PE32+ executable (GUI) x86-64", ""))
+    c = ctx_for(tmp_path)
+    c.step = 3
+    out = run_binary.run(c, path="w.exe")
+    assert out.startswith("[cannot run here]")
+    assert c.env_blocked is True
+    assert "- [obs step 3] run_binary w.exe: [cannot run here]" in c.casefile.read()
+
+
+def test_run_binary_observes_exit_and_first_line(tmp_path):
+    (tmp_path / "chal").write_text("#!/bin/bash\necho Wrong; exit 1\n")
+    c = ctx_for(tmp_path)
+    c.step = 4
+    run_binary.run(c, path="chal", stdin="x\n")
+    text = c.casefile.read()
+    assert "- [obs step 4] run_binary chal: exit 1, stdout 'Wrong'" in text
+    assert c.env_blocked is False
+
+
+def test_run_gui_observes_windows_and_change_counts(tmp_path, monkeypatch):
+    calls = []
+    c = _gui_fixture(tmp_path, monkeypatch, calls)
+    c.step = 9
+    run_gui.run(c, path="g.exe", actions=["click", "key RButton", "wait 1"])
+    text = c.casefile.read()
+    line = next(l for l in text.splitlines() if l.startswith("- [obs step 9] run_gui g.exe"))
+    assert "windows: CaptainHook" in line and "inputs: 2" in line and "captures: 001-003" in line
+
+
+def test_run_gui_no_window_twice_sets_env_blocked(tmp_path, monkeypatch):
+    import subprocess as sp
+    calls = []
+    c = _gui_fixture(tmp_path, monkeypatch, calls)
+    real_run = run_gui.subprocess.run
+
+    def no_windows(cmd, **kw):
+        if cmd[0] == "xdotool" and cmd[1] == "search" and cmd[-2] == "getwindowname":
+            return sp.CompletedProcess(cmd, 0, "", "")
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", no_windows)
+    run_gui.run(c, path="g.exe")
+    assert c.env_blocked is False
+    run_gui.run(c, path="g.exe")
+    assert c.env_blocked is True
