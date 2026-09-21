@@ -413,10 +413,15 @@ def test_prune_log_keeps_obs_and_critic_bullets(tmp_path):
     # covers the [critic half on the same 5-block log.
     cf = CaseFile(tmp_path / "case.md", "p", "d")
     for n in range(1, 6):
+        # block 2's summary has no (d) part, so the ledger bullets appended after it sit inside
+        # its (c) part: prune_log drops them unless _is_ledger_line recognises them
+        art = "" if n == 2 else f"\n## (d) ARTIFACTS\n- art {n}"
         cf.add("log", f"### compaction {n}\n## (a) FACTS\n- fact {n}\n## (b) FAILED\n- fail {n}\n"
-                      f"## (c) UNFINISHED\n- todo {n}\n## (d) ARTIFACTS\n- art {n}", bullet=False)
+                      f"## (c) UNFINISHED\n- todo {n}{art}", bullet=False)
         cf.add("log", f"[obs step {n}] run_gui x.exe: windows: W")
         cf.add("log", f"[critic step {n}] try clicking")
+        if n == 2:
+            cf.add("log", "[gate step 3] G3 blocked a repeated script (streak 4)")
     reduced = prune_log(cf, keep=3)
     assert reduced == 2
     text = cf.read()
@@ -424,6 +429,7 @@ def test_prune_log_keeps_obs_and_critic_bullets(tmp_path):
         assert f"- [obs step {n}] run_gui x.exe: windows: W" in text
         assert text.count(f"- [obs step {n}] run_gui x.exe: windows: W") == 1
     assert "- fail 1" not in text and "- todo 1" not in text and "- fact 1" in text
+    assert text.count("- [gate step 3] G3 blocked a repeated script (streak 4)") == 1
 
 
 def test_shrink_prompt_mentions_obs_lines():

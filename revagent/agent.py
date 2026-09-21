@@ -8,6 +8,8 @@ from pathlib import Path
 from .casefile import CaseFile
 from .context import THRESHOLD, compact, format_work_files, list_work_files, shrink_casefile
 from .critic import CRITIC_IDLE_STEPS, CRITIC_MAX, progress_marker, run_critic
+from .detectors import LONG_REASONING_CHARS, LONG_REASONING_LIMIT, RELEASE_AFTER
+from .gate import Gate
 from .llm import ContextOverflow, ToolCall
 from .tools import load_tools
 from .tools.base import ToolContext
@@ -22,6 +24,10 @@ TRUNCATED_RETRY_HINT = ("[system] Your previous attempt at this step exhausted t
 TRUNCATED_NUDGE = ("Your previous reply hit the output budget while thinking, so nothing was produced. "
                    "Do not trace long code by hand in your head: decide in a few sentences, write the key facts to "
                    "notes, then call a tool (write a script for any parsing).")
+G4_TEXT = (f"[gate] This is the {LONG_REASONING_LIMIT}th step whose thinking exceeded {LONG_REASONING_CHARS} characters. "
+           "No solved run has ever needed that many. Stop tracing in your head: put the derivation into a script "
+           "(python3), save its output to a file, and reason from the printed result. Thinking effort is now lowered "
+           "for the rest of this run.")
 
 TASK_TEMPLATE = """# Challenge
 Directory: {dir}
@@ -61,6 +67,10 @@ class Agent:
         self.transcript = open(self.work_dir / "transcript.jsonl", "a", encoding="utf-8")
         self.messages: list[dict] = []
         self.critic_calls = 0
+        self.gate = Gate()
+        self.long_reasoning = 0
+        self.effort_override: str | None = None
+        self.first_facts_step: int | None = None
         self.compactions = 0
         self.over_streak = 0
         self.recent: deque = deque(maxlen=3)
@@ -102,20 +112,49 @@ class Agent:
 
     def _run_tools(self, step: int, calls: list[ToolCall]) -> None:
         """Execute one assistant turn's tool calls in order; once a call has set the flag or a
-        runbook, the remaining calls are answered with a skip error instead of being run."""
+        runbook, the remaining calls are answered with a skip error instead of being run. G3 may
+        replace a call's result with a [blocked by G3] text without running it."""
+        verdicts, events = self.gate.check(step, [(c.name, c.raw_args) for c in calls])
+        for ev in events:
+            self._log({"role": "_meta", **ev})
+            self._ledger(step, ev)
         flag_just_set = False
-        for call in calls:
+        for call, verdict in zip(calls, verdicts):
             if flag_just_set:
                 result = "[tool error] skipped: session ended"
                 self._append({"role": "tool", "tool_call_id": call.id, "content": result})
                 continue
             self._print(f"[{step}] > {call.name} {call.raw_args[:160]}")
-            result = self._execute(call)
+            result = verdict.text if not verdict.allowed else self._execute(call)
             self._append({"role": "tool", "tool_call_id": call.id, "content": result})
             head = "\n".join(result.splitlines()[:3])
             self._print(f"[{step}] < {head[:300]}")
             if self.ctx.flag or self.ctx.runbook_path:
                 flag_just_set = True
+
+    def _ledger(self, step: int, ev: dict) -> None:
+        """One `- [gate step N] ...` bullet per gate event, in the case file's Log: survives compaction
+        like the [obs]/[critic] lines (context._is_ledger_line keeps `- [gate ` bullets through
+        prune_log and shrink)."""
+        text = {"gate_block": f"G3 blocked a repeated script (streak {ev.get('streak')})",
+                "gate_open": "G3 opened: approach changed",
+                "gate_released": f"G3 released after {RELEASE_AFTER} blocked steps; quiet until step {ev.get('cooldown_until')}",
+                "gate_error": f"gate error: {ev.get('error')}",
+                "gate_warn": f"G4 warned: long-thinking step #{ev.get('count')}; effort lowered to low"}.get(ev["event"], ev["event"])
+        try:
+            self.casefile.add("log", f"[gate step {step}] {text}")
+        except Exception:
+            pass
+
+    def _g4_warn(self, step: int) -> None:
+        """The LONG_REASONING_LIMITth long-thinking step: lower the effort for the rest of the run
+        and tell the model once. Called after the step's tool results (or after the no-tool nudge)."""
+        self.effort_override = "low"
+        ev = {"event": "gate_warn", "gate": "G4", "step": step, "count": self.long_reasoning}
+        self._log({"role": "_meta", **ev})
+        self._ledger(step, ev)
+        self._append({"role": "user", "content": G4_TEXT})
+        self._print(f"[{step}] -- G4: {self.long_reasoning} long-thinking steps; effort -> low --")
 
     def _critic(self, step: int, cause: str) -> None:
         if self.critic_calls >= CRITIC_MAX:
@@ -184,7 +223,7 @@ class Agent:
                         steps = step - 1
                         break
                     try:
-                        resp = self.llm.chat(self.messages, self.schemas)
+                        resp = self.llm.chat(self.messages, self.schemas, reasoning_effort=self.effort_override)
                         if resp.finish_reason == "length" and not resp.tool_calls:
                             # The model spent the whole output budget thinking. Retry once with a
                             # hint and low effort (same max_tokens: 44k threshold + 16k output is the
@@ -204,6 +243,10 @@ class Agent:
                         continue
                     self._log({"role": "_reasoning", "step": step, "content": resp.reasoning})
                     self._append(resp.message)
+                    g4_due = False
+                    if len(resp.reasoning or "") > LONG_REASONING_CHARS:
+                        self.long_reasoning += 1
+                        g4_due = self.long_reasoning == LONG_REASONING_LIMIT
                     if self.show_thinking and resp.reasoning:
                         self._print(f"\033[2m{resp.reasoning[:2000]}\033[0m")
                     if resp.content:
@@ -217,10 +260,16 @@ class Agent:
                         nudge = TRUNCATED_NUDGE if resp.finish_reason == "length" else \
                             "Call a tool, or finish with submit_flag. Do not just narrate."
                         self._append({"role": "user", "content": nudge})
+                        if g4_due:
+                            self._g4_warn(step)
                         continue
                     no_tool_streak = 0
 
                     self._run_tools(step, resp.tool_calls)
+                    if g4_due:
+                        # after the tool results: a user message must never sit between an
+                        # assistant tool_calls message and its tool messages
+                        self._g4_warn(step)
                     self._print(f"[{step}] tokens: prompt={resp.prompt_tokens} completion={resp.completion_tokens}")
                     if self.ctx.runbook_path:
                         status = "runbook"
@@ -243,6 +292,8 @@ class Agent:
                         marker = last_marker
                         self._log({"role": "_meta", "event": "casefile_unreadable",
                                    "step": step, "error": f"{type(e).__name__}: {e}"[:200]})
+                    if self.first_facts_step is None and marker[0] > 0:
+                        self.first_facts_step = step
                     if marker != last_marker:
                         last_marker, idle = marker, 0
                     else:
@@ -277,6 +328,12 @@ class Agent:
                 "completion_tokens": self.llm.total_completion_tokens - start_completion_tokens,
                 "llm_retries": getattr(self.llm, "total_retries", 0) - start_retries,
                 "minutes": round((time.monotonic() - start) / 60, 1),
+                "signals": {
+                    "gate_blocks": self.gate.blocks,
+                    "max_script_streak": self.gate.max_streak,
+                    "long_reasoning_steps": self.long_reasoning,
+                    "first_facts_step": self.first_facts_step,
+                },
             }
             self._finish(result)
         finally:

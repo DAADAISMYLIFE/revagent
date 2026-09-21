@@ -16,7 +16,7 @@ def test_registry_has_all_tools():
     schemas, handlers = load_tools()
     names = {s["function"]["name"] for s in schemas}
     assert names == {"bash", "run_binary", "run_gui", "notes", "decompile", "summarize", "ask_user", "submit_flag",
-                     "handoff_runbook"}
+                     "handoff_runbook", "solve_check"}
     assert set(handlers) == names
     for s in schemas:
         assert s["type"] == "function" and "parameters" in s["function"]
@@ -997,3 +997,222 @@ def test_run_gui_wait_clamped_to_run_deadline(tmp_path, monkeypatch):
     # sleeps[0] is _reset_display's 1 s after killing the leftover fake window; the first capture wait
     # asked for 60 s and must be cut to the 8 s left in the run
     assert sleeps[-1] == 8 and 60 not in sleeps
+
+
+from pathlib import Path as _P
+FIX = _P(__file__).parent / "fixtures" / "transforms"
+
+
+def _copy_fixture(tmp_path, name):
+    (tmp_path / name).write_text((FIX / name).read_text(encoding="utf-8"), encoding="utf-8")
+
+
+def test_solve_check_inverts_xor(tmp_path):
+    from revagent.tools import solve_check
+    _copy_fixture(tmp_path, "xor_transform.py")
+    plain = b"DH{x0r}"
+    target = bytes(c ^ [0x13, 0x37, 0x42, 0x99][i % 4] for i, c in enumerate(plain))
+    out = solve_check.run(ctx_for(tmp_path), file="xor_transform.py", target=target.hex(), length=len(plain))
+    assert out.startswith("[sat]") and "DH{x0r}" in out and target.hex() in out
+    assert "verified: transform(input) == target" in out
+
+
+def test_solve_check_inverts_a_sequential_block_cipher(tmp_path):
+    from revagent.tools import solve_check
+    _copy_fixture(tmp_path, "block_cipher_transform.py")
+    ns = {"Table": solve_check.Table}
+    exec((FIX / "block_cipher_transform.py").read_text(encoding="utf-8"), ns)
+    plain = list(b"Reverse__your__brain_;)\x00")
+    target = bytes(ns["transform"](plain))
+    out = solve_check.run(ctx_for(tmp_path), file="block_cipher_transform.py", target=target.hex(), length=24,
+                          charset="[ -~\\x00]")
+    assert out.startswith("[sat]") and "Reverse__your__brain_;)" in out
+
+
+def test_solve_check_reports_unsat(tmp_path):
+    from revagent.tools import solve_check
+    (tmp_path / "t.py").write_text("def transform(x):\n    return [x[0] & 0, x[1]]\n")
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target="0102", length=2)
+    assert out.startswith("[unsat]")
+
+
+def test_solve_check_names_the_line_that_cannot_be_symbolic(tmp_path):
+    from revagent.tools import solve_check
+    (tmp_path / "t.py").write_text("def transform(x):\n    y = x[0] + 1\n    n = int(y)\n    return [n]\n")
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target="05", length=1)
+    assert out.startswith("[error]") and "line 3" in out and "int(" in out and "`    n = int(y)`" in out
+
+
+def test_solve_check_rejects_bad_inputs_and_escapes(tmp_path):
+    from revagent.tools import solve_check
+    (tmp_path / "t.py").write_text("def transform(x):\n    return x\n")
+    assert solve_check.run(ctx_for(tmp_path), file="../t.py", target="00", length=1).startswith("[tool error] path escapes")
+    assert solve_check.run(ctx_for(tmp_path), file="nope.py", target="00", length=1).startswith("[tool error] no such file")
+    assert solve_check.run(ctx_for(tmp_path), file="t.py", target="zz", length=1).startswith("[tool error] target")
+    assert solve_check.run(ctx_for(tmp_path), file="t.py", target="0000", length=1).startswith("[tool error] length")
+    (tmp_path / "u.py").write_text("x = 1\n")
+    assert "transform" in solve_check.run(ctx_for(tmp_path), file="u.py", target="00", length=1)
+
+
+def test_solve_check_timeout_is_clamped_to_run_deadline(tmp_path, monkeypatch):
+    from revagent.tools import solve_check
+    (tmp_path / "t.py").write_text("def transform(x):\n    return x\n")
+    seen = {}
+    monkeypatch.setattr(solve_check, "symbolic_solve",
+                        lambda src, target, length, charset, timeout_s: seen.update(t=timeout_s) or ("sat", b"\x00"))
+    monkeypatch.setattr("revagent.tools.base.time.monotonic", lambda: 50.0)
+    ctx = ctx_for(tmp_path)
+    ctx.deadline = 50.0 + 20
+    solve_check.run(ctx, file="t.py", target="00", length=1, timeout=600)
+    assert seen["t"] == 20
+
+
+def test_solve_check_handles_table_built_inside_transform(tmp_path):
+    from revagent.tools import solve_check
+    src = "def transform(x):\n    t = Table([7, 9, 3, 1])\n    return [t[x[0] & 3]]\n"
+    (tmp_path / "t.py").write_text(src)
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target="09", length=1)
+    assert out.startswith("[sat]")
+    sol = bytes.fromhex(out.splitlines()[1].split()[1])
+    ns = {"Table": list}
+    exec(src, ns)
+    assert ns["transform"](list(sol)) == [9]
+    # 5 is not in the table: a Table built inside transform must be constrained, not a free z3 Array
+    assert solve_check.run(ctx_for(tmp_path), file="t.py", target="05", length=1).startswith("[unsat]")
+
+
+def _solution(out):
+    return bytes.fromhex(out.splitlines()[1].split()[1])
+
+
+def test_solve_check_modulo_follows_python_floor_semantics(tmp_path):
+    # Caesar shape: (x - 'a' - 3) % 26; for 'a' the dividend is -3 and Python gives 23 (0x17).
+    # Unsigned remainder on 64 bits would give 13, so the tool must use the signed, divisor-signed %.
+    from revagent.tools import solve_check
+    (tmp_path / "t.py").write_text("def transform(x):\n    return [(x[0] - 97 - 3) % 26]\n")
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target="17", length=1, charset="[a-z]")
+    assert out.startswith("[sat]") and _solution(out) == b"a"
+
+
+def test_solve_check_table_keeps_values_wider_than_a_byte(tmp_path):
+    from revagent.tools import solve_check
+    (tmp_path / "t.py").write_text("T = Table([0x1234, 0xdeadbeef])\n"
+                                   "def transform(x):\n    return [(T[x[0] & 1] >> 8) & 0xff]\n")
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target="12", length=1)
+    assert out.startswith("[sat]") and _solution(out)[0] % 2 == 0
+
+
+def test_solve_check_flags_a_solution_the_concrete_transform_rejects(tmp_path):
+    # (x << 60) >> 60 is the identity on Python ints but x & 0xf on 64-bit vectors: with x >= 0x10 forced,
+    # z3 finds an input whose concrete transform can never equal the target. The model must be told.
+    from revagent.tools import solve_check
+    (tmp_path / "t.py").write_text("def transform(x):\n    return [((x[0] << 60) >> 60) & 0xff]\n")
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target="03", length=1, charset="[\\x10-\\x7f]")
+    assert out.startswith("[sat?]") and "do not trust it" in out and "hex: " in out
+    assert _solution(out)[0] >= 0x10
+
+
+def test_solve_check_symbolic_index_stays_inside_the_table(tmp_path):
+    from revagent.tools import solve_check
+    (tmp_path / "t.py").write_text("T = Table([5, 6, 7, 8])\ndef transform(x):\n    return [T[x[0]]]\n")
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target="07", length=1)
+    assert out.startswith("[sat]") and _solution(out)[0] < 4
+    # an index that cannot be inside the table is not wrapped around into it
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target="07", length=1, charset="[\\x04-\\xff]")
+    assert out.startswith("[unsat]")
+
+
+def test_solve_check_rejects_non_int_outputs(tmp_path):
+    from revagent.tools import solve_check
+    (tmp_path / "t.py").write_text("def transform(x):\n    return [x[0] == 3]\n")
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target="01", length=1)
+    assert out.startswith("[error] transform must return ints, got") and "at position 0" in out
+
+
+def test_solve_check_texts_state_the_non_negative_64bit_semantics(tmp_path):
+    # The probe: (x-200)>>1 is an arithmetic shift of a negative int in Python but a logical shift of a
+    # 64-bit two's-complement value here, so a Python solution exists yet z3's answer fails the re-check.
+    from revagent.tools import solve_check
+    key = "non-negative 64-bit integers"
+    assert key in solve_check.__doc__ and key in solve_check.SCHEMA["function"]["description"]
+    assert "shift of a negative intermediate" in solve_check.SCHEMA["function"]["description"]
+    (tmp_path / "t.py").write_text("def transform(x):\n    return [((x[0] - 200) >> 1) % 251]\n")
+    target = ((5 - 200) >> 1) % 251
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target=f"{target:02x}", length=1)
+    assert out.startswith("[sat?]") and key in out and "do not trust it" in out
+    assert "%," not in out                       # % follows Python; it is not listed as a divergence cause
+    (tmp_path / "u.py").write_text("def transform(x):\n    return [x[0] & 0, x[1]]\n")
+    out = solve_check.run(ctx_for(tmp_path), file="u.py", target="0102", length=2)
+    assert out.startswith("[unsat]") and "not faithful" in out and key in out
+    assert "semantics diverged" in out           # the second cause, not only "the transform is not faithful"
+
+
+def test_solve_check_supports_floordiv_and_reflected_shift_and_mod(tmp_path):
+    from revagent.tools import solve_check
+    (tmp_path / "d.py").write_text("def transform(x):\n    return [x[0] // 16]\n")
+    out = solve_check.run(ctx_for(tmp_path), file="d.py", target="05", length=1)
+    assert out.startswith("[sat]") and 80 <= _solution(out)[0] <= 95
+    (tmp_path / "l.py").write_text("def transform(x):\n    return [(1 << (x[0] & 7)) & 0xff]\n")
+    out = solve_check.run(ctx_for(tmp_path), file="l.py", target="08", length=1)
+    assert out.startswith("[sat]") and _solution(out)[0] & 7 == 3
+    (tmp_path / "r.py").write_text("def transform(x):\n    return [(0xff00 >> (x[0] & 15)) & 0xff]\n")
+    out = solve_check.run(ctx_for(tmp_path), file="r.py", target="0f", length=1)
+    assert out.startswith("[sat]") and _solution(out)[0] & 15 == 12
+    (tmp_path / "m.py").write_text("def transform(x):\n    return [300 % (x[0] | 1)]\n")
+    out = solve_check.run(ctx_for(tmp_path), file="m.py", target=f"{300 % 65:02x}", length=1)
+    assert out.startswith("[sat]") and "verified: transform(input) == target" in out
+    assert 300 % (_solution(out)[0] | 1) == 300 % 65
+
+
+def test_solve_check_bounds_the_time_the_user_script_may_run(tmp_path):
+    import time
+    from revagent.tools import solve_check
+    (tmp_path / "t.py").write_text("def transform(x):\n    while True:\n        pass\n")
+    t0 = time.monotonic()
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target="00", length=1, timeout=1)
+    assert time.monotonic() - t0 < 2.5
+    assert out.startswith("[timeout]") and "the transform itself" in out
+    (tmp_path / "i.py").write_text("while True:\n    pass\n")   # a hang at import time is bounded too
+    t0 = time.monotonic()
+    out = solve_check.run(ctx_for(tmp_path), file="i.py", target="00", length=1, timeout=1)
+    assert time.monotonic() - t0 < 2.5 and out.startswith("[timeout]")
+    # the handler and timer are restored: a later long run is not interrupted
+    (tmp_path / "ok.py").write_text("def transform(x):\n    return [x[0] ^ 0x55]\n")
+    assert solve_check.run(ctx_for(tmp_path), file="ok.py", target="00", length=1).startswith("[sat]")
+
+
+def test_solve_check_names_a_symbolic_table_entry_and_a_symbolic_bytes_element(tmp_path):
+    from revagent.tools import solve_check
+    (tmp_path / "t.py").write_text("def transform(x):\n    t = Table([x[0], 1])\n    return [t[0]]\n")
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target="00", length=1)
+    assert out.startswith("[error] not symbolic at line 2") and "Table entries must be constants" in out
+    assert "pass the input through indexing, not into the table" in out
+    (tmp_path / "b.py").write_text("def transform(x):\n    return list(bytes([x[0]]))\n")
+    out = solve_check.run(ctx_for(tmp_path), file="b.py", target="00", length=1)
+    assert out.startswith("[error] not symbolic at line 2")
+    assert "a symbolic value was used where a plain int is required (bytes(), range(), list index)" in out
+    assert "index a Table with it instead" in out
+
+
+def test_solve_check_z3_timeout_is_reported_as_z3_not_the_transform(tmp_path):
+    # A 16-byte multiplicative hash with a full 64-bit carry chain: z3 runs into its own timeout, and the
+    # wall alarm must not be armed across s.check() or the report would blame the transform instead.
+    from revagent.tools import solve_check
+    (tmp_path / "t.py").write_text(
+        "def transform(x):\n"
+        "    h = 0xcbf29ce484222325\n"
+        "    for c in x:\n"
+        "        h = ((h ^ c) * 0x100000001b3) & 0xffffffffffffffff\n"
+        "        h = (h * 0x9e3779b97f4a7c15) & 0xffffffffffffffff\n"
+        "        h = h ^ (h >> 29)\n"
+        "    return [(h >> (8 * i)) & 0xff for i in range(8)] + [0] * 8\n")
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target="0123456789abcdef" + "00" * 8, length=16, timeout=1)
+    assert out.startswith("[timeout]") and "z3 gave up" in out and "the transform itself" not in out
+
+
+def test_solve_check_timeout_cannot_be_swallowed_by_the_transform(tmp_path):
+    from revagent.tools import solve_check
+    (tmp_path / "t.py").write_text("def transform(x):\n    try:\n        while True:\n            pass\n"
+                                   "    except Exception:\n        pass\n    return x\n")
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target="00", length=1, timeout=1)
+    assert out.startswith("[timeout]") and "the transform itself" in out
