@@ -6,9 +6,9 @@
   "status": "skipped",
   "visualReview": "pending",
   "artifact": {
-    "path": "/mnt/c/Users/강순우/Documents/vs/rev/revagent/docs/diagrams/revagent-loop.html",
-    "sha256": "74bcb39a4bcf02142f934b31920c272f1351e2100cb1b23da90853ca1a2997c9",
-    "bytes": 819483
+    "path": "/mnt/c/Users/강순우/Documents/vs/rev/revagent/docs/diagrams/04-run-lifecycle.html",
+    "sha256": "1e51e7d7e16efe0ddfd370e22abe15a959d9fd2cb493ac4e1923f8ad24876d6b",
+    "bytes": 810165
   },
   "state": {
     "detail": "read",
@@ -24,7 +24,7 @@
       "severity": "warning",
       "message": "Chrome or Chromium is unavailable. Set ARCHIFY_CHROME to its executable path.",
       "subject": {
-        "artifact": "/mnt/c/Users/강순우/Documents/vs/rev/revagent/docs/diagrams/revagent-loop.html"
+        "artifact": "/mnt/c/Users/강순우/Documents/vs/rev/revagent/docs/diagrams/04-run-lifecycle.html"
       },
       "evidence": {
         "executable": null
@@ -53,8 +53,8 @@
     "contactSheet": null
   },
   "sidecars": {
-    "receipt": "revagent-loop.visual-check.json",
-    "contactSheet": "revagent-loop.visual-check.html"
+    "receipt": "04-run-lifecycle.visual-check.json",
+    "contactSheet": "04-run-lifecycle.visual-check.html"
   },
   "error": "Chrome or Chromium is unavailable. Set ARCHIFY_CHROME to its executable path."
 }

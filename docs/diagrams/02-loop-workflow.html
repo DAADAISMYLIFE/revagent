@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="generator" content="archify 2.17.0-dev.1">
-  <title>revagent 동작 구조 Diagram</title>
+  <title>에이전트 루프 워크플로우 Diagram</title>
   <script>
     // Resolve the theme before first paint so light-preference users don't
     // see a dark flash. The toolbar script below re-applies with UI state.
@@ -5081,11 +5081,11 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
            data-preset-badge-blueprint="BLUEPRINT / REV 01"
            data-preset-badge-editorial="EDITORIAL / FIELD NOTE">
         <div class="pulse-dot"></div>
-        <h1>revagent 동작 구조</h1>
+        <h1>에이전트 루프 워크플로우</h1>
       </div>
     </div>
 
-    <script id="archify-guided-views-data" type="application/json">[]</script>
+    <script id="archify-guided-views-data" type="application/json">[{"id":"main","label":"한 스텝","focus":["task","llm_step","toolcall","progress","submit","end"],"note":"작업 메시지에서 제출까지의 기본 경로"},{"id":"memory","label":"기억과 비평가","focus":["toolcall","ledger","progress","critic","compact","llm_step"],"note":"관찰 원장, 비평가, 압축이 루프에 끼어드는 지점"},{"id":"exits","label":"종료 경로","focus":["toolcall","submit","runbook","end"],"note":"플래그 제출과 런북 인계"}]</script>
 
     <script id="archify-i18n-data" type="application/json">{"locale":"en","messages":{"viewer.kind.frontend":"Frontend","viewer.kind.backend":"Backend","viewer.kind.database":"Database","viewer.kind.cloud":"Cloud","viewer.kind.security":"Security","viewer.kind.messagebus":"Message bus","viewer.kind.external":"External","viewer.kind.neutral":"Neutral","viewer.kind.node":"Node","viewer.kind.start":"Start","viewer.kind.active":"Active","viewer.kind.waiting":"Waiting","viewer.kind.decision":"Decision","viewer.kind.success":"Success","viewer.kind.failure":"Failure","viewer.toolbar.actions":"Diagram actions","viewer.theme.toggle.title":"Toggle theme (T)","viewer.theme.toggle":"Toggle color theme","viewer.theme.dark":"Dark","viewer.theme.light":"Light","viewer.preset.choose.title":"Choose visual style (S cycles)","viewer.preset.choose":"Choose visual style","viewer.preset.style":"Style","viewer.preset.menu":"Visual style","viewer.preset.identity":"Visual identity","viewer.preset.cycles":"S cycles","viewer.preset.classic":"Classic","viewer.preset.classic.short":"Classic","viewer.preset.classic.hint":"Stable technical default","viewer.preset.flow":"Signal Flow","viewer.preset.flow.short":"Flow","viewer.preset.flow.hint":"Motion-forward presentation","viewer.preset.blueprint":"Blueprint","viewer.preset.blueprint.hint":"Engineering review","viewer.preset.editorial":"Editorial","viewer.preset.editorial.hint":"Publication and launch notes","viewer.preset.badge.signalFlow":"SIGNAL FLOW","viewer.preset.badge.blueprint":"BLUEPRINT / REV 01","viewer.preset.badge.editorial":"EDITORIAL / FIELD NOTE","viewer.preset.badge.editorialPlate":"ARCHIFY / PLATE 04","viewer.preset.current":"Visual style: {style}. Choose visual style","viewer.motion.live":"Live","viewer.motion.still":"Still","viewer.motion.pause":"Pause motion","viewer.motion.resume":"Resume motion","viewer.motion.reduced":"Motion paused by reduced-motion preference","viewer.motion.hidden":"Motion paused while this page is hidden","viewer.motion.yielding":"Pause motion; currently yielding to {owner}","viewer.motion.yielding.title":"Live preview enabled · yielding to {owner}","viewer.owner.story":"the guided story","viewer.owner.chapter":"the active chapter","viewer.owner.chapterPreview":"the chapter delta preview","viewer.owner.handoff":"the chapter handoff","viewer.owner.route":"Route Probe","viewer.owner.lens":"Semantic Lens","viewer.owner.relationship":"Relationship Preview","viewer.owner.intent":"Intent Trace","viewer.owner.focus":"semantic focus","viewer.owner.legend":"legend preview","viewer.owner.reader":"reader interaction","viewer.present.enter":"Enter presentation stage","viewer.present.enter.title":"Presentation stage (F)","viewer.present.exit":"Exit presentation stage","viewer.present.exit.title":"Exit presentation stage (F or Escape)","viewer.present.present":"Present","viewer.present.exit.label":"Exit","viewer.export.button":"Export","viewer.export.button.title":"Export diagram (E)","viewer.export.diagram":"Export diagram","viewer.export.menu":"Export","viewer.export.subtitle":"Portable, clean outputs","viewer.export.share":"Share","viewer.export.shareCard":"Share Card","viewer.export.routeShareCard":"Route Share Card","viewer.export.reachShareCard":"Reach Share Card","viewer.export.copyShareCard":"Copy Share Card","viewer.export.copyDiagram":"Copy diagram","viewer.export.clipboardPng":"PNG to clipboard","viewer.export.raster":"Raster images","viewer.export.image":"Image","viewer.export.lossless":"Lossless image","viewer.export.compact":"Compact image","viewer.export.modern":"Modern image","viewer.export.vectorMotion":"Vector and motion","viewer.export.vectorMotion.heading":"Vector \u0026 motion","viewer.export.editable":"Editable vector","viewer.export.motion6s":"6s motion","viewer.export.unsupported":"Not supported by this browser","viewer.export.clipboardUnsupported":"Clipboard image write not supported by this browser","viewer.export.clipboardUnsupported.period":"Clipboard image write not supported by this browser.","viewer.export.clipboardUnsupported.short":"Clipboard image write not supported in this browser.","viewer.export.motionUnavailable":"Motion capture unavailable in this browser","viewer.export.webmUnavailable":"WebM unavailable in this browser","viewer.export.failed":"Export failed: {message}","viewer.export.unknownVariant":"Unknown Share Card variant: {variant}","viewer.export.routeRequired":"Trace a route before exporting a Route Share Card","viewer.export.reachRequired":"Trace authored reach before exporting a Reach Share Card","viewer.export.unknown":"unknown","viewer.export.routeFailed":"Route Share Card export failed: {message}","viewer.export.reachFailed":"Reach Share Card export failed: {message}","viewer.export.copyFailed":"Copy failed: {message}","viewer.export.copiedPng":"Copied PNG to clipboard","viewer.export.copiedShare":"Copied Share Card","viewer.export.downloadedShare":"Downloaded Share Card","viewer.export.downloadedRoute":"Downloaded Route Share Card","viewer.export.downloadedReach":"Downloaded Reach Share Card","viewer.export.downloadedWebm":"Downloaded WebM","viewer.export.recording":"Recording 6 seconds of motion…","viewer.export.card.routeSummary.one":"Route: {source} → {target} · {count} directed hop","viewer.export.card.routeSummary.other":"Route: {source} → {target} · {count} directed hops","viewer.export.card.reachSummary":"Authored {direction} from {origin} · {nodes} · {links} · max {hops}","viewer.export.card.node.one":"{count} node","viewer.export.card.node.other":"{count} nodes","viewer.export.card.link.one":"{count} link","viewer.export.card.link.other":"{count} links","viewer.export.card.hop.one":"{count} hop","viewer.export.card.hop.other":"{count} hops","viewer.export.card.routeBadge":"ARCHIFY · ROUTE · {hops}","viewer.export.card.reachBadge":"ARCHIFY · {direction} REACH","viewer.export.card.defaultBadge":"ARCHIFY · {preset} · {theme}","viewer.export.direction.upstream":"Upstream","viewer.export.direction.downstream":"Downstream","viewer.export.error.canvasUnavailable":"Canvas unavailable for {label}","viewer.export.error.contextUnavailable":"2D canvas context unavailable for {label}","viewer.export.error.toBlobUnavailable":"canvas.toBlob unavailable for {label}","viewer.export.error.toBlobNull":"canvas.toBlob returned no data for {label}","viewer.export.error.variantsCombined":"Share Card variants cannot be combined","viewer.export.error.viewerState":"Share Card export could not remove temporary viewer state","viewer.export.error.routeState":"Route Card export could not preserve the resolved route safely","viewer.export.error.reachState":"Reach Card export could not preserve authored reach safely","viewer.export.error.webmRequirements":"WebM motion export requires a trace animation and browser MediaRecorder support","viewer.export.error.mediaRecorder":"MediaRecorder failed","viewer.export.error.emptyWebm":"MediaRecorder produced an empty WebM","viewer.export.error.webmBackground":"SVG background could not be loaded for WebM export","viewer.guided.region":"Guided diagram views","viewer.guided.previous":"Previous guided view","viewer.guided.previous.title":"Previous guided view ([)","viewer.guided.next":"Next guided view","viewer.guided.next.title":"Next guided view (])","viewer.guided.views":"Guided views","viewer.guided.explore":"Explore this system","viewer.guided.intro":"Step through curated paths without changing the source diagram.","viewer.guided.trail":"Story trail","viewer.guided.beat":"Beat","viewer.guided.nextBeat":"Next","viewer.guided.play":"Play guided story","viewer.guided.play.title":"Play guided story (P)","viewer.guided.pause":"Pause guided story","viewer.guided.pause.title":"Pause guided story (P)","viewer.guided.replay":"Replay guided story","viewer.guided.replay.title":"Replay guided story (P)","viewer.guided.playStory":"Play story","viewer.guided.pauseStory":"Pause","viewer.guided.replayStory":"Replay story","viewer.guided.motionUnavailable":"Story playback unavailable while motion is Still","viewer.guided.enableMotion":"Switch motion to Live to play the guided story","viewer.guided.selectBeatLink":"Select a Story Beat to copy its exact link","viewer.guided.copyMoment":"Copy moment","viewer.guided.momentCopied":"Moment link copied","viewer.guided.momentCopyFailed":"Could not copy story moment link","viewer.guided.copied":"Copied","viewer.guided.copyFailed":"Copy failed","viewer.guided.showAll":"Show all","viewer.guided.showAll.aria":"Show entire diagram","viewer.guided.chapters":"Story chapters","viewer.guided.storyTrail":"Story trail for {label}: {count} beats","viewer.guided.chapter.open":"Open chapter {index} of {total}: {label}, {count} stops","viewer.guided.chapter.current":"Current chapter {index} of {total}: {label}, {count} stops","viewer.guided.chapter.selectedNodes":"{count} selected nodes","viewer.guided.chapter.stops":"{count} stops","viewer.guided.chapter.stop.one":"{count} stop","viewer.guided.chapter.stop.other":"{count} stops","viewer.guided.chapter.current.title":"{label} — current chapter, {count} stops","viewer.guided.chapter.delta.expanded":"{stay} stay, {enter} enter, {leave} leave","viewer.guided.chapter.delta.aria":"Open chapter {index} of {total}: {label}. Chapter focus delta: {delta}","viewer.guided.chapter.delta.title":"{label} — {delta} chapter focus","viewer.guided.handoff":"{from} → {to} · via {label}","viewer.guided.share.chapter":"Chapter {index} / {total}","viewer.guided.share.initial":"Chapter 01 / 01","viewer.guided.share.default":"Guided chapter","viewer.guided.state.ready":"Ready","viewer.guided.state.playing":"Playing","viewer.guided.state.settled":"Settled","viewer.guided.state.paused":"Paused","viewer.guided.state.pinned":"Pinned","viewer.guided.state.still":"Still","viewer.guided.share.step":"Step {index} / {total} · {label}","viewer.guided.share.staticMoment":"{step} · Static moment","viewer.guided.share.complete":"{count} steps complete · {note}","viewer.guided.share.settled":"Path settled for reading.","viewer.guided.share.staticPath":"{count} steps · Static path","viewer.guided.share.ready":"{count} steps · Ready","viewer.guided.share.aria":"{state} chapter {index} of {total}: {label}. {beat}. {route}","viewer.guided.beat.start":"Beat {index} / {total} · {label} · starting point","viewer.guided.beat.forward":"Beat {index} / {total} · {from} → {to}","viewer.guided.beat.reverse":"Beat {index} / {total} · {from} → {to} · reverse authored link","viewer.guided.beat.multiple":"Beat {index} / {total} · {from} ⇄ {to} · {count} authored links","viewer.guided.beat.group":"Beat {index} / {total} · {from} · {to} · grouped · no direct link","viewer.guided.beat.aria.prefix":"Story beat {index} of {total}: {label}. ","viewer.guided.beat.aria.start":"Starting point.","viewer.guided.beat.aria.forward":"From {from} through one authored forward relationship.","viewer.guided.beat.aria.reverse":"From {from}; the authored relationship points from {to} to {from}.","viewer.guided.beat.aria.multiple":"From {from} through {count} authored relationships; shown without arbitrary motion.","viewer.guided.beat.aria.group":"Grouped from {from} with no direct authored relationship.","viewer.guided.caption.start":"Starting point","viewer.guided.caption.grouped":"Grouped transition · no direct authored link","viewer.guided.caption.more":" +{count} more","viewer.guided.caption.reverse":"Reverse authored relationship","viewer.guided.caption.relationships":"{count} authored relationships","viewer.guided.caption.relationship":"Authored relationship","viewer.guided.caption.direction":"authored direction: {from} → {to}","viewer.guided.caption.starting":"Authored starting point","viewer.guided.beatLink":"Copy link to current story moment: Beat {index} of {total}: {label}","viewer.guided.noStory":"This diagram has no authored guided story.","viewer.guide.eyebrow":"Diagram guide","viewer.guide.close":"Close diagram guide","viewer.guide.inspecting":"Inspecting compiled semantics","viewer.guide.actions":"Diagram exploration actions","viewer.guide.find":"Find any node","viewer.guide.find.hint":"Search labels, responsibilities, kinds, and stable IDs.","viewer.guide.route":"Trace a route","viewer.guide.route.aria":"Trace a directed route","viewer.guide.route.hint":"Ask how two semantic nodes connect in authored direction.","viewer.guide.map":"See the whole system","viewer.guide.map.hint":"Open Semantic Radar with a live viewport and stable nodes.","viewer.guide.lens":"Compare semantic kinds","viewer.guide.lens.hint":"Count roles, reveal their traffic, and compare direct authored links.","viewer.guide.story":"Play the guided story","viewer.guide.story.hint":"Walk the authored chapters and real relationships.","viewer.guide.present":"Enter Presentation Stage","viewer.guide.present.hint":"Give the live diagram the viewport without changing export.","viewer.guide.shortcuts":"Additional keyboard shortcuts","viewer.guide.shortcut.export":"Export","viewer.guide.shortcut.theme":"Theme","viewer.guide.shortcut.style":"Style","viewer.guide.shortcut.reset":"Reset","viewer.guide.shortcut.zoomIn":"Zoom in","viewer.guide.shortcut.zoomOut":"Zoom out","viewer.guide.shortcut.close":"Close","viewer.guide.facts":"{nodes} · {relationships} · {views}","viewer.guide.fact.node.one":"{count} semantic node","viewer.guide.fact.node.other":"{count} semantic nodes","viewer.guide.fact.relationship.one":"{count} relationship","viewer.guide.fact.relationship.other":"{count} relationships","viewer.guide.fact.view.one":"{count} guided view","viewer.guide.fact.view.other":"{count} guided views","viewer.guide.story.available.one":"Walk {count} authored chapter and its real relationships.","viewer.guide.story.available.other":"Walk {count} authored chapters and their real relationships.","viewer.guide.story.unavailable":"No authored guided story in this diagram.","viewer.guide.open":"Open diagram guide","viewer.guide.noStory":"This diagram has no authored guided story.","viewer.finder.title":"Find a node","viewer.finder.close":"Close node finder","viewer.finder.placeholder":"Search labels or IDs","viewer.finder.search":"Search diagram nodes","viewer.finder.results":"Diagram nodes","viewer.finder.empty":"No matching nodes","viewer.finder.result.focus":"Focus {label}","viewer.finder.result.routeStart":"Choose {label} as route start","viewer.finder.result.routeTarget":"Choose {label} as route destination, {links}","viewer.finder.status.empty":"No matching nodes","viewer.finder.status.count.one":"{count} matching node","viewer.finder.status.count.other":"{count} matching nodes","viewer.finder.noun.nodes":"nodes","viewer.finder.link.one":"{count} link","viewer.finder.link.other":"{count} links","viewer.finder.result.focus.one":"Focus {label}, {count} related connection","viewer.finder.result.focus.other":"Focus {label}, {count} related connections","viewer.finder.status.filtered":"{visible} of {available} {noun}","viewer.finder.status.all":"{available} {noun}","viewer.passport.eyebrow":"Semantic passport","viewer.passport.metadata":"Node metadata","viewer.passport.evidence":"Verified source evidence","viewer.passport.verified":"Verified source","viewer.passport.verificationScope":"Verified against local Git at the pinned revision. Remote access has not been checked.","viewer.passport.reach":"Authored reach","viewer.passport.reach.trace":"Trace authored reachability","viewer.passport.upstream":"Upstream","viewer.passport.downstream":"Downstream","viewer.passport.upstream.trace":"Trace upstream authored reachability","viewer.passport.downstream.trace":"Trace downstream authored reachability","viewer.passport.close":"Close semantic passport","viewer.passport.copy":"Copy link","viewer.passport.copy.focus":"Copy link to focused node","viewer.passport.relations":"Relations","viewer.passport.relations.show":"Show connected relationships","viewer.passport.relations.hide":"Hide connected relationships","viewer.passport.relations.list":"Connected relationships","viewer.passport.copyRelation":"Copy relation","viewer.passport.copyNode":"Copy node","viewer.passport.copyPinned":"Copy link to pinned relationship","viewer.passport.copySource":"Copy link to source node","viewer.passport.copy.focused.success":"Focused node link copied","viewer.passport.copy.pinned.success":"Pinned relationship link copied","viewer.passport.copy.focused.failed":"Could not copy focused node link","viewer.passport.copy.pinned.failed":"Could not copy pinned relationship link","viewer.passport.relationship.none":"No connected relationships","viewer.passport.relationship.count.one":"{count} relation","viewer.passport.relationship.count.other":"{count} relations","viewer.passport.relationship.show.one":"Show {count} connected relationship","viewer.passport.relationship.show.other":"Show {count} connected relationships","viewer.passport.relationship.summary":"{out} outgoing · {in} incoming{loops}","viewer.passport.relationship.loops":" · {count} loop","viewer.passport.relationship.explorer":"Direct relationship explorer","viewer.passport.relationship.help":"Use arrow keys to explore relationships. Press Enter or Space to pin details; Escape clears.","viewer.passport.relationship.loopsBack":"loops back","viewer.passport.relationship.connectsTo":"connects to","viewer.passport.relationship.connectsFrom":"connects from","viewer.passport.relationship.pinned":"Pinned relationship · {from} → {to} · {label}","viewer.passport.relationship.inspect":"Inspect relationship {index} of {total}: {from} to {to}, {label}. Press Enter for details.","viewer.passport.relationship.group.out":"Outgoing","viewer.passport.relationship.group.in":"Incoming","viewer.passport.relationship.group.loop":"Self loops","viewer.passport.relationship.row":"{group}: {relationship}, {neighbor}","viewer.passport.relationship.direction.out":"OUT →","viewer.passport.relationship.direction.in":"← IN","viewer.passport.relationship.direction.loop":"LOOP","viewer.passport.sourceCount.one":"{count} verified source reference","viewer.passport.sourceCount.other":"{count} verified source references","viewer.passport.sourceMarker":"SRC","viewer.passport.beacon.one":"{count} verified source; focus this node to inspect","viewer.passport.beacon.other":"{count} verified sources; focus this node to inspect","viewer.passport.repository.open":"Open verified repository revision {revision}","viewer.passport.source.open":"Open verified source {path} at revision {revision}","viewer.passport.source.openLink":"Open ↗","viewer.passport.reach.upstream.one":"Trace {count} upstream authored node","viewer.passport.reach.upstream.other":"Trace {count} upstream authored nodes","viewer.passport.reach.downstream.one":"Trace {count} downstream authored node","viewer.passport.reach.downstream.other":"Trace {count} downstream authored nodes","viewer.passport.reach.noUpstream":"No upstream authored nodes","viewer.passport.reach.noDownstream":"No downstream authored nodes","viewer.passport.reach.status":"{direction} · {nodes} nodes · {links} links · max {hops} hops","viewer.route.eyebrow":"Route probe","viewer.route.start":"Choose a start node","viewer.route.start.find":"Find start","viewer.route.start.find.aria":"Find a route start","viewer.route.copy":"Copy link","viewer.route.copy.aria":"Copy link to traced route","viewer.route.clear":"Clear","viewer.route.clear.aria":"Clear route probe","viewer.route.traced":"Traced route","viewer.route.pickTwo":"Pick two semantic nodes on the diagram","viewer.route.pickOne":"Pick a semantic node on the diagram","viewer.route.controls":"Route journey controls","viewer.route.previous":"Previous route position","viewer.route.play":"Play route journey","viewer.route.pause":"Pause route journey","viewer.route.replay":"Replay route journey","viewer.route.next":"Next route position","viewer.route.journey":"Journey","viewer.route.pause.label":"Pause","viewer.route.replay.label":"Replay","viewer.route.overview":"Overview","viewer.route.overview.aria":"Show complete route overview","viewer.route.instructions":"Choose the source, then the destination. Direction matters.","viewer.route.destination":"Choose a destination from {label}","viewer.route.destination.find":"Find target","viewer.route.destination.find.aria":"Find a reachable route destination","viewer.route.differentDestination":"Choose a different destination","viewer.route.distinct":"A route needs two distinct semantic nodes.","viewer.route.unreachable":"No directed route to {label}","viewer.route.unreachable.detail":"{target} is not reachable from {source}. Pick a highlighted destination.","viewer.route.start.instructions":"Select the source. The next step will reveal only directed destinations.","viewer.route.copy.success":"Traced route link copied","viewer.route.copy.failed":"Could not copy traced route link","viewer.route.position":"Route position {index} of {total}: {label}","viewer.route.step":"Step {index} of {total} · {phase} · {label}","viewer.route.motionRequired":"Automatic journey requires Live motion","viewer.route.trigger.clear":"Clear traced route","viewer.route.overview.status":"{nodes} · {hops} · shortest authored route","viewer.route.overview.node.one":"{count} node","viewer.route.overview.node.other":"{count} nodes","viewer.route.overview.hop.one":"{count} directed hop","viewer.route.overview.hop.other":"{count} directed hops","viewer.route.phase.playing":"Playing","viewer.route.phase.complete":"Complete","viewer.route.phase.inspecting":"Inspecting","viewer.route.destination.count.one":"{count} directed destination available. Pick a highlighted node.","viewer.route.destination.count.other":"{count} directed destinations available. Pick a highlighted node.","viewer.route.noOutgoing":"No outgoing route starts here. Clear and choose another source.","viewer.route.result.title":"{source} to {target}","viewer.route.finder.source.title":"Choose route start","viewer.route.finder.source.placeholder":"Search route sources","viewer.route.finder.source.empty":"No matching route sources","viewer.route.finder.source.results":"Nodes that can start a route","viewer.route.finder.source.noun":"route sources","viewer.route.finder.source.badge":"start","viewer.route.finder.target.title":"Destination from {label}","viewer.route.finder.target.placeholder":"Search reachable destinations","viewer.route.finder.target.empty":"No matching reachable destinations","viewer.route.finder.target.results":"Reachable route destinations","viewer.route.finder.target.noun":"reachable destinations","viewer.route.hop.one":"{count} hop","viewer.route.hop.other":"{count} hops","viewer.lens.eyebrow":"Semantic lens","viewer.lens.title":"Compare system roles","viewer.lens.close":"Close semantic lens","viewer.lens.instruction":"Choose up to two semantic kinds. One reveals its real traffic; two compare only direct authored relationships.","viewer.lens.kinds":"Semantic kinds","viewer.lens.choose":"Choose a kind to inspect its nodes and touching relationships.","viewer.lens.copy":"Copy link to semantic lens","viewer.lens.clear":"Clear semantic lens","viewer.lens.open":"Open semantic lens","viewer.lens.openActive":"Open active semantic lens","viewer.lens.legend":"Semantic legend","viewer.lens.legend.inspect.one":"Inspect {label}, {count} node","viewer.lens.legend.inspect.other":"Inspect {label}, {count} nodes","viewer.lens.kind.count.one":"{label}, {count} node","viewer.lens.kind.count.other":"{label}, {count} nodes","viewer.lens.compare.one":"{first} → {second}: {forward} · {second} → {first}: {reverse} · {count} direct relationship","viewer.lens.compare.other":"{first} → {second}: {forward} · {second} → {first}: {reverse} · {count} direct relationships","viewer.lens.single":"{nodes} · {relationships} · connected peers remain visible","viewer.lens.node.one":"{count} {label} node","viewer.lens.node.other":"{count} {label} nodes","viewer.lens.relationship.one":"{count} touching relationship","viewer.lens.relationship.other":"{count} touching relationships","viewer.radar.title":"Semantic radar","viewer.radar.building":"Building overview","viewer.radar.openFull":"Open full semantic radar","viewer.radar.open":"Open radar","viewer.radar.close":"Close semantic radar","viewer.radar.surface":"Diagram overview. Click a node to focus it, or use arrow keys to pan.","viewer.radar.click":"Click node","viewer.radar.drag":"Drag to pan","viewer.radar.space":"Semantic radar needs more MAP space.","viewer.radar.nodes":"Semantic diagram radar nodes","viewer.radar.focus":"Focus {label} from Semantic Radar","viewer.radar.status":"{count} nodes · {viewport}","viewer.radar.fullMap":"{count} nodes · full map","viewer.radar.compacted":"Radar compacted to avoid covering the Semantic Passport or MAP controls.","viewer.radar.cancelWaiting":"Cancel semantic radar waiting for more MAP space","viewer.radar.needsSpace":"Semantic radar needs more visible MAP space","viewer.radar.viewport.full":"full map","viewer.radar.viewport.width":"{percent}% width","viewer.radar.viewport.scale":"{percent}% viewport","viewer.nav.controls":"Diagram view controls","viewer.nav.route":"Trace a directed route","viewer.nav.route.title":"Trace route (R)","viewer.nav.route.short":"PATH","viewer.nav.radar":"Open semantic radar","viewer.nav.radar.title":"Semantic radar (M)","viewer.nav.radar.short":"MAP","viewer.nav.lens":"Open semantic lens","viewer.nav.lens.title":"Semantic lens (L)","viewer.nav.lens.short":"LENS","viewer.nav.find":"Find a node","viewer.nav.find.title":"Find a node (/)","viewer.nav.guide":"Open diagram guide","viewer.nav.guide.title":"Diagram guide (?)","viewer.nav.zoomOut":"Zoom out","viewer.nav.zoomOut.title":"Zoom out (-)","viewer.nav.reset":"Reset diagram view","viewer.nav.reset.title":"Reset view (0)","viewer.nav.read":"READ","viewer.nav.zoomIn":"Zoom in","viewer.nav.zoomIn.title":"Zoom in (+)","viewer.nav.camera":"{hint}. Reset diagram view","viewer.nav.camera.title":"{semantic}{hint} · reset view (0)","viewer.nav.camera.semantic":"Semantic camera active · ","viewer.nav.level.map":"MAP","viewer.nav.level.read":"READ","viewer.nav.level.full":"FULL","viewer.nav.level.auto":"AUTO","viewer.nav.detail.map":"Zoom in to reveal relationship labels and node context","viewer.nav.detail.read":"Zoom in again to reveal tags and annotations","viewer.nav.detail.full":"Full diagram detail","viewer.intent.summary":"{label}. {out} outgoing, {in} incoming{loops}. {total} connections. Press Enter for details.","viewer.intent.loops":", {count} self loop","viewer.common.copied":"Copied","viewer.common.copyFailed":"Copy failed","viewer.common.copyLink":"Copy link","viewer.common.clear":"Clear","viewer.common.close":"Close"}}</script>
     <div class="guided-views no-print" id="guided-views" hidden aria-label="Guided diagram views">
@@ -5130,8 +5130,8 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     <!-- Main Diagram -->
     <div class="diagram-container" data-detail-level="read"
          data-preset-badge-editorial-plate="ARCHIFY / PLATE 04">
-      <svg viewBox="0 0 1227 660" role="img" lang="en" aria-labelledby="archify-diagram-title archify-diagram-description" data-preset="classic" data-quality-profile="showcase">
-        <title id="archify-diagram-title">revagent 동작 구조</title>
+      <svg viewBox="0 0 1138 660" role="img" lang="en" aria-labelledby="archify-diagram-title archify-diagram-description" data-preset="classic" data-quality-profile="showcase">
+        <title id="archify-diagram-title">에이전트 루프 워크플로우</title>
         <desc id="archify-diagram-description">A workflow diagram generated by Archify.</desc>
         <!-- Definitions -->
         <defs>
@@ -5156,230 +5156,215 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <rect width="100%" height="100%" fill="url(#grid)" />
 
         <!-- Swimlanes -->
-        <rect data-graph-role="structural-frame" data-composition-frame-kind="lane" data-composition-frame-id="lane-0" x="40" y="52" width="1151" height="106" rx="10" class="c-lane" stroke-width="1"/>
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="lane" data-composition-frame-id="lane-0" x="40" y="52" width="1082" height="106" rx="10" class="c-lane" stroke-width="1"/>
         <text x="54" y="74" class="t-dim" font-size="10" font-weight="600">01 / 입력</text>
 
-        <rect data-graph-role="structural-frame" data-composition-frame-kind="lane" data-composition-frame-id="lane-1" x="40" y="178" width="1151" height="106" rx="10" class="c-lane" stroke-width="1"/>
-        <text x="54" y="200" class="t-dim" font-size="10" font-weight="600">02 / 에이전트 루프 (agent.py)</text>
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="lane" data-composition-frame-id="lane-1" x="40" y="178" width="1082" height="106" rx="10" class="c-lane" stroke-width="1"/>
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="exception-lane" data-composition-frame-id="lane-1-exception" x="46" y="184" width="1070" height="94" rx="8" class="c-security-group" stroke-width="1"/>
+        <text x="54" y="200" class="t-security" font-size="10" font-weight="600">EX / 메모리 · 비평가</text>
 
-        <rect data-graph-role="structural-frame" data-composition-frame-kind="lane" data-composition-frame-id="lane-2" x="40" y="304" width="1151" height="106" rx="10" class="c-lane" stroke-width="1"/>
-        <text x="54" y="326" class="t-dim" font-size="10" font-weight="600">03 / 툴 (로컬 WSL)</text>
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="lane" data-composition-frame-id="lane-2" x="40" y="304" width="1082" height="106" rx="10" class="c-lane" stroke-width="1"/>
+        <text x="54" y="326" class="t-dim" font-size="10" font-weight="600">03 / 에이전트 루프</text>
 
-        <rect data-graph-role="structural-frame" data-composition-frame-kind="lane" data-composition-frame-id="lane-3" x="40" y="430" width="1151" height="106" rx="10" class="c-lane" stroke-width="1"/>
-        <text x="54" y="452" class="t-dim" font-size="10" font-weight="600">04 / 외부 메모리 · 산출물 (.revagent/)</text>
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="lane" data-composition-frame-id="lane-3" x="40" y="430" width="1082" height="106" rx="10" class="c-lane" stroke-width="1"/>
+        <text x="54" y="452" class="t-dim" font-size="10" font-weight="600">04 / 종료</text>
 
         <!-- Phase headers -->
-        <line x1="72" y1="35" x2="284" y2="35" class="a-default" stroke-width="1.1"/>
-        <rect x="72" y="27" width="212" height="16" rx="4" class="c-mask"/>
-        <text x="178" y="39" class="t-muted" font-size="8" font-weight="600" text-anchor="middle">준비</text>
-        <line x1="422.4" y1="35" x2="908.4" y2="35" class="a-emphasis" stroke-width="1.1"/>
-        <rect x="422.4" y="27" width="486" height="16" rx="4" class="c-mask"/>
-        <text x="665.4" y="39" class="t-backend" font-size="8" font-weight="600" text-anchor="middle">ReAct 스텝 (최대 300회)</text>
-        <line x1="1061.2" y1="35" x2="1153.2" y2="35" class="a-dashed" stroke-width="1.1"/>
-        <rect x="1061.2" y="27" width="92" height="16" rx="4" class="c-mask"/>
-        <text x="1107.2" y="39" class="t-messagebus" font-size="8" font-weight="600" text-anchor="middle">컨텍스트 관리</text>
+        <line x1="72" y1="35" x2="164" y2="35" class="a-default" stroke-width="1.1"/>
+        <rect x="72" y="27" width="92" height="16" rx="4" class="c-mask"/>
+        <text x="118" y="39" class="t-muted" font-size="8" font-weight="600" text-anchor="middle">시작</text>
+        <line x1="192" y1="35" x2="735" y2="35" class="a-emphasis" stroke-width="1.1"/>
+        <rect x="192" y="27" width="543" height="16" rx="4" class="c-mask"/>
+        <text x="463.5" y="39" class="t-backend" font-size="8" font-weight="600" text-anchor="middle">스텝 반복</text>
+        <line x1="801" y1="35" x2="1089.4" y2="35" class="a-dashed" stroke-width="1.1"/>
+        <rect x="801" y="27" width="288.4000000000001" height="16" rx="4" class="c-mask"/>
+        <text x="945.2" y="39" class="t-messagebus" font-size="8" font-weight="600" text-anchor="middle">종료</text>
 
         <!-- Workflow groups -->
 
 
         <!-- Edge paths -->
-        <path data-edge-from="casefile" data-edge-to="task" data-edge-label="리셋 시 전문 재주입" data-edge-key="0" data-edge-id="e_casefile_task" data-composition-points="163,498;20,498;20,253;163,253" d="M 163 498 L 20 498 L 20 253 L 163 253" class="a-dashed" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
-        <path data-edge-from="compact" data-edge-to="casefile" data-edge-label="요약을 Log에 추가" data-edge-key="1" data-edge-id="e_compact_casefile" data-composition-points="1032.2,498;313,498" d="M 1032.2 498 L 313 498" class="a-dashed" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
-        <path data-edge-from="dispatch" data-edge-to="ghidra" data-edge-key="2" data-edge-id="e_dispatch_ghidra" data-composition-points="609.4,253;576.4,253;576.4,372;543.4,372" d="M 609.4 253 L 576.4 253 L 576.4 372 L 543.4 372" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="dispatch" data-edge-to="run" data-edge-key="3" data-edge-id="e_dispatch_run" data-composition-points="691.4,272;691.4,294;862.4,294;862.4,346" d="M 691.4 272 L 691.4 294 L 862.4 294 L 862.4 346" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="dispatch" data-edge-to="shell" data-edge-key="4" data-edge-id="e_dispatch_shell" data-composition-points="759.4,246;775.4,246;775.4,372;759.4,372" d="M 759.4 246 L 775.4 246 L 775.4 372 L 759.4 372" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="dispatch" data-edge-to="truncate" data-edge-key="5" data-edge-id="e_dispatch_truncate" data-composition-points="759.4,246;787.4,246" d="M 759.4 246 L 787.4 246" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="gate" data-edge-to="compact" data-edge-label="초과" data-edge-key="6" data-edge-id="e_gate_compact" data-composition-points="1182.2,246;1208.2,246;1208.2,498;1182.2,498" d="M 1182.2 246 L 1208.2 246 L 1208.2 498 L 1182.2 498" class="a-security" stroke-width="1.4" marker-end="url(#arrowhead-security)"/>
-        <path data-edge-from="gate" data-edge-to="qwen" data-edge-label="다음 스텝" data-edge-key="7" data-edge-id="e_gate_qwen" data-composition-points="1107.2,212;1107.2,196;468.4,196;468.4,212" d="M 1107.2 212 L 1107.2 196 L 468.4 196 L 468.4 212" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="problem" data-edge-to="task" data-edge-key="8" data-edge-id="e_problem_task" data-composition-points="188,120;238,120;238,220" d="M 188 120 L 238 120 L 238 220" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="qwen" data-edge-to="dispatch" data-edge-label="tool_calls" data-edge-key="9" data-edge-id="e_qwen_dispatch" data-composition-points="468.4,212;468.4,162;684.4,162;684.4,220" d="M 468.4 212 L 468.4 162 L 684.4 162 L 684.4 220" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="run" data-edge-to="submit" data-edge-label="Correct 확인 후" data-edge-key="10" data-edge-id="e_run_submit" data-composition-points="937.4,372;1032.2,372" d="M 937.4 372 L 1032.2 372" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="task" data-edge-to="qwen" data-edge-label="system + task" data-edge-key="11" data-edge-id="e_task_qwen" data-composition-points="313,246;393.4,246" d="M 313 246 L 393.4 246" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="truncate" data-edge-to="gate" data-edge-label="tool 메시지 추가" data-edge-key="12" data-edge-id="e_truncate_gate" data-composition-points="862.4,220;862.4,162;1107.2,162;1107.2,212" d="M 862.4 220 L 862.4 162 L 1107.2 162 L 1107.2 212" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="llm_step" data-edge-to="toolcall" data-edge-label="tool_calls" data-edge-key="0" data-edge-id="e_call" data-composition-points="238,406;238,426;449,426;449,398" d="M 238 406 L 238 426 L 449 426 L 449 398" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="progress" data-edge-to="compact" data-edge-label="44k 토큰 초과" data-edge-key="1" data-edge-id="e_compact" data-composition-points="764,365;854,365;854,280" d="M 764 365 L 854 365 L 854 280" class="a-security" stroke-width="1.4" marker-end="url(#arrowhead-security)"/>
+        <path data-edge-from="compact" data-edge-to="llm_step" data-edge-label="리셋 메시지 + case.md" data-edge-key="2" data-edge-id="e_compact_back" data-composition-points="847,212;847,162;238,162;238,338" d="M 847 212 L 847 162 L 238 162 L 238 338" class="a-dashed" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
+        <path data-edge-from="critic" data-edge-to="llm_step" data-edge-label="[critic] 메모 주입" data-edge-key="3" data-edge-id="e_critic_back" data-composition-points="614,246;598,246;598,162;238,162;238,338" d="M 614 246 L 598 246 L 598 162 L 238 162 L 238 338" class="a-dashed" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
+        <path data-edge-from="submit" data-edge-to="end" data-edge-label="accepted" data-edge-key="4" data-edge-id="e_end" data-composition-points="917,498;973.4000000000001,498" d="M 917 498 L 973.4000000000001 498" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="progress" data-edge-to="critic" data-edge-label="무진전 12스텝" data-edge-key="5" data-edge-id="e_idle" data-composition-points="689,346;689,280" d="M 689 346 L 689 280" class="a-security" stroke-width="1.4" marker-end="url(#arrowhead-security)"/>
+        <path data-edge-from="toolcall" data-edge-to="ledger" data-edge-label="run_binary / run_gui" data-edge-key="6" data-edge-id="e_obs" data-composition-points="449,346;449,280" d="M 449 346 L 449 280" class="a-dashed" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
+        <path data-edge-from="toolcall" data-edge-to="progress" data-edge-label="결과 (12k 잘림)" data-edge-key="7" data-edge-id="e_result" data-composition-points="524,372;614,372" d="M 524 372 L 614 372" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="toolcall" data-edge-to="runbook" data-edge-label="환경이 못 돌릴 때" data-edge-key="8" data-edge-id="e_runbook" data-composition-points="449,398;449,498;614,498" d="M 449 398 L 449 498 L 614 498" class="a-security" stroke-width="1.4" marker-end="url(#arrowhead-security)"/>
+        <path data-edge-from="runbook" data-edge-to="end" data-edge-key="9" data-edge-id="e_runbook_end" data-composition-points="689,524;689,540;1043.4,540;1043.4,524" d="M 689 524 L 689 540 L 1043.4 540 L 1043.4 524" class="a-dashed" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
+        <path data-edge-from="progress" data-edge-to="submit" data-edge-label="플래그 검증 완료" data-edge-key="10" data-edge-id="e_submit" data-composition-points="689,398;689,420;847,420;847,464" d="M 689 398 L 689 420 L 847 420 L 847 464" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="task" data-edge-to="llm_step" data-edge-key="11" data-edge-id="e_task" data-composition-points="188,120;238,120;238,338" d="M 188 120 L 238 120 L 238 338" class="a-default" stroke-width="1.4" marker-end="url(#arrowhead)"/>
 
         <!-- Nodes -->
-        <g id="node-problem" data-node-id="problem" data-node-label="문제 폴더" tabindex="0" role="button" aria-label="Focus 문제 폴더, 바이너리 + desc.txt, 입력 › 준비" aria-pressed="false" data-node-kind="external" data-node-sublabel="바이너리 + desc.txt" data-node-context="입력 › 준비">
-          <title>문제 폴더 · 바이너리 + desc.txt · 입력 › 준비</title>
+        <g id="node-task" data-node-id="task" data-node-label="작업 메시지" tabindex="0" role="button" aria-label="Focus 작업 메시지, desc.txt + ls -la, 입력 › 시작" aria-pressed="false" data-node-kind="external" data-node-sublabel="desc.txt + ls -la" data-node-context="입력 › 시작">
+          <title>작업 메시지 · desc.txt + ls -la · 입력 › 시작</title>
           <rect x="48" y="94" width="140" height="52" rx="6" class="c-mask"/>
           <rect x="48" y="94" width="140" height="52" rx="6" class="c-external" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="external" class="semantic-sigil s-external" transform="translate(54 100) scale(0.6875)">
             <rect x="2.5" y="5" width="8.5" height="8" rx="1.5"/>
             <path d="M8 2.5h5.5V8M13.5 2.5 7.5 8.5"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="118" y="115" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">문제 폴더</text>
-          <text data-detail="context" x="118" y="132" class="t-muted" font-size="8" text-anchor="middle">바이너리 + desc.txt</text>
+          <text data-node-label="" data-detail-anchor="" x="118" y="115" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">작업 메시지</text>
+          <text data-detail="context" x="118" y="132" class="t-muted" font-size="8" text-anchor="middle">desc.txt + ls -la</text>
         </g>
 
-        <g id="node-task" data-node-id="task" data-node-label="과제 메시지 구성" tabindex="0" role="button" aria-label="Focus 과제 메시지 구성, 플레이북 + 설명 + ls, 에이전트 루프 (agent.py) › 준비" aria-pressed="false" data-node-kind="backend" data-node-sublabel="플레이북 + 설명 + ls" data-node-context="에이전트 루프 (agent.py) › 준비">
-          <title>과제 메시지 구성 · 플레이북 + 설명 + ls · 에이전트 루프 (agent.py) › 준비</title>
-          <rect x="163" y="220" width="150" height="52" rx="6" class="c-mask"/>
-          <rect x="163" y="220" width="150" height="52" rx="6" class="c-backend" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(169 226) scale(0.6875)">
-            <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
-          </g>
-          <text data-node-label="" data-detail-anchor="" x="238" y="241" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">과제 메시지 구성</text>
-          <text data-detail="context" x="238" y="258" class="t-muted" font-size="8" text-anchor="middle">플레이북 + 설명 + ls</text>
-        </g>
-
-        <g id="node-qwen" data-node-id="qwen" data-node-label="Qwen3.8-27B 호출" tabindex="0" role="button" aria-label="Focus Qwen3.8-27B 호출, vLLM · thinking medium, 에이전트 루프 (agent.py) › ReAct 스텝 (최대 300회)" aria-pressed="false" data-node-kind="cloud" data-node-sublabel="vLLM · thinking medium" data-node-tag="tool calling" data-node-context="에이전트 루프 (agent.py) › ReAct 스텝 (최대 300회)">
-          <title>Qwen3.8-27B 호출 · vLLM · thinking medium · 에이전트 루프 (agent.py) › ReAct 스텝 (최대 300회) · tool calling</title>
-          <rect x="393.4" y="212" width="150" height="68" rx="6" class="c-mask"/>
-          <rect x="393.4" y="212" width="150" height="68" rx="6" class="c-cloud" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="cloud" class="semantic-sigil s-cloud" transform="translate(399.4 218) scale(0.6875)">
-            <path d="M4.3 12.5h7.3a2.4 2.4 0 0 0 .2-4.8 4 4 0 0 0-7.5-1.3A3.1 3.1 0 0 0 4.3 12.5Z"/>
-          </g>
-          <text data-node-label="" data-detail-anchor="" x="468.4" y="233" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Qwen3.8-27B 호출</text>
-          <text data-detail="context" x="468.4" y="250" class="t-muted" font-size="8" text-anchor="middle">vLLM · thinking medium</text>
-        <text data-detail="fine" x="468.4" y="268" class="t-cloud" font-size="7" text-anchor="middle">tool calling</text>
-        </g>
-
-        <g id="node-dispatch" data-node-id="dispatch" data-node-label="툴 호출 실행" tabindex="0" role="button" aria-label="Focus 툴 호출 실행, 순차 · 예외는 [tool error], 에이전트 루프 (agent.py) › ReAct 스텝 (최대 300회)" aria-pressed="false" data-node-kind="backend" data-node-sublabel="순차 · 예외는 [tool error]" data-node-context="에이전트 루프 (agent.py) › ReAct 스텝 (최대 300회)">
-          <title>툴 호출 실행 · 순차 · 예외는 [tool error] · 에이전트 루프 (agent.py) › ReAct 스텝 (최대 300회)</title>
-          <rect x="609.4" y="220" width="150" height="52" rx="6" class="c-mask"/>
-          <rect x="609.4" y="220" width="150" height="52" rx="6" class="c-backend" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(615.4 226) scale(0.6875)">
-            <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
-          </g>
-          <text data-node-label="" data-detail-anchor="" x="684.4" y="241" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">툴 호출 실행</text>
-          <text data-detail="context" x="684.4" y="258" class="t-muted" font-size="8" text-anchor="middle">순차 · 예외는 [tool error]</text>
-        </g>
-
-        <g id="node-truncate" data-node-id="truncate" data-node-label="결과 절단" tabindex="0" role="button" aria-label="Focus 결과 절단, 12k 초과 → out/NNN.txt, 에이전트 루프 (agent.py) › ReAct 스텝 (최대 300회)" aria-pressed="false" data-node-kind="backend" data-node-sublabel="12k 초과 → out/NNN.txt" data-node-context="에이전트 루프 (agent.py) › ReAct 스텝 (최대 300회)">
-          <title>결과 절단 · 12k 초과 → out/NNN.txt · 에이전트 루프 (agent.py) › ReAct 스텝 (최대 300회)</title>
-          <rect x="787.4" y="220" width="150" height="52" rx="6" class="c-mask"/>
-          <rect x="787.4" y="220" width="150" height="52" rx="6" class="c-backend" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(793.4 226) scale(0.6875)">
-            <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
-          </g>
-          <text data-node-label="" data-detail-anchor="" x="862.4" y="241" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">결과 절단</text>
-          <text data-detail="context" x="862.4" y="258" class="t-muted" font-size="8" text-anchor="middle">12k 초과 → out/NNN.txt</text>
-        </g>
-
-        <g id="node-gate" data-node-id="gate" data-node-label="프롬프트 44k 초과?" tabindex="0" role="button" aria-label="Focus 프롬프트 44k 초과?, 아니면 다음 스텝, 에이전트 루프 (agent.py) › 컨텍스트 관리" aria-pressed="false" data-node-kind="security" data-node-sublabel="아니면 다음 스텝" data-node-tag="3회 연속이면 중단" data-node-context="에이전트 루프 (agent.py) › 컨텍스트 관리">
-          <title>프롬프트 44k 초과? · 아니면 다음 스텝 · 에이전트 루프 (agent.py) › 컨텍스트 관리 · 3회 연속이면 중단</title>
-          <rect x="1032.2" y="212" width="150" height="68" rx="6" class="c-mask"/>
-          <rect x="1032.2" y="212" width="150" height="68" rx="6" class="c-security" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(1038.2 218) scale(0.6875)">
-            <path d="M8 2.2 13 4v3.5c0 3.1-1.8 5.4-5 6.5-3.2-1.1-5-3.4-5-6.5V4Z"/>
-            <path d="m5.8 8 1.5 1.5 3-3"/>
-          </g>
-          <text data-node-label="" data-detail-anchor="" x="1107.2" y="233" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">프롬프트 44k 초과?</text>
-          <text data-detail="context" x="1107.2" y="250" class="t-muted" font-size="8" text-anchor="middle">아니면 다음 스텝</text>
-        <text data-detail="fine" x="1107.2" y="268" class="t-security" font-size="7" text-anchor="middle">3회 연속이면 중단</text>
-        </g>
-
-        <g id="node-ghidra" data-node-id="ghidra" data-node-label="decompile" tabindex="0" role="button" aria-label="Focus decompile, Ghidra headless · 캐시, 툴 (로컬 WSL) › ReAct 스텝 (최대 300회)" aria-pressed="false" data-node-kind="database" data-node-sublabel="Ghidra headless · 캐시" data-node-context="툴 (로컬 WSL) › ReAct 스텝 (최대 300회)">
-          <title>decompile · Ghidra headless · 캐시 · 툴 (로컬 WSL) › ReAct 스텝 (최대 300회)</title>
-          <rect x="393.4" y="346" width="150" height="52" rx="6" class="c-mask"/>
-          <rect x="393.4" y="346" width="150" height="52" rx="6" class="c-database" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(399.4 352) scale(0.6875)">
+        <g id="node-ledger" data-node-id="ledger" data-node-label="관찰 원장" tabindex="0" role="button" aria-label="Focus 관찰 원장, [obs step N] → case.md, 메모리 · 비평가 › 스텝 반복" aria-pressed="false" data-node-kind="database" data-node-sublabel="[obs step N] → case.md" data-node-tag="도구가 자동 기록" data-node-context="메모리 · 비평가 › 스텝 반복">
+          <title>관찰 원장 · [obs step N] → case.md · 메모리 · 비평가 › 스텝 반복 · 도구가 자동 기록</title>
+          <rect x="374" y="212" width="150" height="68" rx="6" class="c-mask"/>
+          <rect x="374" y="212" width="150" height="68" rx="6" class="c-database" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(380 218) scale(0.6875)">
             <ellipse cx="8" cy="4" rx="5" ry="2"/>
             <path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="468.4" y="367" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">decompile</text>
-          <text data-detail="context" x="468.4" y="384" class="t-muted" font-size="8" text-anchor="middle">Ghidra headless · 캐시</text>
+          <text data-node-label="" data-detail-anchor="" x="449" y="233" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">관찰 원장</text>
+          <text data-detail="context" x="449" y="250" class="t-muted" font-size="8" text-anchor="middle">[obs step N] → case.md</text>
+        <text data-detail="fine" x="449" y="268" class="t-database" font-size="7" text-anchor="middle">도구가 자동 기록</text>
         </g>
 
-        <g id="node-shell" data-node-id="shell" data-node-label="bash / summarize" tabindex="0" role="button" aria-label="Focus bash / summarize, objdump · gdb · python, 툴 (로컬 WSL) › ReAct 스텝 (최대 300회)" aria-pressed="false" data-node-kind="messagebus" data-node-sublabel="objdump · gdb · python" data-node-context="툴 (로컬 WSL) › ReAct 스텝 (최대 300회)">
-          <title>bash / summarize · objdump · gdb · python · 툴 (로컬 WSL) › ReAct 스텝 (최대 300회)</title>
-          <rect x="609.4" y="346" width="150" height="52" rx="6" class="c-mask"/>
-          <rect x="609.4" y="346" width="150" height="52" rx="6" class="c-messagebus" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="messagebus" class="semantic-sigil s-messagebus" transform="translate(615.4 352) scale(0.6875)">
+        <g id="node-critic" data-node-id="critic" data-node-label="비평가" tabindex="0" role="button" aria-label="Focus 비평가, 12스텝 무진전 · 압축 직전, 메모리 · 비평가 › 스텝 반복" aria-pressed="false" data-node-kind="security" data-node-sublabel="12스텝 무진전 · 압축 직전" data-node-tag="최대 8회" data-node-context="메모리 · 비평가 › 스텝 반복">
+          <title>비평가 · 12스텝 무진전 · 압축 직전 · 메모리 · 비평가 › 스텝 반복 · 최대 8회</title>
+          <rect x="614" y="212" width="150" height="68" rx="6" class="c-mask"/>
+          <rect x="614" y="212" width="150" height="68" rx="6" class="c-security" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(620 218) scale(0.6875)">
+            <path d="M8 2.2 13 4v3.5c0 3.1-1.8 5.4-5 6.5-3.2-1.1-5-3.4-5-6.5V4Z"/>
+            <path d="m5.8 8 1.5 1.5 3-3"/>
+          </g>
+          <text data-node-label="" data-detail-anchor="" x="689" y="233" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">비평가</text>
+          <text data-detail="context" x="689" y="250" class="t-muted" font-size="8" text-anchor="middle">12스텝 무진전 · 압축 직전</text>
+        <text data-detail="fine" x="689" y="268" class="t-security" font-size="7" text-anchor="middle">최대 8회</text>
+        </g>
+
+        <g id="node-compact" data-node-id="compact" data-node-label="압축" tabindex="0" role="button" aria-label="Focus 압축, 요약 → Log, 최근 4개 유지, 메모리 · 비평가 › 종료" aria-pressed="false" data-node-kind="database" data-node-sublabel="요약 → Log, 최근 4개 유지" data-node-tag="2연속 초과면 shrink" data-node-context="메모리 · 비평가 › 종료">
+          <title>압축 · 요약 → Log, 최근 4개 유지 · 메모리 · 비평가 › 종료 · 2연속 초과면 shrink</title>
+          <rect x="772" y="212" width="150" height="68" rx="6" class="c-mask"/>
+          <rect x="772" y="212" width="150" height="68" rx="6" class="c-database" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(778 218) scale(0.6875)">
+            <ellipse cx="8" cy="4" rx="5" ry="2"/>
+            <path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>
+          </g>
+          <text data-node-label="" data-detail-anchor="" x="847" y="233" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">압축</text>
+          <text data-detail="context" x="847" y="250" class="t-muted" font-size="8" text-anchor="middle">요약 → Log, 최근 4개 유지</text>
+        <text data-detail="fine" x="847" y="268" class="t-database" font-size="7" text-anchor="middle">2연속 초과면 shrink</text>
+        </g>
+
+        <g id="node-llm_step" data-node-id="llm_step" data-node-label="Qwen 스텝" tabindex="0" role="button" aria-label="Focus Qwen 스텝, thinking → tool call, 에이전트 루프 › 스텝 반복" aria-pressed="false" data-node-kind="backend" data-node-sublabel="thinking → tool call" data-node-tag="reasoning medium" data-node-context="에이전트 루프 › 스텝 반복">
+          <title>Qwen 스텝 · thinking → tool call · 에이전트 루프 › 스텝 반복 · reasoning medium</title>
+          <rect x="168" y="338" width="140" height="68" rx="6" class="c-mask"/>
+          <rect x="168" y="338" width="140" height="68" rx="6" class="c-backend" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(174 344) scale(0.6875)">
+            <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
+          </g>
+          <text data-node-label="" data-detail-anchor="" x="238" y="359" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Qwen 스텝</text>
+          <text data-detail="context" x="238" y="376" class="t-muted" font-size="8" text-anchor="middle">thinking → tool call</text>
+        <text data-detail="fine" x="238" y="394" class="t-backend" font-size="7" text-anchor="middle">reasoning medium</text>
+        </g>
+
+        <g id="node-toolcall" data-node-id="toolcall" data-node-label="도구 실행" tabindex="0" role="button" aria-label="Focus 도구 실행, bash / decompile / run_gui …, 에이전트 루프 › 스텝 반복" aria-pressed="false" data-node-kind="messagebus" data-node-sublabel="bash / decompile / run_gui …" data-node-context="에이전트 루프 › 스텝 반복">
+          <title>도구 실행 · bash / decompile / run_gui … · 에이전트 루프 › 스텝 반복</title>
+          <rect x="374" y="346" width="150" height="52" rx="6" class="c-mask"/>
+          <rect x="374" y="346" width="150" height="52" rx="6" class="c-messagebus" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="messagebus" class="semantic-sigil s-messagebus" transform="translate(380 352) scale(0.6875)">
             <path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/>
             <circle cx="5" cy="4.5" r="1" class="sigil-fill"/>
             <circle cx="10.5" cy="8" r="1" class="sigil-fill"/>
             <circle cx="7" cy="11.5" r="1" class="sigil-fill"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="684.4" y="367" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">bash / summarize</text>
-          <text data-detail="context" x="684.4" y="384" class="t-muted" font-size="8" text-anchor="middle">objdump · gdb · python</text>
+          <text data-node-label="" data-detail-anchor="" x="449" y="367" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">도구 실행</text>
+          <text data-detail="context" x="449" y="384" class="t-muted" font-size="8" text-anchor="middle">bash / decompile / run_gui …</text>
         </g>
 
-        <g id="node-run" data-node-id="run" data-node-label="run_binary" tabindex="0" role="button" aria-label="Focus run_binary, 후보 입력으로 검증, 툴 (로컬 WSL) › ReAct 스텝 (최대 300회)" aria-pressed="false" data-node-kind="backend" data-node-sublabel="후보 입력으로 검증" data-node-context="툴 (로컬 WSL) › ReAct 스텝 (최대 300회)">
-          <title>run_binary · 후보 입력으로 검증 · 툴 (로컬 WSL) › ReAct 스텝 (최대 300회)</title>
-          <rect x="787.4" y="346" width="150" height="52" rx="6" class="c-mask"/>
-          <rect x="787.4" y="346" width="150" height="52" rx="6" class="c-backend" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(793.4 352) scale(0.6875)">
+        <g id="node-progress" data-node-id="progress" data-node-label="진행 판정" tabindex="0" role="button" aria-label="Focus 진행 판정, Facts·[obs] 늘었나? 토큰 44k?, 에이전트 루프 › 스텝 반복" aria-pressed="false" data-node-kind="backend" data-node-sublabel="Facts·[obs] 늘었나? 토큰 44k?" data-node-context="에이전트 루프 › 스텝 반복">
+          <title>진행 판정 · Facts·[obs] 늘었나? 토큰 44k? · 에이전트 루프 › 스텝 반복</title>
+          <rect x="614" y="346" width="150" height="52" rx="6" class="c-mask"/>
+          <rect x="614" y="346" width="150" height="52" rx="6" class="c-backend" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(620 352) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="862.4" y="367" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">run_binary</text>
-          <text data-detail="context" x="862.4" y="384" class="t-muted" font-size="8" text-anchor="middle">후보 입력으로 검증</text>
+          <text data-node-label="" data-detail-anchor="" x="689" y="367" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">진행 판정</text>
+          <text data-detail="context" x="689" y="384" class="t-muted" font-size="8" text-anchor="middle">Facts·[obs] 늘었나? 토큰 44k?</text>
         </g>
 
-        <g id="node-submit" data-node-id="submit" data-node-label="submit_flag" tabindex="0" role="button" aria-label="Focus submit_flag, DH{...} 검사 → 종료, 툴 (로컬 WSL) › 컨텍스트 관리" aria-pressed="false" data-node-kind="security" data-node-sublabel="DH{...} 검사 → 종료" data-node-context="툴 (로컬 WSL) › 컨텍스트 관리">
-          <title>submit_flag · DH{...} 검사 → 종료 · 툴 (로컬 WSL) › 컨텍스트 관리</title>
-          <rect x="1032.2" y="346" width="150" height="52" rx="6" class="c-mask"/>
-          <rect x="1032.2" y="346" width="150" height="52" rx="6" class="c-security" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(1038.2 352) scale(0.6875)">
+        <g id="node-runbook" data-node-id="runbook" data-node-label="handoff_runbook" tabindex="0" role="button" aria-label="Focus handoff_runbook, env_blocked 일 때만, 종료 › 스텝 반복" aria-pressed="false" data-node-kind="security" data-node-sublabel="env_blocked 일 때만" data-node-context="종료 › 스텝 반복">
+          <title>handoff_runbook · env_blocked 일 때만 · 종료 › 스텝 반복</title>
+          <rect x="614" y="472" width="150" height="52" rx="6" class="c-mask"/>
+          <rect x="614" y="472" width="150" height="52" rx="6" class="c-security" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(620 478) scale(0.6875)">
             <path d="M8 2.2 13 4v3.5c0 3.1-1.8 5.4-5 6.5-3.2-1.1-5-3.4-5-6.5V4Z"/>
             <path d="m5.8 8 1.5 1.5 3-3"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="1107.2" y="367" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">submit_flag</text>
-          <text data-detail="context" x="1107.2" y="384" class="t-muted" font-size="8" text-anchor="middle">DH{...} 검사 → 종료</text>
+          <text data-node-label="" data-detail-anchor="" x="689" y="493" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">handoff_runbook</text>
+          <text data-detail="context" x="689" y="510" class="t-muted" font-size="8" text-anchor="middle">env_blocked 일 때만</text>
         </g>
 
-        <g id="node-casefile" data-node-id="casefile" data-node-label="case.md" tabindex="0" role="button" aria-label="Focus case.md, Facts · Todo · Log, 외부 메모리 · 산출물 (.revagent/) › 준비" aria-pressed="false" data-node-kind="database" data-node-sublabel="Facts · Todo · Log" data-node-tag="notes 툴이 기록" data-node-context="외부 메모리 · 산출물 (.revagent/) › 준비">
-          <title>case.md · Facts · Todo · Log · 외부 메모리 · 산출물 (.revagent/) › 준비 · notes 툴이 기록</title>
-          <rect x="163" y="464" width="150" height="68" rx="6" class="c-mask"/>
-          <rect x="163" y="464" width="150" height="68" rx="6" class="c-database" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(169 470) scale(0.6875)">
-            <ellipse cx="8" cy="4" rx="5" ry="2"/>
-            <path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>
+        <g id="node-submit" data-node-id="submit" data-node-label="submit_flag" tabindex="0" role="button" aria-label="Focus submit_flag, evidence 종류 검사, 종료 › 종료" aria-pressed="false" data-node-kind="security" data-node-sublabel="evidence 종류 검사" data-node-tag="두 경로 규칙" data-node-context="종료 › 종료">
+          <title>submit_flag · evidence 종류 검사 · 종료 › 종료 · 두 경로 규칙</title>
+          <rect x="777" y="464" width="140" height="68" rx="6" class="c-mask"/>
+          <rect x="777" y="464" width="140" height="68" rx="6" class="c-security" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(783 470) scale(0.6875)">
+            <path d="M8 2.2 13 4v3.5c0 3.1-1.8 5.4-5 6.5-3.2-1.1-5-3.4-5-6.5V4Z"/>
+            <path d="m5.8 8 1.5 1.5 3-3"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="238" y="485" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">case.md</text>
-          <text data-detail="context" x="238" y="502" class="t-muted" font-size="8" text-anchor="middle">Facts · Todo · Log</text>
-        <text data-detail="fine" x="238" y="520" class="t-database" font-size="7" text-anchor="middle">notes 툴이 기록</text>
+          <text data-node-label="" data-detail-anchor="" x="847" y="485" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">submit_flag</text>
+          <text data-detail="context" x="847" y="502" class="t-muted" font-size="8" text-anchor="middle">evidence 종류 검사</text>
+        <text data-detail="fine" x="847" y="520" class="t-security" font-size="7" text-anchor="middle">두 경로 규칙</text>
         </g>
 
-        <g id="node-compact" data-node-id="compact" data-node-label="컴팩션" tabindex="0" role="button" aria-label="Focus 컴팩션, 요약 → Log · 최근 4교환, 외부 메모리 · 산출물 (.revagent/) › 컨텍스트 관리" aria-pressed="false" data-node-kind="database" data-node-sublabel="요약 → Log · 최근 4교환" data-node-context="외부 메모리 · 산출물 (.revagent/) › 컨텍스트 관리">
-          <title>컴팩션 · 요약 → Log · 최근 4교환 · 외부 메모리 · 산출물 (.revagent/) › 컨텍스트 관리</title>
-          <rect x="1032.2" y="472" width="150" height="52" rx="6" class="c-mask"/>
-          <rect x="1032.2" y="472" width="150" height="52" rx="6" class="c-database" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(1038.2 478) scale(0.6875)">
-            <ellipse cx="8" cy="4" rx="5" ry="2"/>
-            <path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>
+        <g id="node-end" data-node-id="end" data-node-label="종료" tabindex="0" role="button" aria-label="Focus 종료, solved / unsolved / runbook, 종료 › 종료" aria-pressed="false" data-node-kind="backend" data-node-sublabel="solved / unsolved / runbook" data-node-context="종료 › 종료">
+          <title>종료 · solved / unsolved / runbook · 종료 › 종료</title>
+          <rect x="973.4000000000001" y="472" width="140" height="52" rx="6" class="c-mask"/>
+          <rect x="973.4000000000001" y="472" width="140" height="52" rx="6" class="c-backend" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(979.4000000000001 478) scale(0.6875)">
+            <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="1107.2" y="493" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">컴팩션</text>
-          <text data-detail="context" x="1107.2" y="510" class="t-muted" font-size="8" text-anchor="middle">요약 → Log · 최근 4교환</text>
+          <text data-node-label="" data-detail-anchor="" x="1043.4" y="493" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">종료</text>
+          <text data-detail="context" x="1043.4" y="510" class="t-muted" font-size="8" text-anchor="middle">solved / unsolved / runbook</text>
         </g>
 
         <!-- Edge labels -->
-        <g data-detail="context" data-edge-from="casefile" data-edge-to="task" data-edge-label="리셋 시 전문 재주입" data-edge-key="0" data-edge-id="e_casefile_task">
-          <rect x="40.9" y="478" width="101.2" height="14" rx="3" class="c-mask"/>
-          <text x="91.5" y="488" class="t-database" font-size="8" text-anchor="middle">리셋 시 전문 재주입</text>
+        <g data-detail="context" data-edge-from="llm_step" data-edge-to="toolcall" data-edge-label="tool_calls" data-edge-key="0" data-edge-id="e_call">
+          <rect x="314.5" y="406" width="58" height="14" rx="3" class="c-mask"/>
+          <text x="343.5" y="416" class="t-backend" font-size="8" text-anchor="middle">tool_calls</text>
         </g>
-        <g data-detail="context" data-edge-from="compact" data-edge-to="casefile" data-edge-label="요약을 Log에 추가" data-edge-key="1" data-edge-id="e_compact_casefile">
-          <rect x="626.8000000000001" y="478" width="91.6" height="14" rx="3" class="c-mask"/>
-          <text x="672.6" y="488" class="t-database" font-size="8" text-anchor="middle">요약을 Log에 추가</text>
+        <g data-detail="context" data-edge-from="progress" data-edge-to="compact" data-edge-label="44k 토큰 초과" data-edge-key="1" data-edge-id="e_compact">
+          <rect x="772.8" y="345" width="72.4" height="14" rx="3" class="c-mask"/>
+          <text x="809" y="355" class="t-security" font-size="8" text-anchor="middle">44k 토큰 초과</text>
+        </g>
+        <g data-detail="context" data-edge-from="compact" data-edge-to="llm_step" data-edge-label="리셋 메시지 + case.md" data-edge-key="2" data-edge-id="e_compact_back">
+          <rect x="487.1" y="142" width="110.8" height="14" rx="3" class="c-mask"/>
+          <text x="542.5" y="152" class="t-database" font-size="8" text-anchor="middle">리셋 메시지 + case.md</text>
+        </g>
+        <g data-detail="context" data-edge-from="critic" data-edge-to="llm_step" data-edge-label="[critic] 메모 주입" data-edge-key="3" data-edge-id="e_critic_back">
+          <rect x="369.8" y="142" width="96.39999999999999" height="14" rx="3" class="c-mask"/>
+          <text x="418" y="152" class="t-database" font-size="8" text-anchor="middle">[critic] 메모 주입</text>
+        </g>
+        <g data-detail="context" data-edge-from="submit" data-edge-to="end" data-edge-label="accepted" data-edge-key="4" data-edge-id="e_end">
+          <rect x="921" y="478" width="48.4" height="14" rx="3" class="c-mask"/>
+          <text x="945.2" y="488" class="t-backend" font-size="8" text-anchor="middle">accepted</text>
+        </g>
+        <g data-detail="context" data-edge-from="progress" data-edge-to="critic" data-edge-label="무진전 12스텝" data-edge-key="5" data-edge-id="e_idle">
+          <rect x="652.8" y="326" width="72.4" height="14" rx="3" class="c-mask"/>
+          <text x="689" y="336" class="t-security" font-size="8" text-anchor="middle">무진전 12스텝</text>
+        </g>
+        <g data-detail="context" data-edge-from="toolcall" data-edge-to="ledger" data-edge-label="run_binary / run_gui" data-edge-key="6" data-edge-id="e_obs">
+          <rect x="396" y="326" width="106" height="14" rx="3" class="c-mask"/>
+          <text x="449" y="336" class="t-database" font-size="8" text-anchor="middle">run_binary / run_gui</text>
+        </g>
+        <g data-detail="context" data-edge-from="toolcall" data-edge-to="progress" data-edge-label="결과 (12k 잘림)" data-edge-key="7" data-edge-id="e_result">
+          <rect x="528" y="352" width="82" height="14" rx="3" class="c-mask"/>
+          <text x="569" y="362" class="t-backend" font-size="8" text-anchor="middle">결과 (12k 잘림)</text>
+        </g>
+        <g data-detail="context" data-edge-from="toolcall" data-edge-to="runbook" data-edge-label="환경이 못 돌릴 때" data-edge-key="8" data-edge-id="e_runbook">
+          <rect x="485.7" y="478" width="91.6" height="14" rx="3" class="c-mask"/>
+          <text x="531.5" y="488" class="t-security" font-size="8" text-anchor="middle">환경이 못 돌릴 때</text>
         </g>
 
-
-
-
-        <g data-detail="context" data-edge-from="gate" data-edge-to="compact" data-edge-label="초과" data-edge-key="6" data-edge-id="e_gate_compact">
-          <rect x="1180.2" y="226" width="30" height="14" rx="3" class="c-mask"/>
-          <text x="1195.2" y="236" class="t-security" font-size="8" text-anchor="middle">초과</text>
-        </g>
-        <g data-detail="context" data-edge-from="gate" data-edge-to="qwen" data-edge-label="다음 스텝" data-edge-key="7" data-edge-id="e_gate_qwen">
-          <rect x="761.1999999999999" y="176" width="53.199999999999996" height="14" rx="3" class="c-mask"/>
-          <text x="787.8" y="186" class="t-muted" font-size="8" text-anchor="middle">다음 스텝</text>
+        <g data-detail="context" data-edge-from="progress" data-edge-to="submit" data-edge-label="플래그 검증 완료" data-edge-key="10" data-edge-id="e_submit">
+          <rect x="724.6" y="400" width="86.8" height="14" rx="3" class="c-mask"/>
+          <text x="768" y="410" class="t-backend" font-size="8" text-anchor="middle">플래그 검증 완료</text>
         </g>
 
-        <g data-detail="context" data-edge-from="qwen" data-edge-to="dispatch" data-edge-label="tool_calls" data-edge-key="9" data-edge-id="e_qwen_dispatch">
-          <rect x="547.4" y="142" width="58" height="14" rx="3" class="c-mask"/>
-          <text x="576.4" y="152" class="t-backend" font-size="8" text-anchor="middle">tool_calls</text>
-        </g>
-        <g data-detail="context" data-edge-from="run" data-edge-to="submit" data-edge-label="Correct 확인 후" data-edge-key="10" data-edge-id="e_run_submit">
-          <rect x="943.8" y="352" width="82" height="14" rx="3" class="c-mask"/>
-          <text x="984.8" y="362" class="t-backend" font-size="8" text-anchor="middle">Correct 확인 후</text>
-        </g>
-        <g data-detail="context" data-edge-from="task" data-edge-to="qwen" data-edge-label="system + task" data-edge-key="11" data-edge-id="e_task_qwen">
-          <rect x="317" y="226" width="72.4" height="14" rx="3" class="c-mask"/>
-          <text x="353.2" y="236" class="t-backend" font-size="8" text-anchor="middle">system + task</text>
-        </g>
-        <g data-detail="context" data-edge-from="truncate" data-edge-to="gate" data-edge-label="tool 메시지 추가" data-edge-key="12" data-edge-id="e_truncate_gate">
-          <rect x="941.4" y="142" width="86.8" height="14" rx="3" class="c-mask"/>
-          <text x="984.8" y="152" class="t-muted" font-size="8" text-anchor="middle">tool 메시지 추가</text>
-        </g>
 
         <!-- Legend -->
         <g data-legend="" data-legend-bridge="">
@@ -5400,13 +5385,9 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
             <rect x="293" y="572" width="14" height="9" rx="2" class="c-database" stroke-width="1"/>
             <text x="315" y="580" class="t-muted" font-size="7.5" font-weight="500">Context / trace</text>
           </g>
-          <g data-legend-semantic-kind="cloud" data-legend-kind="cloud" data-legend-label="Cloud service" data-legend-x="409" data-legend-baseline="580" data-legend-width="100">
-            <rect x="409" y="572" width="14" height="9" rx="2" class="c-cloud" stroke-width="1"/>
-            <text x="431" y="580" class="t-muted" font-size="7.5" font-weight="500">Cloud service</text>
-          </g>
-          <g data-legend-semantic-kind="external" data-legend-kind="external" data-legend-label="External system" data-legend-x="516" data-legend-baseline="580" data-legend-width="109">
-            <rect x="516" y="572" width="14" height="9" rx="2" class="c-external" stroke-width="1"/>
-            <text x="538" y="580" class="t-muted" font-size="7.5" font-weight="500">External system</text>
+          <g data-legend-semantic-kind="external" data-legend-kind="external" data-legend-label="External system" data-legend-x="409" data-legend-baseline="580" data-legend-width="109">
+            <rect x="409" y="572" width="14" height="9" rx="2" class="c-external" stroke-width="1"/>
+            <text x="431" y="580" class="t-muted" font-size="7.5" font-weight="500">External system</text>
           </g>
         </g>
       </svg>
@@ -5598,36 +5579,33 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
       <div class="card">
         <div class="card-header">
           <div class="card-dot cyan"></div>
-          <h3>한 스텝의 흐름</h3>
+          <h3>한 스텝</h3>
         </div>
         <ul>
-          <li>&bull; Qwen이 thinking 후 tool_calls를 내면 순서대로 실행하고 결과를 tool 메시지로 붙인다</li>
-          <li>&bull; 툴 호출이 없으면 &quot;툴을 써라&quot; 재촉, 3회 연속이면 중단</li>
-          <li>&bull; 같은 호출 3회 반복 시 &quot;다른 접근&quot; 재촉</li>
+          <li>&bull; Qwen이 thinking 후 tool call을 내면 루프가 실행하고 결과를 12k 자로 잘라 돌려준 뒤 다음 스텝으로 돌아간다 (최대 300스텝·120분)</li>
+          <li>&bull; run_binary/run_gui 결과 요약은 도구가 직접 `[obs step N]`으로 case.md에 남긴다</li>
         </ul>
       </div>
 
       <div class="card">
         <div class="card-header">
           <div class="card-dot rose"></div>
-          <h3>컨텍스트 64k 안에서 버티기</h3>
+          <h3>막힘 감지</h3>
         </div>
         <ul>
-          <li>&bull; 44k 초과 시 오래된 구간을 별도 Qwen 호출로 요약해 case.md Log에 저장</li>
-          <li>&bull; system + 과제 + case.md 전문 + 최근 4교환으로 재구성</li>
-          <li>&bull; 2회 연속 초과면 case.md 축약, 3회면 중단</li>
+          <li>&bull; 12스텝 동안 Facts·[obs]가 안 늘면 비평가가 4가지 질문에 답한 메모를 주입한다</li>
+          <li>&bull; 프롬프트 44k 토큰을 넘으면 압축, 2연속이면 case.md를 절반으로 shrink</li>
         </ul>
       </div>
 
       <div class="card">
         <div class="card-header">
-          <div class="card-dot amber"></div>
-          <h3>종료 조건</h3>
+          <div class="card-dot emerald"></div>
+          <h3>종료</h3>
         </div>
         <ul>
-          <li>&bull; submit_flag 수락 → result.json (solved)</li>
-          <li>&bull; 스텝/시간 상한, 툴 미호출 3회, 컨텍스트 축소 실패, 예외 → unsolved + 사유</li>
-          <li>&bull; 재실행 시 case.md는 이어받는다</li>
+          <li>&bull; submit_flag는 evidence 종류를 요구하고, 화면에 나오는 플래그는 방법이 다른 두 경로가 있어야 받는다</li>
+          <li>&bull; handoff_runbook은 도구가 실행 불가를 기록했을 때만 허용되고 runbook.md로 끝난다</li>
         </ul>
       </div>
     </div>

@@ -1,0 +1,310 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "에이전트 루프 워크플로우",
+    "output": "docs/diagrams/02-loop-workflow.html",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "main",
+        "label": "한 스텝",
+        "focus": [
+          "task",
+          "llm_step",
+          "toolcall",
+          "progress",
+          "submit",
+          "end"
+        ],
+        "note": "작업 메시지에서 제출까지의 기본 경로"
+      },
+      {
+        "id": "memory",
+        "label": "기억과 비평가",
+        "focus": [
+          "toolcall",
+          "ledger",
+          "progress",
+          "critic",
+          "compact",
+          "llm_step"
+        ],
+        "note": "관찰 원장, 비평가, 압축이 루프에 끼어드는 지점"
+      },
+      {
+        "id": "exits",
+        "label": "종료 경로",
+        "focus": [
+          "toolcall",
+          "submit",
+          "runbook",
+          "end"
+        ],
+        "note": "플래그 제출과 런북 인계"
+      }
+    ]
+  },
+  "lanes": [
+    {
+      "id": "input",
+      "label": "입력"
+    },
+    {
+      "id": "memory",
+      "label": "메모리 · 비평가",
+      "variant": "exception"
+    },
+    {
+      "id": "loop",
+      "label": "에이전트 루프"
+    },
+    {
+      "id": "exit",
+      "label": "종료"
+    }
+  ],
+  "phases": [
+    {
+      "id": "p_start",
+      "label": "시작",
+      "fromCol": 0,
+      "toCol": 0
+    },
+    {
+      "id": "p_step",
+      "label": "스텝 반복",
+      "fromCol": 1,
+      "toCol": 3,
+      "variant": "emphasis"
+    },
+    {
+      "id": "p_end",
+      "label": "종료",
+      "fromCol": 4,
+      "toCol": 5,
+      "variant": "dashed"
+    }
+  ],
+  "groups": [],
+  "mainPath": [
+    "task",
+    "llm_step",
+    "toolcall",
+    "progress",
+    "submit",
+    "end"
+  ],
+  "nodes": [
+    {
+      "id": "task",
+      "lane": "input",
+      "col": 0,
+      "type": "external",
+      "label": "작업 메시지",
+      "sublabel": "desc.txt + ls -la",
+      "width": 140
+    },
+    {
+      "id": "llm_step",
+      "lane": "loop",
+      "col": 1,
+      "type": "backend",
+      "label": "Qwen 스텝",
+      "sublabel": "thinking → tool call",
+      "tag": "reasoning medium",
+      "width": 140
+    },
+    {
+      "id": "toolcall",
+      "lane": "loop",
+      "col": 2,
+      "type": "messagebus",
+      "label": "도구 실행",
+      "sublabel": "bash / decompile / run_gui …",
+      "width": 150
+    },
+    {
+      "id": "progress",
+      "lane": "loop",
+      "col": 3,
+      "type": "backend",
+      "label": "진행 판정",
+      "sublabel": "Facts·[obs] 늘었나? 토큰 44k?",
+      "width": 150
+    },
+    {
+      "id": "ledger",
+      "lane": "memory",
+      "col": 2,
+      "type": "database",
+      "label": "관찰 원장",
+      "sublabel": "[obs step N] → case.md",
+      "tag": "도구가 자동 기록",
+      "width": 150
+    },
+    {
+      "id": "critic",
+      "lane": "memory",
+      "col": 3,
+      "type": "security",
+      "label": "비평가",
+      "sublabel": "12스텝 무진전 · 압축 직전",
+      "tag": "최대 8회",
+      "width": 150
+    },
+    {
+      "id": "compact",
+      "lane": "memory",
+      "col": 4,
+      "type": "database",
+      "label": "압축",
+      "sublabel": "요약 → Log, 최근 4개 유지",
+      "tag": "2연속 초과면 shrink",
+      "width": 150
+    },
+    {
+      "id": "submit",
+      "lane": "exit",
+      "col": 4,
+      "type": "security",
+      "label": "submit_flag",
+      "sublabel": "evidence 종류 검사",
+      "tag": "두 경로 규칙",
+      "width": 140
+    },
+    {
+      "id": "runbook",
+      "lane": "exit",
+      "col": 3,
+      "type": "security",
+      "label": "handoff_runbook",
+      "sublabel": "env_blocked 일 때만",
+      "width": 150
+    },
+    {
+      "id": "end",
+      "lane": "exit",
+      "col": 5,
+      "type": "backend",
+      "label": "종료",
+      "sublabel": "solved / unsolved / runbook",
+      "width": 140
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_task",
+      "from": "task",
+      "to": "llm_step",
+      "variant": "default"
+    },
+    {
+      "id": "e_call",
+      "from": "llm_step",
+      "to": "toolcall",
+      "label": "tool_calls",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e_result",
+      "from": "toolcall",
+      "to": "progress",
+      "label": "결과 (12k 잘림)",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e_obs",
+      "from": "toolcall",
+      "to": "ledger",
+      "label": "run_binary / run_gui",
+      "variant": "dashed"
+    },
+    {
+      "id": "e_idle",
+      "from": "progress",
+      "to": "critic",
+      "label": "무진전 12스텝",
+      "variant": "security",
+      "role": "branch"
+    },
+    {
+      "id": "e_compact",
+      "from": "progress",
+      "to": "compact",
+      "label": "44k 토큰 초과",
+      "variant": "security",
+      "role": "branch"
+    },
+    {
+      "id": "e_critic_back",
+      "from": "critic",
+      "to": "llm_step",
+      "label": "[critic] 메모 주입",
+      "variant": "dashed",
+      "role": "return"
+    },
+    {
+      "id": "e_compact_back",
+      "from": "compact",
+      "to": "llm_step",
+      "label": "리셋 메시지 + case.md",
+      "variant": "dashed",
+      "role": "return"
+    },
+    {
+      "id": "e_submit",
+      "from": "progress",
+      "to": "submit",
+      "label": "플래그 검증 완료",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e_runbook",
+      "from": "toolcall",
+      "to": "runbook",
+      "label": "환경이 못 돌릴 때",
+      "variant": "security",
+      "role": "branch"
+    },
+    {
+      "id": "e_runbook_end",
+      "from": "runbook",
+      "to": "end",
+      "variant": "dashed"
+    },
+    {
+      "id": "e_end",
+      "from": "submit",
+      "to": "end",
+      "label": "accepted",
+      "variant": "emphasis"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "한 스텝",
+      "items": [
+        "Qwen이 thinking 후 tool call을 내면 루프가 실행하고 결과를 12k 자로 잘라 돌려준 뒤 다음 스텝으로 돌아간다 (최대 300스텝·120분)",
+        "run_binary/run_gui 결과 요약은 도구가 직접 `[obs step N]`으로 case.md에 남긴다"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "막힘 감지",
+      "items": [
+        "12스텝 동안 Facts·[obs]가 안 늘면 비평가가 4가지 질문에 답한 메모를 주입한다",
+        "프롬프트 44k 토큰을 넘으면 압축, 2연속이면 case.md를 절반으로 shrink"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "종료",
+      "items": [
+        "submit_flag는 evidence 종류를 요구하고, 화면에 나오는 플래그는 방법이 다른 두 경로가 있어야 받는다",
+        "handoff_runbook은 도구가 실행 불가를 기록했을 때만 허용되고 runbook.md로 끝난다"
+      ]
+    }
+  ]
+}

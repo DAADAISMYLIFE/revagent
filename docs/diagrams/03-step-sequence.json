@@ -1,0 +1,272 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "run_gui 스텝 시퀀스",
+    "output": "docs/diagrams/03-step-sequence.html",
+    "viewBox": [
+      1000,
+      640
+    ],
+    "column_fit": "spread",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "ask",
+        "label": "모델 호출",
+        "focus": [
+          "agent",
+          "llm"
+        ],
+        "note": "메시지와 도구 스키마를 보내고 tool call을 받는 부분"
+      },
+      {
+        "id": "run",
+        "label": "도구 실행",
+        "focus": [
+          "agent",
+          "tool",
+          "wine",
+          "casefile"
+        ],
+        "note": "wine 위에서 실행·입력·캡처하고 원장에 남기는 부분"
+      },
+      {
+        "id": "back",
+        "label": "결과 반환",
+        "focus": [
+          "tool",
+          "truncate",
+          "agent",
+          "llm"
+        ],
+        "note": "잘림과 [env] 푸터, 다음 스텝"
+      }
+    ]
+  },
+  "participants": [
+    {
+      "id": "agent",
+      "type": "backend",
+      "label": "Agent 루프",
+      "sublabel": "agent.py"
+    },
+    {
+      "id": "llm",
+      "type": "external",
+      "label": "vLLM Qwen",
+      "sublabel": "chat completions"
+    },
+    {
+      "id": "tool",
+      "type": "messagebus",
+      "label": "run_gui",
+      "sublabel": "tools/run_gui.py"
+    },
+    {
+      "id": "wine",
+      "type": "cloud",
+      "label": "wine + Xvfb",
+      "sublabel": ":99, xdotool, import"
+    },
+    {
+      "id": "casefile",
+      "type": "database",
+      "label": "case.md",
+      "sublabel": "Log 섹션"
+    },
+    {
+      "id": "truncate",
+      "type": "security",
+      "label": "truncate",
+      "sublabel": "12k 상한"
+    }
+  ],
+  "segments": [
+    {
+      "from": 150,
+      "to": 235,
+      "label": "모델 호출"
+    },
+    {
+      "from": 245,
+      "to": 445,
+      "label": "도구 실행"
+    },
+    {
+      "from": 455,
+      "to": 568,
+      "label": "결과 반환"
+    }
+  ],
+  "messages": [
+    {
+      "id": "m_chat",
+      "from": "agent",
+      "to": "llm",
+      "y": 165,
+      "label": "messages + tools, reasoning_effort=medium",
+      "variant": "emphasis"
+    },
+    {
+      "id": "m_calls",
+      "from": "llm",
+      "to": "agent",
+      "y": 195,
+      "label": "reasoning + tool_calls[run_gui]",
+      "variant": "return"
+    },
+    {
+      "id": "m_exec",
+      "from": "agent",
+      "to": "tool",
+      "y": 225,
+      "label": "run(path, actions=[click, key …])",
+      "variant": "emphasis"
+    },
+    {
+      "id": "m_reset",
+      "from": "tool",
+      "to": "wine",
+      "y": 255,
+      "label": "wineserver -k, wine exe",
+      "variant": "default"
+    },
+    {
+      "id": "m_shot",
+      "from": "wine",
+      "to": "tool",
+      "y": 285,
+      "label": "첫 캡처 + OCR",
+      "variant": "return"
+    },
+    {
+      "id": "m_actions",
+      "from": "tool",
+      "to": "wine",
+      "y": 315,
+      "label": "xdotool click / key / type",
+      "variant": "default"
+    },
+    {
+      "id": "m_diffs",
+      "from": "wine",
+      "to": "tool",
+      "y": 345,
+      "label": "입력마다 캡처 + diff.png",
+      "variant": "return"
+    },
+    {
+      "id": "m_obs",
+      "from": "tool",
+      "to": "casefile",
+      "y": 380,
+      "label": "[obs step N] 창·입력·변화 요약",
+      "variant": "dashed"
+    },
+    {
+      "id": "m_report",
+      "from": "tool",
+      "to": "agent",
+      "y": 415,
+      "label": "보고서 (+[env] 게이트 열림)",
+      "variant": "return"
+    },
+    {
+      "id": "m_trunc",
+      "from": "agent",
+      "to": "truncate",
+      "y": 460,
+      "label": "12k 초과분 → out/NNN.txt",
+      "variant": "security"
+    },
+    {
+      "id": "m_trunc_back",
+      "from": "truncate",
+      "to": "agent",
+      "y": 490,
+      "label": "본문 잘라도 [env] 푸터 유지",
+      "variant": "return"
+    },
+    {
+      "id": "m_marker",
+      "from": "agent",
+      "to": "casefile",
+      "y": 522,
+      "label": "Facts·[obs] 개수로 진행 판정",
+      "variant": "dashed"
+    },
+    {
+      "id": "m_next",
+      "from": "agent",
+      "to": "llm",
+      "y": 556,
+      "label": "다음 스텝 (또는 [critic] 메모 주입)",
+      "variant": "emphasis"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "agent",
+      "from": 160,
+      "to": 562,
+      "type": "backend"
+    },
+    {
+      "participant": "llm",
+      "from": 160,
+      "to": 200,
+      "type": "external"
+    },
+    {
+      "participant": "tool",
+      "from": 220,
+      "to": 420,
+      "type": "messagebus"
+    },
+    {
+      "participant": "wine",
+      "from": 250,
+      "to": 350,
+      "type": "cloud"
+    },
+    {
+      "participant": "casefile",
+      "from": 375,
+      "to": 385,
+      "type": "database"
+    },
+    {
+      "participant": "truncate",
+      "from": 455,
+      "to": 495,
+      "type": "security"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "모델 호출",
+      "items": [
+        "thinking은 켠 채 reasoning_effort=medium을 요청마다 보낸다",
+        "출력 예산을 thinking으로 다 쓰면 16k·low로 한 번 재시도한다"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "도구 실행",
+      "items": [
+        "run_gui는 남은 wine 창을 정리하고 띄운 뒤 입력마다 캡처·diff를 만든다",
+        "전달되지 않은 입력은 NOT DELIVERED로, 창이 두 번 안 뜨면 env_blocked로 기록된다"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "결과 반환",
+      "items": [
+        "12k를 넘는 출력은 파일로 저장하고 [env] 푸터만 보존한다",
+        "진행 판정은 case.md의 Facts와 [obs] 줄 수로 한다"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,349 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "revagent 전체 구조",
+    "output": "docs/diagrams/01-architecture.html",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "inputs",
+        "label": "입력과 실행",
+        "focus": [
+          "user",
+          "challenge",
+          "secure",
+          "cli",
+          "agent"
+        ],
+        "note": "사용자가 넣는 것과 CLI가 컨테이너를 띄우는 경로"
+      },
+      {
+        "id": "loop",
+        "label": "루프와 모델",
+        "focus": [
+          "agent",
+          "tools",
+          "llm"
+        ],
+        "note": "에이전트 루프가 Qwen과 도구 사이를 오가는 부분"
+      },
+      {
+        "id": "outputs",
+        "label": "메모리와 산출물",
+        "focus": [
+          "tools",
+          "agent",
+          "casefile",
+          "outputs"
+        ],
+        "note": "케이스 파일과 결과 파일이 어디에 남는지"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "사용자",
+      "sublabel": "문제 파일 + 설명",
+      "pos": [
+        20,
+        300
+      ],
+      "size": [
+        130,
+        62
+      ]
+    },
+    {
+      "id": "challenge",
+      "type": "database",
+      "label": "문제 폴더",
+      "sublabel": "binary + desc.txt",
+      "pos": [
+        270,
+        110
+      ],
+      "size": [
+        150,
+        62
+      ],
+      "tag": "input"
+    },
+    {
+      "id": "cli",
+      "type": "frontend",
+      "label": "revagent CLI",
+      "sublabel": "solve / bench",
+      "pos": [
+        270,
+        300
+      ],
+      "size": [
+        150,
+        62
+      ]
+    },
+    {
+      "id": "secure",
+      "type": "security",
+      "label": ".secure",
+      "sublabel": "QWEN / URL / MODEL",
+      "pos": [
+        270,
+        490
+      ],
+      "size": [
+        150,
+        62
+      ],
+      "tag": "git-ignored"
+    },
+    {
+      "id": "agent",
+      "type": "backend",
+      "label": "Agent 루프",
+      "sublabel": "ReAct · 압축 · 비평가",
+      "pos": [
+        520,
+        300
+      ],
+      "size": [
+        150,
+        62
+      ],
+      "tag": "revagent/agent.py"
+    },
+    {
+      "id": "llm",
+      "type": "external",
+      "label": "vLLM · Qwen3.8-27B",
+      "sublabel": "RunPod RTX 5090",
+      "pos": [
+        520,
+        90
+      ],
+      "size": [
+        150,
+        62
+      ],
+      "tag": "reasoning medium"
+    },
+    {
+      "id": "tools",
+      "type": "backend",
+      "label": "도구 9개",
+      "sublabel": "bash · decompile · run_* · …",
+      "pos": [
+        760,
+        300
+      ],
+      "size": [
+        190,
+        62
+      ],
+      "tag": "revagent/tools/"
+    },
+    {
+      "id": "casefile",
+      "type": "database",
+      "label": "case.md",
+      "sublabel": "Facts · Todo · Log",
+      "pos": [
+        990,
+        110
+      ],
+      "size": [
+        190,
+        62
+      ],
+      "tag": "quiz/<name>/.revagent"
+    },
+    {
+      "id": "outputs",
+      "type": "database",
+      "label": "산출물",
+      "sublabel": "result.json · screens · runbook.md",
+      "pos": [
+        990,
+        490
+      ],
+      "size": [
+        190,
+        62
+      ],
+      "tag": "quiz/<name>/.revagent"
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "호스트 (WSL)",
+      "wraps": [
+        "challenge",
+        "cli",
+        "secure"
+      ],
+      "pad": 18
+    },
+    {
+      "kind": "security-group",
+      "label": "Docker: revagent-sandbox (wine, Xvfb, Ghidra, radare2)",
+      "wraps": [
+        "agent",
+        "tools"
+      ],
+      "pad": 18
+    },
+    {
+      "kind": "region",
+      "label": "RunPod GPU",
+      "wraps": [
+        "llm"
+      ],
+      "pad": 14
+    }
+  ],
+  "connections": [
+    {
+      "from": "user",
+      "to": "challenge",
+      "label": "바이너리 + desc.txt",
+      "variant": "default",
+      "labelAt": [
+        175,
+        215
+      ]
+    },
+    {
+      "from": "user",
+      "to": "cli",
+      "label": "revagent solve --sandbox",
+      "variant": "emphasis",
+      "labelAt": [
+        210,
+        376
+      ]
+    },
+    {
+      "from": "secure",
+      "to": "cli",
+      "label": "키·URL (env 이름만 전달)",
+      "variant": "security"
+    },
+    {
+      "from": "cli",
+      "to": "agent",
+      "label": "docker run",
+      "variant": "emphasis"
+    },
+    {
+      "from": "agent",
+      "to": "llm",
+      "label": "chat + tools schema",
+      "variant": "emphasis",
+      "labelAt": [
+        520,
+        205
+      ]
+    },
+    {
+      "from": "agent",
+      "to": "tools",
+      "label": "tool call",
+      "variant": "emphasis"
+    },
+    {
+      "from": "tools",
+      "to": "casefile",
+      "label": "[obs step N] 관찰 원장",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelAt": [
+        950,
+        232
+      ]
+    },
+    {
+      "from": "agent",
+      "to": "casefile",
+      "label": "notes · 압축 요약 · [critic]",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "left",
+      "via": [
+        [
+          595,
+          200
+        ],
+        [
+          930,
+          200
+        ],
+        [
+          930,
+          141
+        ]
+      ],
+      "labelAt": [
+        770,
+        190
+      ]
+    },
+    {
+      "from": "agent",
+      "to": "outputs",
+      "label": "result.json, transcript.jsonl",
+      "variant": "default",
+      "fromSide": "bottom",
+      "toSide": "bottom",
+      "labelAt": [
+        800,
+        590
+      ]
+    },
+    {
+      "from": "tools",
+      "to": "outputs",
+      "label": "screens/, out/, runbook.md",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "left",
+      "labelAt": [
+        900,
+        500
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "입력",
+      "items": [
+        "문제 폴더에 바이너리와 desc.txt만 넣는다",
+        "`.secure`의 키·URL은 env 이름으로만 컨테이너에 들어간다",
+        "`--sandbox`가 wine·Xvfb·Ghidra가 든 이미지에서 루프를 돌린다"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "동작",
+      "items": [
+        "Agent가 Qwen에 메시지+도구 스키마를 보내고 tool call을 실행한다",
+        "run_binary/run_gui는 결과를 `[obs step N]`으로 case.md에 스스로 적는다",
+        "비평가는 압축 직전과 12스텝 무진전 때 별도 호출된다"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "출력",
+      "items": [
+        "종료 상태 solved / unsolved / runbook (exit 0 / 1 / 3)",
+        "result.json, transcript.jsonl, screens/, runbook.md가 .revagent/에 남는다",
+        "case.md는 다음 run이 이어받는 유일한 기억이다"
+      ]
+    }
+  ]
+}

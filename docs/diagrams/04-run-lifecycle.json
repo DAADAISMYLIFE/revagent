@@ -1,0 +1,236 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "run 라이프사이클",
+    "output": "docs/diagrams/04-run-lifecycle.html",
+    "viewBox": [
+      1060,
+      640
+    ],
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "main",
+        "label": "기본 흐름",
+        "focus": [
+          "start",
+          "stepping",
+          "verifying",
+          "solved",
+          "reported"
+        ],
+        "note": "시작부터 result.json 기록까지"
+      },
+      {
+        "id": "pauses",
+        "label": "압축과 비평가",
+        "focus": [
+          "stepping",
+          "compacting",
+          "shrinking"
+        ],
+        "note": "run을 끝내지 않는 중간 상태"
+      },
+      {
+        "id": "exits",
+        "label": "종료 상태",
+        "focus": [
+          "stepping",
+          "runbook",
+          "unsolved",
+          "errored"
+        ],
+        "note": "세 가지 결과와 실패"
+      }
+    ]
+  },
+  "lanes": [
+    {
+      "id": "main",
+      "label": "run 단계"
+    },
+    {
+      "id": "waiting",
+      "label": "중간 상태"
+    },
+    {
+      "id": "exceptions",
+      "label": "복구"
+    },
+    {
+      "id": "terminal",
+      "label": "종료 상태"
+    }
+  ],
+  "states": [
+    {
+      "id": "start",
+      "type": "start",
+      "label": "시작",
+      "sublabel": "system + 작업 메시지",
+      "lane": "main",
+      "col": 0,
+      "step": "01",
+      "tag": "case.md 로드"
+    },
+    {
+      "id": "stepping",
+      "type": "active",
+      "label": "스텝 반복",
+      "sublabel": "LLM → 도구 → 원장",
+      "lane": "main",
+      "col": 1,
+      "step": "02",
+      "tag": "≤300 스텝·120분"
+    },
+    {
+      "id": "verifying",
+      "type": "decision",
+      "label": "제출 검증",
+      "sublabel": "submit_flag evidence",
+      "lane": "main",
+      "col": 2,
+      "step": "03",
+      "tag": "두 경로 규칙"
+    },
+    {
+      "id": "solved",
+      "type": "success",
+      "label": "solved",
+      "sublabel": "FLAG 출력, exit 0",
+      "lane": "main",
+      "col": 3,
+      "step": "04",
+      "tag": "accepted"
+    },
+    {
+      "id": "reported",
+      "type": "success",
+      "label": "기록",
+      "sublabel": "result.json + transcript",
+      "lane": "main",
+      "col": 4,
+      "step": "05",
+      "tag": "항상"
+    },
+    {
+      "id": "compacting",
+      "type": "waiting",
+      "label": "압축",
+      "sublabel": "비평가 → 요약 → 리셋",
+      "lane": "waiting",
+      "col": 0,
+      "tag": "44k 토큰"
+    },
+    {
+      "id": "shrinking",
+      "type": "waiting",
+      "label": "case.md 축소",
+      "sublabel": "2연속 초과, 16k 예산",
+      "lane": "waiting",
+      "col": 2,
+      "tag": "backup .bak"
+    },
+    {
+      "id": "runbook",
+      "type": "failure",
+      "label": "runbook",
+      "sublabel": "runbook.md, exit 3",
+      "lane": "terminal",
+      "col": 0,
+      "tag": "env_blocked"
+    },
+    {
+      "id": "unsolved",
+      "type": "failure",
+      "label": "unsolved",
+      "sublabel": "스텝·시간 상한, exit 1",
+      "lane": "terminal",
+      "col": 1,
+      "tag": "terminal"
+    },
+    {
+      "id": "errored",
+      "type": "failure",
+      "label": "error",
+      "sublabel": "context 축소 불가, 예외",
+      "lane": "terminal",
+      "col": 2,
+      "tag": "terminal"
+    }
+  ],
+  "transitions": [
+    {
+      "id": "t_compact",
+      "from": "stepping",
+      "to": "compacting",
+      "variant": "security"
+    },
+    {
+      "id": "t_shrink",
+      "from": "compacting",
+      "to": "shrinking",
+      "variant": "default"
+    },
+    {
+      "id": "t_error",
+      "from": "shrinking",
+      "to": "errored",
+      "variant": "security"
+    },
+    {
+      "id": "t_unsolved",
+      "from": "stepping",
+      "to": "unsolved",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "via": [
+        [
+          248,
+          420
+        ],
+        [
+          556,
+          420
+        ]
+      ]
+    },
+    {
+      "id": "t_runbook",
+      "from": "stepping",
+      "to": "runbook",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "left"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "기본 흐름",
+      "items": [
+        "스텝 반복 → 제출 검증 → solved → result.json 기록",
+        "기록 단계는 어떤 종료 상태에서도 실행된다"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "중간 상태",
+      "items": [
+        "압축은 run을 끝내지 않고 리셋 메시지로 돌아간다",
+        "2연속 초과면 case.md를 절반으로 줄이고, 3연속이면 error로 끝난다"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "종료 상태",
+      "items": [
+        "runbook은 도구가 실행 불가를 기록했을 때만 가능하다",
+        "제출 거절(경로 1개, 같은 플래그 3회)은 스텝만 소모하고 run은 계속된다",
+        "unsolved는 스텝·시간 상한 또는 도구 호출 없이 3턴, error는 context 축소 실패"
+      ]
+    }
+  ]
+}
