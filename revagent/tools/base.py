@@ -45,6 +45,7 @@ class ToolContext:
     runbook_path: Path | None = None   # set by handoff_runbook; ends the run with status "runbook"
     flag_attempts: dict = field(default_factory=dict)
     deadline: float | None = None      # time.monotonic() at which the run's wall-clock budget ends
+    emulate_images: dict = field(default_factory=dict)   # path -> revagent.emulate.Image (cle+unicorn image cache per run)
 
     def clamp_timeout(self, seconds: int) -> int:
         """Cap a tool timeout to the time left in the run. agent.py checks max_minutes only between

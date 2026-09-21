@@ -16,7 +16,7 @@ def test_registry_has_all_tools():
     schemas, handlers = load_tools()
     names = {s["function"]["name"] for s in schemas}
     assert names == {"bash", "run_binary", "run_gui", "notes", "decompile", "summarize", "ask_user", "submit_flag",
-                     "handoff_runbook", "solve_check"}
+                     "handoff_runbook", "solve_check", "emulate"}
     assert set(handlers) == names
     for s in schemas:
         assert s["type"] == "function" and "parameters" in s["function"]
@@ -1216,3 +1216,122 @@ def test_solve_check_timeout_cannot_be_swallowed_by_the_transform(tmp_path):
                                    "    except Exception:\n        pass\n    return x\n")
     out = solve_check.run(ctx_for(tmp_path), file="t.py", target="00", length=1, timeout=1)
     assert out.startswith("[timeout]") and "the transform itself" in out
+
+
+def test_emulate_parses_functions_and_args():
+    from revagent.tools import emulate as em
+    assert em.parse_function("FUN_1400010a0") == 0x1400010A0
+    assert em.parse_function("0x103298") == 0x103298
+    assert em.parse_function("thunk_FUN_00103298") == 0x103298
+    assert em.parse_args(["hex:41 42", "int:7", "addr:0x106020", "hex:0x0102"]) == [
+        ("hex", b"AB"), ("int", 7), ("addr", 0x106020), ("hex", b"\x01\x02")]
+    with pytest.raises(ValueError):
+        em.parse_args(["str:abc"])
+    with pytest.raises(ValueError, match="hex:zz"):
+        em.parse_args(["hex:zz"])
+    with pytest.raises(ValueError, match="int:seven"):
+        em.parse_args(["int:seven"])
+    with pytest.raises(ValueError):
+        em.parse_function("main")
+
+
+def _fake_image():
+    from revagent.emulate import Image
+    return Image(segments=[(0x100000, b"\xc3" + b"\xcc" * 15)], base=0x100000, min_addr=0x100000,
+                 max_addr=0x101000, is_pe=False)
+
+
+def test_emulate_tool_reports_rax_buffers_and_writes_ledger(tmp_path, monkeypatch):
+    from revagent.emulate import Result
+    from revagent.tools import emulate as em
+    (tmp_path / "chal").write_bytes(b"\x7fELF" + b"\0" * 60)
+    monkeypatch.setattr(em, "load_image", lambda p: _fake_image())
+    seen = {}
+
+    def fake_call(image, func, args, out_lens=None, max_insns=5_000_000, timeout_s=30):
+        seen.update(func=func, args=args, out_lens=out_lens, timeout_s=timeout_s)
+        return Result(rax=1, buffers=[b"\x7e\x7d"], stopped=None)
+
+    monkeypatch.setattr(em, "emulate_call", fake_call)
+    ctx = ctx_for(tmp_path)
+    ctx.step = 7
+    out = em.run(ctx, binary="chal", function="FUN_00100000", args=["hex:4142"], out_lens=[2])
+    assert out.startswith("rax=0x1")
+    assert "arg0 (2 bytes): 7e7d" in out and "~}" in out            # hex + printable
+    assert seen["func"] == 0x100000 and seen["args"] == [("hex", b"AB")] and seen["out_lens"] == [2]
+    assert "- [obs step 7] emulate FUN_00100000: rax=0x1, arg0=7e7d" in ctx.casefile.read()
+
+
+def test_emulate_tool_caches_the_image_per_binary(tmp_path, monkeypatch):
+    from revagent.emulate import Result
+    from revagent.tools import emulate as em
+    (tmp_path / "chal").write_bytes(b"\x7fELF")
+    loads = []
+    monkeypatch.setattr(em, "load_image", lambda p: loads.append(p) or _fake_image())
+    monkeypatch.setattr(em, "emulate_call", lambda *a, **k: Result(0, [], None))
+    ctx = ctx_for(tmp_path)
+    em.run(ctx, binary="chal", function="0x100000", args=[])
+    em.run(ctx, binary="chal", function="0x100000", args=[])
+    assert len(loads) == 1
+
+
+def test_emulate_tool_stopped_import_is_actionable(tmp_path, monkeypatch):
+    from revagent.emulate import Result
+    from revagent.tools import emulate as em
+    (tmp_path / "chal").write_bytes(b"\x7fELF")
+    monkeypatch.setattr(em, "load_image", lambda p: _fake_image())
+    monkeypatch.setattr(em, "emulate_call", lambda *a, **k: Result(
+        rax=0, buffers=[b"\x00"], stopped={"reason": "import", "rip": 0x500000, "symbol": "strlen",
+                                          "detail": "execution left the image at 0x500000 (strlen)",
+                                          "arg_regs": [0x10000000, 0, 0, 0, 0, 0]}))
+    ctx = ctx_for(tmp_path)
+    out = em.run(ctx, binary="chal", function="0x100000", args=["hex:00"])
+    assert "[emulation stopped] called strlen" in out and "rdi=0x10000000" in out
+    assert "inner function" in out            # the next-action hint
+    ledger = ctx.casefile.read()
+    assert "[obs step 0] emulate 0x100000: rax=0x0, arg0=00, stopped=import" in ledger
+
+
+def test_emulate_tool_errors(tmp_path, monkeypatch):
+    from revagent.emulate import EmulateError
+    from revagent.tools import emulate as em
+    ctx = ctx_for(tmp_path)
+    assert em.run(ctx, binary="../x", function="0x1", args=[]).startswith("[tool error] path escapes")
+    assert em.run(ctx, binary="nope", function="0x1", args=[]).startswith("[tool error] no such file")
+    (tmp_path / "chal").write_bytes(b"\x7fELF")
+    assert "[tool error] function" in em.run(ctx, binary="chal", function="main", args=[])
+    assert "[tool error] args" in em.run(ctx, binary="chal", function="0x1", args=["str:x"])
+    assert "[tool error] args" in em.run(ctx, binary="chal", function="0x1", args=["hex:zz"])
+    assert "[tool error] args" in em.run(ctx, binary="chal", function="0x1", args=["int:x"])
+    assert em.run(ctx, binary="chal", function="0x1", args=[], max_insns=0) == "[tool error] max_insns must be positive"
+    assert em.run(ctx, binary="chal", function="0x1", args=[], max_insns=-5) == "[tool error] max_insns must be positive"
+    monkeypatch.setattr(em, "load_image", lambda p: (_ for _ in ()).throw(EmulateError("unsupported architecture ARM")))
+    out = em.run(ctx, binary="chal", function="0x1", args=[])
+    assert out.startswith("[cannot emulate]") and "ARM" in out
+
+
+def test_emulate_tool_wraps_emulator_failures(tmp_path, monkeypatch):
+    from revagent.tools import emulate as em
+    (tmp_path / "chal").write_bytes(b"\x7fELF")
+    monkeypatch.setattr(em, "load_image", lambda p: _fake_image())
+
+    class UcError(Exception):
+        pass
+
+    monkeypatch.setattr(em, "emulate_call", lambda *a, **k: (_ for _ in ()).throw(UcError("Invalid memory mapping (UC_ERR_MAP)")))
+    out = em.run(ctx_for(tmp_path), binary="chal", function="0x100000", args=[])
+    assert out == "[tool error] emulation failed: UcError: Invalid memory mapping (UC_ERR_MAP)"
+
+
+def test_emulate_tool_timeout_clamped(tmp_path, monkeypatch):
+    from revagent.emulate import Result
+    from revagent.tools import emulate as em
+    (tmp_path / "chal").write_bytes(b"\x7fELF")
+    monkeypatch.setattr(em, "load_image", lambda p: _fake_image())
+    seen = {}
+    monkeypatch.setattr(em, "emulate_call", lambda *a, **k: seen.update(k) or Result(0, [], None))
+    monkeypatch.setattr("revagent.tools.base.time.monotonic", lambda: 50.0)
+    ctx = ctx_for(tmp_path)
+    ctx.deadline = 50.0 + 12
+    em.run(ctx, binary="chal", function="0x100000", args=[])
+    assert seen["timeout_s"] == 12
