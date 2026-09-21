@@ -146,6 +146,16 @@ class Agent:
         except Exception:
             pass
 
+    def _g4_warn(self, step: int) -> None:
+        """The LONG_REASONING_LIMITth long-thinking step: lower the effort for the rest of the run
+        and tell the model once. Called after the step's tool results (or after the no-tool nudge)."""
+        self.effort_override = "low"
+        ev = {"event": "gate_warn", "gate": "G4", "step": step, "count": self.long_reasoning}
+        self._log({"role": "_meta", **ev})
+        self._ledger(step, ev)
+        self._append({"role": "user", "content": G4_TEXT})
+        self._print(f"[{step}] -- G4: {self.long_reasoning} long-thinking steps; effort -> low --")
+
     def _critic(self, step: int, cause: str) -> None:
         if self.critic_calls >= CRITIC_MAX:
             return
@@ -233,15 +243,10 @@ class Agent:
                         continue
                     self._log({"role": "_reasoning", "step": step, "content": resp.reasoning})
                     self._append(resp.message)
+                    g4_due = False
                     if len(resp.reasoning or "") > LONG_REASONING_CHARS:
                         self.long_reasoning += 1
-                        if self.long_reasoning == LONG_REASONING_LIMIT:
-                            self.effort_override = "low"
-                            ev = {"event": "gate_warn", "gate": "G4", "step": step, "count": self.long_reasoning}
-                            self._log({"role": "_meta", **ev})
-                            self._ledger(step, ev)
-                            self._append({"role": "user", "content": G4_TEXT})
-                            self._print(f"[{step}] -- G4: {self.long_reasoning} long-thinking steps; effort -> low --")
+                        g4_due = self.long_reasoning == LONG_REASONING_LIMIT
                     if self.show_thinking and resp.reasoning:
                         self._print(f"\033[2m{resp.reasoning[:2000]}\033[0m")
                     if resp.content:
@@ -255,10 +260,16 @@ class Agent:
                         nudge = TRUNCATED_NUDGE if resp.finish_reason == "length" else \
                             "Call a tool, or finish with submit_flag. Do not just narrate."
                         self._append({"role": "user", "content": nudge})
+                        if g4_due:
+                            self._g4_warn(step)
                         continue
                     no_tool_streak = 0
 
                     self._run_tools(step, resp.tool_calls)
+                    if g4_due:
+                        # after the tool results: a user message must never sit between an
+                        # assistant tool_calls message and its tool messages
+                        self._g4_warn(step)
                     self._print(f"[{step}] tokens: prompt={resp.prompt_tokens} completion={resp.completion_tokens}")
                     if self.ctx.runbook_path:
                         status = "runbook"
