@@ -69,7 +69,7 @@ def make_problem(tmp_path):
 
 # ---- CLI test helpers ---------------------------------------------------------------------------
 
-_SOLVED = {"status": "solved", "flag": "DH{xyz}", "how_verified": "v", "reason": "",
+_SOLVED = {"status": "solved", "flag": "DH{x}", "how_verified": "v", "reason": "",
            "steps": 1, "compactions": 0, "prompt_tokens": 1, "completion_tokens": 1, "minutes": 0.1}
 
 
@@ -182,7 +182,7 @@ def test_no_tool_calls_nudged_then_abort(tmp_path):
 def test_repeated_call_nudge(tmp_path):
     d = make_problem(tmp_path)
     same = [("bash", {"cmd": "echo same"})]
-    llm = ScriptedLLM([same, same, same, [("submit_flag", {"flag": "DH{xyz}", "how_verified": "v"})]])
+    llm = ScriptedLLM([same, same, same, [("submit_flag", {"flag": "DH{x}", "how_verified": "v"})]])
     Agent(d, "", llm, max_steps=10, interactive=False).run()
     last = llm.seen[3]
     assert any(m["role"] == "user" and "repeated the same tool call" in m["content"] for m in last)
@@ -193,7 +193,7 @@ def test_bad_tool_and_bad_args_are_reported(tmp_path):
     llm = ScriptedLLM([
         [("nope", {})],
         [("bash", {"zzz": 1})],
-        [("submit_flag", {"flag": "DH{xyz}", "how_verified": "v"})],
+        [("submit_flag", {"flag": "DH{x}", "how_verified": "v"})],
     ])
     Agent(d, "", llm, max_steps=10, interactive=False).run()
     tools = [m["content"] for m in llm.seen[2] if m["role"] == "tool"]
@@ -204,7 +204,7 @@ def test_bad_tool_and_bad_args_are_reported(tmp_path):
 def test_compaction_triggers_over_threshold(tmp_path):
     d = make_problem(tmp_path)
     script = [[("bash", {"cmd": f"echo {i}"})] for i in range(7)] + \
-             [[("submit_flag", {"flag": "DH{xyz}", "how_verified": "v"})]]
+             [[("submit_flag", {"flag": "DH{x}", "how_verified": "v"})]]
     # 6th response reports a huge prompt → compaction before the 7th call
     llm = ScriptedLLM(script, prompt_tokens=lambda n: 50_000 if n == 6 else 100)
     r = Agent(d, "desc", llm, max_steps=20, interactive=False).run()
@@ -228,7 +228,7 @@ def test_compaction_includes_work_files_created_during_run(tmp_path):
         return "wrote table"
 
     script = [[("bash", {"cmd": f"echo {i}"})] for i in range(7)] + \
-             [[("submit_flag", {"flag": "DH{xyz}", "how_verified": "v"})]]
+             [[("submit_flag", {"flag": "DH{x}", "how_verified": "v"})]]
     llm = ScriptedLLM(script, prompt_tokens=lambda n: 50_000 if n == 6 else 100)
     agent = Agent(d, "desc", llm, max_steps=20, interactive=False)
     agent.handlers["bash"] = write_table
@@ -263,7 +263,7 @@ def test_exception_still_writes_result(tmp_path):
 
 def test_token_totals_are_per_run(tmp_path):
     d = make_problem(tmp_path)
-    llm = ScriptedLLM([[("submit_flag", {"flag": "DH{xyz}", "how_verified": "v"})]], prompt_tokens=77)
+    llm = ScriptedLLM([[("submit_flag", {"flag": "DH{x}", "how_verified": "v"})]], prompt_tokens=77)
     llm.total_prompt_tokens = 500
     llm.total_completion_tokens = 200
     r = Agent(d, "", llm, max_steps=10, interactive=False).run()
@@ -274,7 +274,7 @@ def test_token_totals_are_per_run(tmp_path):
 def test_skipped_calls_get_tool_results(tmp_path):
     d = make_problem(tmp_path)
     llm = ScriptedLLM([
-        [("submit_flag", {"flag": "DH{xyz}", "how_verified": "v"}), ("bash", {"cmd": "echo hi"})],
+        [("submit_flag", {"flag": "DH{x}", "how_verified": "v"}), ("bash", {"cmd": "echo hi"})],
     ])
     Agent(d, "", llm, max_steps=10, interactive=False).run()
     lines = (d / ".revagent" / "transcript.jsonl").read_text().splitlines()
@@ -312,7 +312,7 @@ def test_load_system_prompt_failure_still_writes_result(tmp_path, monkeypatch):
 def test_task_message_truncates_huge_listing(tmp_path, monkeypatch):
     d = make_problem(tmp_path)
     monkeypatch.setattr("revagent.agent.run_cmd", lambda *a, **kw: "X" * 10_000)
-    llm = ScriptedLLM([[("submit_flag", {"flag": "DH{xyz}", "how_verified": "v"})]])
+    llm = ScriptedLLM([[("submit_flag", {"flag": "DH{x}", "how_verified": "v"})]])
     agent = Agent(d, "desc", llm, max_steps=10, interactive=False)
     msg = agent._task_message()
     assert len(msg) < 6_000
@@ -342,7 +342,7 @@ def test_truncated_thinking_retries_with_hint_at_full_budget(tmp_path):
     d = make_problem(tmp_path)
     llm = ScriptedLLM([
         {"calls": [], "finish_reason": "length"},
-        [("submit_flag", {"flag": "DH{xyz}", "how_verified": "v"})],
+        [("submit_flag", {"flag": "DH{x}", "how_verified": "v"})],
     ])
     r = Agent(d, "", llm, max_steps=10, interactive=False).run()
     assert r["status"] == "solved" and r["steps"] == 1
@@ -866,7 +866,7 @@ def test_critic_runs_after_idle_steps_and_before_compaction(tmp_path, monkeypatc
     d = make_problem(tmp_path)
     # 13 identical-shape bash calls that never add Facts/obs, then a compaction, then submit
     calls = [[("bash", {"cmd": f"echo {i}"})] for i in range(13)]
-    script = calls + [[("bash", {"cmd": "echo after"})], [("submit_flag", {"flag": "DH{xyz}", "how_verified": "ran it", "evidence": "program_accepted"})]]
+    script = calls + [[("bash", {"cmd": "echo after"})], [("submit_flag", {"flag": "DH{x}", "how_verified": "ran it", "evidence": "program_accepted"})]]
     llm = ScriptedLLM(script, prompt_tokens=lambda n: 50_000 if n == 14 else 100)
     memos = []
     monkeypatch.setattr("revagent.agent.run_critic",
@@ -884,7 +884,7 @@ def test_critic_capped_per_run(tmp_path, monkeypatch):
     from revagent.critic import CRITIC_MAX
     d = make_problem(tmp_path)
     n = 12 * (CRITIC_MAX + 2)
-    script = [[("bash", {"cmd": f"echo {i}"})] for i in range(n)] + [[("submit_flag", {"flag": "DH{xyz}", "how_verified": "ok", "evidence": "program_accepted"})]]
+    script = [[("bash", {"cmd": f"echo {i}"})] for i in range(n)] + [[("submit_flag", {"flag": "DH{x}", "how_verified": "ok", "evidence": "program_accepted"})]]
     llm = ScriptedLLM(script)
     memos = []
     monkeypatch.setattr("revagent.agent.run_critic", lambda l, cf, msgs, step: memos.append(step) or "m")
@@ -958,7 +958,7 @@ def test_unreadable_case_file_mid_run_does_not_end_the_run(tmp_path):
     llm = ScriptedLLM([
         [("bash", {"cmd": "rm -f .revagent/case.md"})],
         [("bash", {"cmd": "echo still here"})],
-        [("submit_flag", {"flag": "DH{xyz}", "how_verified": "v", "evidence": "program_accepted"})],
+        [("submit_flag", {"flag": "DH{x}", "how_verified": "v", "evidence": "program_accepted"})],
     ])
     agent = Agent(d, "desc", llm, max_steps=10, interactive=False)
     r = agent.run()
@@ -1004,13 +1004,13 @@ def test_tool_timeouts_are_clamped_to_the_run_budget(tmp_path, monkeypatch):
 
 def test_results_jsonl_keeps_every_run(tmp_path):
     d = make_problem(tmp_path)
-    for flag in ("DH{aaa}", "DH{bbb}"):
+    for flag in ("DH{a}", "DH{b}"):
         llm = ScriptedLLM([[("submit_flag", {"flag": flag, "how_verified": "v"})]])
         Agent(d, "", llm, max_steps=3, interactive=False).run()
     latest = json.loads((d / ".revagent" / "result.json").read_text())
-    assert latest["flag"] == "DH{bbb}"
+    assert latest["flag"] == "DH{b}"
     rows = [json.loads(l) for l in (d / ".revagent" / "results.jsonl").read_text().splitlines()]
-    assert [r["flag"] for r in rows] == ["DH{aaa}", "DH{bbb}"]
+    assert [r["flag"] for r in rows] == ["DH{a}", "DH{b}"]
     assert all("time" in r and r["status"] == "solved" for r in rows)
     assert "llm_retries" in latest and latest["llm_retries"] == 0
 
@@ -1093,7 +1093,7 @@ def test_agent_counts_tool_calls_that_reach_a_handler(tmp_path):
         [("nope", {})],
         [("bash", {"cmd": "echo one"}), ("bash", {"cmd": "echo two"})],
         [("notes", {"action": "add", "text": "x"})],
-        [("submit_flag", {"flag": "DH{xyz}", "how_verified": "v"})],
+        [("submit_flag", {"flag": "DH{x}", "how_verified": "v"})],
     ])
     agent = Agent(d, "", llm, max_steps=10, interactive=False)
     agent.run()

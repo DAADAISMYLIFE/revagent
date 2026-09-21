@@ -172,8 +172,8 @@ def test_submit_flag_format(tmp_path):
     assert submit_flag.run(c, flag="flagx", how_verified="ran it").startswith("[rejected]")
     assert c.flag is None
     assert submit_flag.run(c, flag="DH{x}", how_verified="").startswith("[rejected]")
-    assert submit_flag.run(c, flag=" DH{xyz} ", how_verified="run_binary printed Correct").startswith("[accepted]")
-    assert c.flag == "DH{xyz}" and c.how_verified == "run_binary printed Correct"
+    assert submit_flag.run(c, flag=" DH{x} ", how_verified="run_binary printed Correct").startswith("[accepted]")
+    assert c.flag == "DH{x}" and c.how_verified == "run_binary printed Correct"
 
 
 from revagent.tools import decompile, summarize
@@ -830,8 +830,8 @@ def test_submit_flag_two_readings_must_name_a_tool_per_reading(tmp_path):
     c.tools_used = {"run_gui": 1, "bash": 3}
     out = submit_flag.run(c, flag="DH{abc}", evidence="two_independent_readings",
                           how_verified="① read the screenshot\n② rebuilt from the hook log")
-    assert out.startswith("[rejected] each reading must say which tool produced it "
-                          "(run_gui / run_binary / emulate / decompile / bash / summarize): ① <tool>: ... ② <tool>: ...")
+    assert out == ("[rejected] each reading must say which tool produced it (run_gui / run_binary / emulate / decompile "
+                   "/ bash / summarize): ① <tool>: ... ② <tool>: ... (the first tool named in a reading is the one that counts)")
     assert c.flag is None and c.flag_attempts == {"DH{abc}": 1}
     # one reading names a tool, the other does not: still rejected
     out = submit_flag.run(c, flag="DH{abc}", evidence="two_independent_readings",
@@ -847,7 +847,7 @@ def test_submit_flag_two_readings_rejects_same_tool_twice(tmp_path):
                           how_verified="① run_gui: screenshot after real clicks\n② run_gui: hook log of the same capture")
     assert out == ("[rejected] both readings come from the same tool (run_gui); a second reading must come from a "
                    "DIFFERENT source — e.g. a run_gui capture AND bytes decoded from the file with bash, or emulate "
-                   "on the draw routine.")
+                   "on the draw routine. (the first tool named in a reading is the one that counts)")
     assert c.flag is None and c.flag_attempts == {"DH{abc}": 1}
 
 
@@ -865,21 +865,65 @@ def test_submit_flag_two_readings_rejects_tool_never_called(tmp_path):
     assert out.startswith("[accepted]") and c.flag == "DH{abc}"
 
 
+def test_submit_flag_two_readings_survive_a_parenthesised_digit(tmp_path):
+    # "(0) " matches the "N) " step separator, so the first reading splits in two; the fragment that
+    # names no tool is dropped and the two tool-named parts are what count.
+    from revagent.tools import submit_flag
+    c = ctx_for(tmp_path)
+    c.tools_used = {"run_gui": 1, "bash": 1}
+    out = submit_flag.run(c, flag="DH{abc}", evidence="two_independent_readings",
+                          how_verified="① run_gui: pixel (0) is black\n② bash: xxd shows 0x61 0x62 0x63")
+    assert out.startswith("[accepted]") and c.flag == "DH{abc}"
+
+
+def test_submit_flag_tool_names_and_hatch_are_case_insensitive(tmp_path):
+    from revagent.tools import submit_flag
+    c = ctx_for(tmp_path)
+    c.tools_used = {"run_gui": 1, "bash": 1}
+    out = submit_flag.run(c, flag="DH{abc}", evidence="two_independent_readings",
+                          how_verified="① Run_GUI: screenshot\n② BASH: decoded bytes")
+    assert out.startswith("[accepted]")
+    c2 = ctx_for(tmp_path)
+    c2.tools_used = {"run_gui": 1, "bash": 1}
+    out = submit_flag.run(c2, flag="DH{0}", evidence="two_independent_readings",
+                          how_verified="Description States the flag is one digit\n① run_gui: glyph\n② bash: byte")
+    assert out.startswith("[accepted]") and c2.flag == "DH{0}"
+
+
 def test_submit_flag_short_body_needs_description_states(tmp_path):
     from revagent.tools import submit_flag
     c = ctx_for(tmp_path)
     c.tools_used = {"run_gui": 1, "bash": 1}
+    short = ("[rejected] a flag body of 1-2 characters is almost never the whole flag: keep reading (the "
+             "stream/screen usually continues). If the description really states the flag is that short, "
+             "write 'description states ...' in how_verified.")
+    out = submit_flag.run(c, flag="DH{0}", evidence="two_independent_readings",
+                          how_verified="① run_gui: one glyph\n② bash: decoded one byte")
+    assert out == short and c.flag is None and c.flag_attempts == {"DH{0}": 1}
+    out = submit_flag.run(c, flag="DH{ab}", evidence="two_independent_readings",
+                          how_verified="① run_gui: two glyphs\n② bash: decoded two bytes")
+    assert out == short
+    # the rule is only for displayed flags: other evidence kinds accept short bodies
     for evidence, hv in (("program_accepted", "run_gui showed Correct"),
-                         ("reimplementation_matches", "my model accepts it"),
-                         ("two_independent_readings", "① run_gui: one glyph\n② bash: decoded one byte")):
-        out = submit_flag.run(c, flag="DH{0}", how_verified=hv, evidence=evidence)
-        assert out == ("[rejected] a flag body of 1-2 characters is almost never the whole flag: keep reading (the "
-                       "stream/screen usually continues). If the description really states the flag is that short, "
-                       "write 'description states ...' in how_verified."), evidence
-        assert c.flag is None
-    assert submit_flag.run(c, flag="DH{ab}", how_verified="run_binary printed Correct").startswith("[rejected] a flag body")
-    out = submit_flag.run(c, flag="DH{0}", how_verified="description states the flag is one digit; run_binary printed Correct")
+                         ("reimplementation_matches", "my model accepts it")):
+        c2 = ctx_for(tmp_path)
+        assert submit_flag.run(c2, flag="DH{0}", how_verified=hv, evidence=evidence).startswith("[accepted]"), evidence
+    out = submit_flag.run(c, flag="DH{0}", evidence="two_independent_readings",
+                          how_verified="description states the flag is one digit\n① run_gui: glyph\n② bash: byte")
     assert out.startswith("[accepted]") and c.flag == "DH{0}"
+
+
+def test_submit_flag_short_body_rejections_hit_the_spam_guard(tmp_path):
+    from revagent.tools import submit_flag
+    c = ctx_for(tmp_path)
+    c.tools_used = {"run_gui": 1, "bash": 1}
+    for _ in range(3):
+        out = submit_flag.run(c, flag="DH{0}", evidence="two_independent_readings",
+                              how_verified="① run_gui: one glyph\n② bash: one byte")
+        assert out.startswith("[rejected] a flag body of 1-2 characters")
+    out = submit_flag.run(c, flag="DH{0}", evidence="two_independent_readings",
+                          how_verified="① run_gui: one glyph\n② bash: one byte")
+    assert out == "[rejected] same flag 3× — change approach" and c.flag is None
 
 
 def test_submit_flag_program_accepted_needs_no_tool_naming(tmp_path):
@@ -895,6 +939,7 @@ def test_submit_flag_schema_names_reading_tools():
     desc = submit_flag.SCHEMA["function"]["parameters"]["properties"]["how_verified"]["description"]
     assert desc.startswith("what you ran and what it showed; for two_independent_readings: method ① on one line, method ② on the next")
     assert "name the tool of each reading (① run_gui: ... ② bash: ...)" in desc
+    assert "the first tool named in a reading is the one that counts" in desc
     assert submit_flag.READING_TOOLS == ("run_gui", "run_binary", "emulate", "decompile", "bash", "summarize")
 
 
@@ -902,7 +947,7 @@ def test_submit_flag_evidence_enum_and_default(tmp_path):
     from revagent.tools import submit_flag
     c = ctx_for(tmp_path)
     assert submit_flag.run(c, flag="DH{a}", how_verified="x", evidence="vibes").startswith("[rejected] evidence must be one of")
-    assert submit_flag.run(c, flag="DH{abc}", how_verified="run_binary printed Correct").startswith("[accepted]")
+    assert submit_flag.run(c, flag="DH{a}", how_verified="run_binary printed Correct").startswith("[accepted]")
     assert submit_flag.SCHEMA["function"]["parameters"]["properties"]["evidence"]["enum"] == list(submit_flag.EVIDENCE_KINDS)
 
 
@@ -928,6 +973,7 @@ def test_count_methods():
     assert count_methods("① a\n② b") == 2
     assert count_methods("1) screen diff read 2) log rebuild") == 2
     assert count_methods("first line\nsecond line") == 2
+    assert count_methods("⑥ a ⑦ b ⑧ c ⑨ d") == 4
     assert count_methods("") == 0
 
 

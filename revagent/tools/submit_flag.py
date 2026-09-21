@@ -11,7 +11,7 @@ SHORT_BODY_PHRASE = "description states"
 _CIRCLED = "①②③④⑤⑥⑦⑧⑨"
 # Format check only (spec §3.4): splits on separators a human would use to list steps, e.g. prose
 # like "step 2)" counts as a separator too — this is not a semantic check of what the methods are.
-_METHOD_SPLIT = re.compile(r"(?:\n|[①②③④⑤]|(?<!\d)\d\)\s)")
+_METHOD_SPLIT = re.compile(r"(?:\n|[①②③④⑤⑥⑦⑧⑨]|(?<!\d)\d\)\s)")
 
 SCHEMA = {
     "type": "function",
@@ -31,7 +31,7 @@ SCHEMA = {
             "type": "object",
             "properties": {
                 "flag": {"type": "string"},
-                "how_verified": {"type": "string", "description": "what you ran and what it showed; for two_independent_readings: method ① on one line, method ② on the next; for two_independent_readings, name the tool of each reading (① run_gui: ... ② bash: ...)"},
+                "how_verified": {"type": "string", "description": "what you ran and what it showed; for two_independent_readings: method ① on one line, method ② on the next; for two_independent_readings, name the tool of each reading (① run_gui: ... ② bash: ...); the first tool named in a reading is the one that counts"},
                 "evidence": {"type": "string", "enum": list(EVIDENCE_KINDS)},
             },
             "required": ["flag", "how_verified", "evidence"],
@@ -49,8 +49,9 @@ def count_methods(how_verified: str) -> int:
 
 
 def reading_tool(part: str) -> str | None:
-    """The READING_TOOLS name mentioned earliest in one method part, or None."""
-    hits = [(part.find(t), t) for t in READING_TOOLS if t in part]
+    """The READING_TOOLS name mentioned earliest in one method part (case-insensitive), or None."""
+    low = part.lower()
+    hits = [(low.find(t), t) for t in READING_TOOLS if t in low]
     return min(hits)[1] if hits else None
 
 
@@ -58,22 +59,35 @@ def _label(i: int) -> str:
     return _CIRCLED[i] if i < len(_CIRCLED) else str(i + 1)
 
 
+def _short_body(flag: str, how_verified: str) -> str | None:
+    """A displayed flag of 1-2 characters is nearly always a partial reading; the hatch is the model
+    saying the description states it is that short."""
+    body = flag[flag.index("{") + 1:-1]
+    if len(body) <= SHORT_BODY_MAX and SHORT_BODY_PHRASE not in how_verified.lower():
+        return ("[rejected] a flag body of 1-2 characters is almost never the whole flag: keep reading (the "
+                "stream/screen usually continues). If the description really states the flag is that short, "
+                "write 'description states ...' in how_verified.")
+    return None
+
+
 def _check_readings(ctx, how_verified: str) -> str | None:
-    """The two_independent_readings rule; returns the [rejected] text or None when it passes."""
+    """The two_independent_readings rule; returns the [rejected] text or None when it passes.
+    The splitter can cut a reading at a parenthesised digit ("pixel (0) is"), so fragments that name
+    no tool are dropped and the rule is applied to the tool-named parts that remain."""
     parts = method_parts(how_verified)
     if len(parts) < 2:
         return ("[rejected] second independent reading required: how_verified describes one method. A displayed flag "
                 "is accepted only when two DIFFERENT methods agree (e.g. ① read the captures after real input, "
                 "② rebuild the text from logged coordinates / decoded bytes / a different alphabet check). "
                 "Build the second method, then resubmit with both on separate lines.")
-    tools = [reading_tool(p) for p in parts]
-    if any(t is None for t in tools):
+    tools = [t for t in (reading_tool(p) for p in parts) if t]
+    if len(tools) < 2:
         return ("[rejected] each reading must say which tool produced it (run_gui / run_binary / emulate / decompile "
-                "/ bash / summarize): ① <tool>: ... ② <tool>: ...")
+                "/ bash / summarize): ① <tool>: ... ② <tool>: ... (the first tool named in a reading is the one that counts)")
     if tools[0] == tools[1]:
         return (f"[rejected] both readings come from the same tool ({tools[0]}); a second reading must come from a "
                 "DIFFERENT source — e.g. a run_gui capture AND bytes decoded from the file with bash, or emulate "
-                "on the draw routine.")
+                "on the draw routine. (the first tool named in a reading is the one that counts)")
     for i, t in enumerate(tools):
         if ctx.tools_used.get(t, 0) < 1:
             return f"[rejected] reading {_label(i)} names {t} but this run never called it; read it for real first."
@@ -90,13 +104,8 @@ def run(ctx, flag: str, how_verified: str = "", evidence: str = "program_accepte
         return f"[rejected] evidence must be one of {', '.join(EVIDENCE_KINDS)}."
     if not how_verified.strip():
         return "[rejected] how_verified is empty. Verify first (run_binary or re-implemented check), then resubmit."
-    body = flag[flag.index("{") + 1:-1]
-    if len(body) <= SHORT_BODY_MAX and SHORT_BODY_PHRASE not in how_verified:
-        return ("[rejected] a flag body of 1-2 characters is almost never the whole flag: keep reading (the "
-                "stream/screen usually continues). If the description really states the flag is that short, "
-                "write 'description states ...' in how_verified.")
     if evidence == "two_independent_readings":
-        rejection = _check_readings(ctx, how_verified)
+        rejection = _short_body(flag, how_verified) or _check_readings(ctx, how_verified)
         if rejection:
             attempts = ctx.flag_attempts.get(flag, 0)
             if attempts >= SAME_FLAG_LIMIT:
