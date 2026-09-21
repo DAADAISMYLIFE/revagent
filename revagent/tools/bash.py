@@ -14,8 +14,8 @@ SCHEMA = {
         "name": "bash",
         "description": (
             "Run a shell command in the challenge directory. Use it for file, strings, readelf, "
-            "objdump -d -M intel, gdb -batch -ex ..., python3 (has angr, z3, pycryptodome), "
-            "ctfpy (pwntools, capstone, unicorn, pefile), gcc. stdout+stderr are returned with the exit "
+            "objdump -d -M intel, gdb -batch -ex ..., python3 (angr, z3, unicorn, capstone, pwntools, pefile, "
+            "pycryptodome), gcc. stdout+stderr are returned with the exit "
             "code on the first line. Output over 12000 chars is truncated and saved to a file you can "
             "page with sed -n 'A,Bp'. stdin is closed; feed input via a pipe or run_binary."
         ),
@@ -31,8 +31,13 @@ SCHEMA = {
 }
 
 
+def scrubbed_env() -> dict[str, str]:
+    """os.environ minus SCRUB_ENV: the environment every child process of a tool gets."""
+    return {k: v for k, v in os.environ.items() if k not in SCRUB_ENV}
+
+
 def run_cmd(cmd: str, cwd: Path, timeout: int, stdin_text: str | None = None) -> str:
-    env = {k: v for k, v in os.environ.items() if k not in SCRUB_ENV}
+    env = scrubbed_env()
     p = subprocess.Popen(
         cmd, shell=True, executable="/bin/bash", cwd=str(cwd),
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -51,5 +56,5 @@ def run_cmd(cmd: str, cwd: Path, timeout: int, stdin_text: str | None = None) ->
 
 
 def run(ctx, cmd: str, timeout: int = 120) -> str:
-    timeout = max(1, min(int(timeout), MAX_TIMEOUT))
+    timeout = ctx.clamp_timeout(max(1, min(int(timeout), MAX_TIMEOUT)))
     return run_cmd(cmd, cwd=ctx.problem_dir, timeout=timeout)

@@ -1,3 +1,4 @@
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -5,7 +6,24 @@ from ..casefile import CaseFile
 from ..truncate import ENV_NOTE_PREFIX
 
 START_FAILURES_TO_BLOCK = 2
+MIN_TOOL_SECONDS = 5        # a tool called at the very end of the budget still gets this long
 BLOCKED_PATHS_CHARS = 200   # env_note() must stay well under truncate()'s FOOTER_MAX
+
+
+class PathError(Exception):
+    """Raised by resolve_inside(); str(e) is the exact `[tool error] ...` text the tool returns."""
+
+
+def resolve_inside(ctx, rel: str, must_exist: bool = True) -> Path:
+    """Resolve a model-supplied path relative to the challenge directory, refusing anything that
+    escapes it (absolute paths, `..`, symlinks out). With must_exist, the target must be a file."""
+    problem_dir = ctx.problem_dir.resolve()
+    p = (ctx.problem_dir / rel).resolve()
+    if not p.is_relative_to(problem_dir):
+        raise PathError(f"[tool error] path escapes the challenge directory: {rel}")
+    if must_exist and not p.is_file():
+        raise PathError(f"[tool error] no such file: {rel}")
+    return p
 
 
 @dataclass
@@ -26,6 +44,18 @@ class ToolContext:
     env_blocked_paths: list[str] = field(default_factory=list)   # targets that could not be started
     runbook_path: Path | None = None   # set by handoff_runbook; ends the run with status "runbook"
     flag_attempts: dict = field(default_factory=dict)
+    deadline: float | None = None      # time.monotonic() at which the run's wall-clock budget ends
+
+    def clamp_timeout(self, seconds: int) -> int:
+        """Cap a tool timeout to the time left in the run. agent.py checks max_minutes only between
+        steps, so without this one 900 s bash call started at minute 119 ends the run at minute 134
+        (damnida run 1 was killed by an outer wrapper for exactly that). The deadline cut is floored at
+        MIN_TOOL_SECONDS so a tool called at the very end still runs; a request shorter than the floor
+        (`timeout=2`) is returned unchanged — the floor never raises what the model asked for."""
+        if self.deadline is None:
+            return seconds
+        remaining = int(self.deadline - time.monotonic())
+        return min(seconds, max(MIN_TOOL_SECONDS, remaining))
 
     @property
     def out_dir(self) -> Path:
@@ -48,6 +78,11 @@ class ToolContext:
         """Open the runbook gate immediately ([cannot run here]) and record what was blocked."""
         self.env_blocked = True
         self.record_blocked_path(path)
+
+    def observe_cannot_run(self, tool: str, path: str) -> None:
+        """A run tool answered [cannot run here]: open the gate and write the ledger line for it."""
+        self.block_env(path)
+        self.observe(f"{tool} {path}: [cannot run here]")
 
     def note_start_failure(self, path: str | None = None) -> None:
         self.start_failures += 1

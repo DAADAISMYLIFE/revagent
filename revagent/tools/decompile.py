@@ -1,4 +1,5 @@
 from ..ghidra import FunctionDB, GhidraError, analyze
+from .base import PathError, resolve_inside
 
 SCHEMA = {
     "type": "function",
@@ -29,18 +30,22 @@ SCHEMA = {
 }
 
 
-def _get_db(ctx, binary: str) -> FunctionDB:
+def _get_db(ctx, binary: str, p) -> FunctionDB:
+    """p is the resolved path of `binary` (from resolve_inside), or None when binary is empty."""
     if binary:
-        p = ctx.problem_dir / binary
         if not p.is_file():
             raise GhidraError(f"no such file: {binary}")
-        key = str(p.resolve())
+        key = str(p)
         cached = ctx.function_dbs.get(key)
         if isinstance(cached, GhidraError):
             raise GhidraError(f"previous analysis failed; not retrying: {cached}")
         if cached is None:
             try:
-                json_path = analyze(p, ctx.work_dir / "ghidra")
+                # analyze() gets the path as the model named it (not the resolved one): the cache file
+                # and the Ghidra program are named after it, and the playbook tells the model to grep
+                # `.revagent/ghidra/<binary>.<hash>.functions.json` by that name.
+                json_path = analyze(ctx.problem_dir / binary, ctx.work_dir / "ghidra",
+                                    timeout=ctx.clamp_timeout(1200))
             except GhidraError as e:
                 # Negative cache: never re-run analysis on a binary that already
                 # failed (e.g. timed out) within this session.
@@ -57,13 +62,14 @@ def _get_db(ctx, binary: str) -> FunctionDB:
 
 
 def run(ctx, action: str, target: str = "", binary: str = "", limit: int = 200, filter: str = "") -> str:
+    p = None
     if binary:
-        problem_dir = ctx.problem_dir.resolve()
-        p = (ctx.problem_dir / binary).resolve()
-        if not p.is_relative_to(problem_dir):
-            return f"[tool error] path escapes the challenge directory: {binary}"
+        try:
+            p = resolve_inside(ctx, binary, must_exist=False)  # missing file is reported by _get_db
+        except PathError as e:
+            return str(e)
     try:
-        db = _get_db(ctx, binary)
+        db = _get_db(ctx, binary, p)
     except GhidraError as e:
         return (f"[decompile unavailable] {e}\n"
                 f"Fallback: bash `objdump -d -M intel <bin> > dis.txt` and read the assembly in ranges.")

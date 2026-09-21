@@ -7,7 +7,8 @@ import subprocess
 import time
 from pathlib import Path
 
-from .bash import SCRUB_ENV
+from .base import PathError, resolve_inside
+from .bash import SCRUB_ENV, scrubbed_env  # SCRUB_ENV re-exported: tests check it here too
 
 DISPLAY = os.environ.get("DISPLAY", ":99")
 MAX_WAIT = 60
@@ -50,10 +51,6 @@ SCHEMA = {
         },
     },
 }
-
-
-def launch_cmd(exe: Path, args: list[str]) -> list[str]:
-    return ["wine", str(exe), *args]
 
 
 def _display_ok(env: dict) -> bool:
@@ -240,23 +237,19 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5,
         actions: list[str] | None = None) -> str:
     for tool in ("wine", "import", "tesseract", "xdotool", "xdpyinfo"):
         if shutil.which(tool) is None:
-            ctx.block_env(path)
-            ctx.observe(f"run_gui {path}: [cannot run here]")
-            return (f"[cannot run here] {tool} is not installed on the host; run with --sandbox (the image has "
+            ctx.observe_cannot_run("run_gui", path)
+            return (f"[cannot run here] {tool} is not installed on the host; run in the sandbox (the default; drop --host: the image has "
                     f"wine + Xvfb + OCR).") + ctx.env_note()
-    problem_dir = ctx.problem_dir.resolve()
-    p = (ctx.problem_dir / path).resolve()
-    if not p.is_relative_to(problem_dir):
-        return f"[tool error] path escapes the challenge directory: {path}"
-    if not p.is_file():
-        return f"[tool error] no such file: {path}"
-    scrubbed = {k: v for k, v in os.environ.items() if k not in SCRUB_ENV}
-    env = {**scrubbed, "DISPLAY": DISPLAY, "WINEDEBUG": "-all"}
+    try:
+        p = resolve_inside(ctx, path)
+    except PathError as e:
+        return str(e)
+    env = {**scrubbed_env(), "DISPLAY": DISPLAY, "WINEDEBUG": "-all"}
     if not _display_ok(env):
         return f"[tool error] no display at {DISPLAY}; the sandbox entrypoint should have started Xvfb"
-    wait = max(1, min(int(wait_seconds), MAX_WAIT))
+    wait = ctx.clamp_timeout(max(1, min(int(wait_seconds), MAX_WAIT)))
     reset_note = _reset_display(env)
-    cmd = launch_cmd(p, list(args or []))
+    cmd = ["wine", str(p), *(args or [])]
     proc = subprocess.Popen(cmd, cwd=str(ctx.problem_dir), env=env, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
     info = {"tail": "", "actions": ""}
@@ -282,7 +275,7 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5,
             info["ocr7"] = "(timeout)"
         action_lines = []
         prev_png = png if (shot is not None and png.exists()) else None
-        deadline = time.monotonic() + ACTION_BUDGET_SECONDS
+        deadline = time.monotonic() + ctx.clamp_timeout(ACTION_BUDGET_SECONDS)
         for i, spec in enumerate(action_specs, 1):
             if time.monotonic() > deadline:
                 action_lines.append(f"{i}. {spec}: skipped (action budget exhausted)")

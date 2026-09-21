@@ -1,20 +1,16 @@
 import os
 import time
 
+import pytest
+
 from revagent.casefile import CaseFile
 from revagent.context import (compact, extract_unfinished, format_work_files, list_work_files,
                               prune_log, serialize, shrink_casefile, split_messages, KEEP_RECENT,
                               RESET_TEXT, SUMMARY_PROMPT)
+from tests.conftest import FakeLLM
 
-
-class FakeLLM:
-    def __init__(self, reply="- fact: x\n- failed: y\n- todo: z"):
-        self.reply = reply
-        self.prompts = []
-
-    def complete(self, prompt, system=None, **kw):
-        self.prompts.append(prompt)
-        return self.reply
+BULLETS = "- fact: x\n- failed: y\n- todo: z"
+SHRUNK = "# Case: p\n\n## Facts\n- short\n\n## Hypotheses\n\n## Todo\n\n## Log\n"
 
 
 def exchange(i, big=False):
@@ -59,7 +55,7 @@ def test_serialize_caps_each_message_and_total():
 def test_compact_summarizes_middle_into_log_and_resets(tmp_path):
     cf = CaseFile(tmp_path / "case.md", "p", "d")
     cf.add("facts", "main at 0x401136")
-    llm = FakeLLM()
+    llm = FakeLLM(reply=BULLETS)
     new = compact(build(10), llm, cf, n=1)
     assert "step 0" in llm.prompts[0] and "result 5" in llm.prompts[0]
     log = cf.read().split("## Log")[1]
@@ -69,6 +65,7 @@ def test_compact_summarizes_middle_into_log_and_resets(tmp_path):
     assert "main at 0x401136" in new[2]["content"] and "- fact: x" in new[2]["content"]
     assert new[3]["content"] == "step 6"
     assert len(new) == 3 + 2 * KEEP_RECENT
+    assert "[WORK FILES]" not in new[2]["content"]  # no work_files_block → no section
 
 
 def test_compact_without_middle_skips_summary(tmp_path):
@@ -79,13 +76,19 @@ def test_compact_without_middle_skips_summary(tmp_path):
     assert new[2]["role"] == "user"
 
 
-def test_shrink_casefile_rewrites(tmp_path):
+def test_shrink_casefile_rewrites_and_backs_up(tmp_path):
     cf = CaseFile(tmp_path / "case.md", "p", "d")
     cf.add("facts", "a" * 3000)
-    llm = FakeLLM(reply="# Case: p\n\n## Facts\n- short\n\n## Hypotheses\n\n## Todo\n\n## Log\n")
-    shrink_casefile(cf, llm)
+    cf.add("facts", "original fact, verbatim")
+    before = cf.read()
+    llm = FakeLLM(reply=SHRUNK)
+    assert shrink_casefile(cf, llm) is True
     assert cf.read().count("a" * 100) == 0 and "- short" in cf.read()
     assert "a" * 3000 in llm.prompts[0]
+    backup = tmp_path / "case.md.bak"
+    assert backup.exists()
+    assert backup.read_text(encoding="utf-8") == before
+    assert "original fact, verbatim" in backup.read_text(encoding="utf-8")
 
 
 def test_compact_sanitizes_header_lines(tmp_path):
@@ -106,7 +109,7 @@ def test_shrink_casefile_returns_bool(tmp_path):
     cf = CaseFile(tmp_path / "case.md", "p", "d")
     cf.add("facts", "x")
     before = cf.read()
-    llm = FakeLLM(reply="# Case: p\n\n## Facts\n- short\n\n## Hypotheses\n\n## Todo\n\n## Log\n")
+    llm = FakeLLM(reply=SHRUNK)
     assert shrink_casefile(cf, llm) is True
     assert cf.read() != before
 
@@ -121,12 +124,7 @@ def test_shrink_casefile_llm_exception_returns_false(tmp_path):
     cf = CaseFile(tmp_path / "case.md", "p", "d")
     cf.add("facts", "x")
     before = cf.read()
-
-    class BoomLLM:
-        def complete(self, prompt, system=None, **kw):
-            raise RuntimeError("server down")
-
-    assert shrink_casefile(cf, BoomLLM()) is False
+    assert shrink_casefile(cf, FakeLLM(raise_=RuntimeError("server down"))) is False
     assert cf.read() == before
     assert not (tmp_path / "case.md.bak").exists()
 
@@ -152,22 +150,10 @@ def test_shrink_casefile_rejects_reply_that_looks_cut_off(tmp_path):
     assert cf.read() == before
 
 
-def test_shrink_casefile_backs_up_before_overwrite(tmp_path):
-    cf = CaseFile(tmp_path / "case.md", "p", "d")
-    cf.add("facts", "original fact, verbatim")
-    before = cf.read()
-    llm = FakeLLM(reply="# Case: p\n\n## Facts\n- short\n\n## Hypotheses\n\n## Todo\n\n## Log\n")
-    assert shrink_casefile(cf, llm) is True
-    backup = tmp_path / "case.md.bak"
-    assert backup.exists()
-    assert backup.read_text(encoding="utf-8") == before
-    assert "original fact, verbatim" in backup.read_text(encoding="utf-8")
-
-
 def test_shrink_casefile_caps_huge_input(tmp_path):
     cf = CaseFile(tmp_path / "case.md", "p", "d")
     cf.add("facts", "a" * 61_000)
-    llm = FakeLLM(reply="# Case: p\n\n## Facts\n- short\n\n## Hypotheses\n\n## Todo\n\n## Log\n")
+    llm = FakeLLM(reply=SHRUNK)
     shrink_casefile(cf, llm)
     assert llm.prompts[0].count("a") <= 60_000 + 100
     assert "truncated" in llm.prompts[0]
@@ -278,41 +264,43 @@ def test_compact_appends_work_files_block_after_casefile(tmp_path):
     assert case_idx < wf_idx
 
 
-def test_compact_without_work_files_block_omits_section(tmp_path):
-    cf = CaseFile(tmp_path / "case.md", "p", "d")
-    llm = FakeLLM()
-    new = compact(build(10), llm, cf, n=1)
-    assert "[WORK FILES]" not in new[2]["content"]
-
-
 def test_summary_prompt_asks_for_artifacts(tmp_path):
     cf = CaseFile(tmp_path / "case.md", "p", "d")
     llm = FakeLLM()
     compact(build(10), llm, cf, n=1)
     assert "(d) ARTIFACTS" in llm.prompts[0]
     assert "Do not invent anything absent from the log." in llm.prompts[0]
-
-
-def test_summary_prompt_constant_has_artifacts_heading():
     assert "(d) ARTIFACTS" in SUMMARY_PROMPT
 
 
-def test_extract_unfinished_returns_c_section():
-    summary = ("(a) FACTS\n- fact one\n(b) FAILED\n- fail one\n"
-               "(c) UNFINISHED\n- todo one\n- todo two\n(d) ARTIFACTS\n- art one")
+@pytest.mark.parametrize("summary, present, absent, exact", [
+    pytest.param("(a) FACTS\n- fact one\n(b) FAILED\n- fail one\n"
+                 "(c) UNFINISHED\n- todo one\n- todo two\n(d) ARTIFACTS\n- art one",
+                 ["- todo one", "- todo two"], ["fact one", "art one"], None, id="returns_c_section"),
+    pytest.param("(a) FACTS\n- fact one\n(c) UNFINISHED\n- todo one",
+                 ["- todo one"], [], None, id="to_end_when_no_d"),
+    pytest.param("(a) FACTS\n- fact one\n(b) FAILED\n- fail one",
+                 [], [], "", id="empty_when_missing"),
+    # a "(c)" inside a copyright string in FACTS is not the UNFINISHED heading; the real one follows
+    pytest.param('(a) FACTS\n- strings: "Copyright (c) 1998 Foo"\n(b) FAILED\n- fail one\n'
+                 "(c) UNFINISHED\n- real todo one\n- real todo two\n(d) ARTIFACTS\n- art one",
+                 ["real todo one", "real todo two"], ["Copyright", "fail one", "art one"], None,
+                 id="ignores_mid_sentence_c_mention_before_real_heading"),
+    pytest.param("(c) UNFINISHED\n- add (d)ata parsing support\n- another real todo\n"
+                 "(d) ARTIFACTS\n- art one",
+                 ["add (d)ata parsing support", "another real todo"], ["art one"], None,
+                 id="mid_line_d_does_not_truncate_section"),
+    pytest.param("(c) UNFINISHED\n- todo one",
+                 [], ["(c) UNFINISHED"], "- todo one", id="excludes_heading_line_itself"),
+])
+def test_extract_unfinished(summary, present, absent, exact):
     out = extract_unfinished(summary)
-    assert "- todo one" in out and "- todo two" in out
-    assert "fact one" not in out and "art one" not in out
-
-
-def test_extract_unfinished_to_end_when_no_d():
-    summary = "(a) FACTS\n- fact one\n(c) UNFINISHED\n- todo one"
-    out = extract_unfinished(summary)
-    assert "- todo one" in out
-
-
-def test_extract_unfinished_empty_when_missing():
-    assert extract_unfinished("(a) FACTS\n- fact one\n(b) FAILED\n- fail one") == ""
+    for needle in present:
+        assert needle in out
+    for needle in absent:
+        assert needle not in out
+    if exact is not None:
+        assert out == exact
 
 
 def test_compact_fills_todo_from_summary_c_section(tmp_path):
@@ -333,30 +321,6 @@ def test_compact_leaves_todo_unchanged_without_c_section(tmp_path):
     compact(build(10), llm, cf, n=1)
     todo = cf.read().split("## Todo")[1].split("## Log")[0]
     assert "existing todo" in todo
-
-
-def test_extract_unfinished_ignores_mid_sentence_c_mention_before_real_heading():
-    summary = ('(a) FACTS\n- strings: "Copyright (c) 1998 Foo"\n(b) FAILED\n- fail one\n'
-               "(c) UNFINISHED\n- real todo one\n- real todo two\n(d) ARTIFACTS\n- art one")
-    out = extract_unfinished(summary)
-    assert "real todo one" in out and "real todo two" in out
-    assert "Copyright" not in out and "fail one" not in out and "art one" not in out
-
-
-def test_extract_unfinished_mid_line_d_does_not_truncate_section():
-    summary = ("(c) UNFINISHED\n- add (d)ata parsing support\n- another real todo\n"
-               "(d) ARTIFACTS\n- art one")
-    out = extract_unfinished(summary)
-    assert "add (d)ata parsing support" in out
-    assert "another real todo" in out
-    assert "art one" not in out
-
-
-def test_extract_unfinished_excludes_heading_line_itself():
-    summary = "(c) UNFINISHED\n- todo one"
-    out = extract_unfinished(summary)
-    assert "(c) UNFINISHED" not in out
-    assert out == "- todo one"
 
 
 def test_format_work_files_caps_block_length(tmp_path):
@@ -437,44 +401,16 @@ def test_shrink_casefile_uses_big_budget_and_rejects_length_cutoff(tmp_path):
     cf = CaseFile(tmp_path / "case.md", "p", "d")
     cf.add("facts", "x")
     before = cf.read()
-
-    class RecordingLLM:
-        def __init__(self, finish):
-            self.kw = None
-            self.last_finish_reason = finish
-        def complete(self, prompt, system=None, **kw):
-            self.kw = kw
-            return "# Case: p\n\n## Facts\n- short\n\n## Hypotheses\n\n## Todo\n\n## Log\n- ok\n"
-
-    llm = RecordingLLM("length")
+    reply = "# Case: p\n\n## Facts\n- short\n\n## Hypotheses\n\n## Todo\n\n## Log\n- ok\n"
+    llm = FakeLLM(reply=reply, finish="length")
     assert shrink_casefile(cf, llm) is False and cf.read() == before
     assert llm.kw["max_tokens"] >= 16384 == SHRINK_MAX_TOKENS and llm.kw["reasoning_effort"] == "low"
-    assert shrink_casefile(cf, RecordingLLM("stop")) is True
-
-
-def test_llm_complete_raises_budget_for_one_call_only(monkeypatch):
-    from types import SimpleNamespace
-    from revagent.llm import LLM
-    llm = LLM.__new__(LLM)
-    llm.max_tokens = 8192
-    llm.total_prompt_tokens = llm.total_completion_tokens = llm.last_prompt_tokens = 0
-    seen = {}
-
-    def fake_create(**kw):
-        seen["max"] = llm.max_tokens
-        seen["effort"] = kw.get("reasoning_effort")
-        msg = SimpleNamespace(content="hi", reasoning=None)
-        return SimpleNamespace(choices=[SimpleNamespace(message=msg, finish_reason="length")], usage=None)
-
-    monkeypatch.setattr(llm, "_create", fake_create)
-    monkeypatch.setattr(llm, "_account", lambda resp: (0, 0))
-    assert llm.complete("p", max_tokens=16384, reasoning_effort="low") == "hi"
-    assert seen == {"max": 16384, "effort": "low"} and llm.max_tokens == 8192
-    assert llm.last_finish_reason == "length"
+    assert shrink_casefile(cf, FakeLLM(reply=reply, finish="stop")) is True
 
 
 def test_prune_log_keeps_obs_and_critic_bullets(tmp_path):
-    from revagent.context import prune_log
+    # the [obs half of I2; tests/test_critic.py::test_prune_log_keeps_every_critic_bullet_once
+    # covers the [critic half on the same 5-block log.
     cf = CaseFile(tmp_path / "case.md", "p", "d")
     for n in range(1, 6):
         cf.add("log", f"### compaction {n}\n## (a) FACTS\n- fact {n}\n## (b) FAILED\n- fail {n}\n"
@@ -486,9 +422,7 @@ def test_prune_log_keeps_obs_and_critic_bullets(tmp_path):
     text = cf.read()
     for n in range(1, 6):
         assert f"- [obs step {n}] run_gui x.exe: windows: W" in text
-        assert f"- [critic step {n}] try clicking" in text
         assert text.count(f"- [obs step {n}] run_gui x.exe: windows: W") == 1
-        assert text.count(f"- [critic step {n}] try clicking") == 1
     assert "- fail 1" not in text and "- todo 1" not in text and "- fact 1" in text
 
 

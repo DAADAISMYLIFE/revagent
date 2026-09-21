@@ -1,7 +1,7 @@
 """Critic: a separate, cheap LLM call that reviews the case file and the last few tool exchanges and
 answers four fixed questions. It runs before every compaction and after CRITIC_IDLE_STEPS steps without
 new Facts/observations. Its memo is advice injected as a user message, not an instruction the loop enforces."""
-from .casefile import SECTIONS
+from .casefile import section_span
 from .context import sanitize_summary
 
 CRITIC_IDLE_STEPS = 12
@@ -29,18 +29,11 @@ CRITIC_PROMPT = (
 def progress_marker(casefile_text: str) -> tuple[int, int]:
     """(number of Facts bullets, number of '- [obs' lines). Used to detect steps without progress."""
     lines = casefile_text.split("\n")
-    try:
-        f0 = lines.index(SECTIONS["facts"])
-    except ValueError:
-        f0 = None
     n_facts = 0
-    if f0 is not None:
-        headers = set(SECTIONS.values())
-        for line in lines[f0 + 1:]:
-            if line.strip() in headers:
-                break
-            if line.startswith("- "):
-                n_facts += 1
+    span = section_span(lines, "facts")
+    if span is not None:
+        start, end = span
+        n_facts = sum(1 for line in lines[start + 1:end] if line.startswith("- "))
     n_obs = sum(1 for l in lines if l.startswith("- [obs "))
     return n_facts, n_obs
 

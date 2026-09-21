@@ -4,7 +4,7 @@ import os
 import stat
 from pathlib import Path
 
-from .casefile import SECTIONS
+from .casefile import HEADERS, section_span
 
 THRESHOLD = 44_000
 KEEP_RECENT = 4
@@ -80,14 +80,16 @@ def format_work_files(files: list[tuple[str, int]]) -> str:
     header = ("[WORK FILES] These files were created or modified during this run and still exist "
               "under the challenge dir. Read/load them instead of re-deriving their contents:")
     lines = [header]
+    length = len(header)  # len("\n".join(lines)), tracked instead of re-joined per file
     budget = WORK_FILES_BLOCK_CAP - _WORK_FILES_TAIL_RESERVE
     shown = 0
     for path, size in files:
         line = f"- {path} ({size} bytes)"
-        prospective = len("\n".join(lines)) + 1 + len(line)
+        prospective = length + 1 + len(line)
         if prospective > budget:
             break
         lines.append(line)
+        length = prospective
         shown += 1
     remaining = len(files) - shown
     if remaining > 0:
@@ -137,11 +139,10 @@ def serialize(middle: list[dict]) -> str:
 def sanitize_summary(text: str) -> str:
     """Demote any line that exactly matches a canonical section header (## Facts, etc.)
     to a level-3 heading, so it doesn't get mistaken for a real section boundary."""
-    headers = set(SECTIONS.values())
     lines = text.split("\n")
     for i, line in enumerate(lines):
         stripped = line.strip()
-        if stripped in headers:
+        if stripped in HEADERS:
             indent = line[:len(line) - len(line.lstrip())]
             lines[i] = indent + "### " + stripped[3:]
     return "\n".join(lines)
@@ -211,18 +212,11 @@ def prune_log(casefile, keep: int = 3) -> int:
     blocks already reduced (no (b)/(c) part left), are left untouched. Observation-ledger
     bullets (`- [obs `, `- [critic `) that follow a reduced block are always retained, exactly
     once each, in their original order. Returns the number of blocks reduced."""
-    text = casefile.read()
-    header = SECTIONS["log"]
-    lines = text.split("\n")
-    try:
-        start = lines.index(header)
-    except ValueError:
+    lines = casefile.read().split("\n")
+    span = section_span(lines, "log")
+    if span is None:
         return 0
-    valid_headers = set(SECTIONS.values())
-    end = next(
-        (i for i in range(start + 1, len(lines)) if lines[i].strip() in valid_headers),
-        len(lines),
-    )
+    start, end = span
     body = lines[start + 1:end]
 
     block_starts = [i for i, line in enumerate(body) if line.startswith("### ")]

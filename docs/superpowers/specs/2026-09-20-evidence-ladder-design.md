@@ -94,3 +94,16 @@ handoff_runbook(...) → env_blocked ? write runbook.md, end RUNBOOK : reject
 - 오케스트레이터/워커 분리.
 - 사람을 도구로 쓰는 대화형 런북(사람이 실행하고 관찰을 돌려주는 방식). `--no-ask` 배치 운용과 맞지 않아 보류.
 - 비평가 모델을 다른 모델로 바꾸는 것.
+
+## 8. 수정 이력 추가 (2026-09-21)
+
+구현·리뷰 과정에서 §3~§6과 달라진 실제 동작(현재 소스에서 확인함):
+
+- **비평가 메모 길이**: `CRITIC_MAX_LINES = 6`(§3.3의 "5줄 이내"가 아님). 메모는 `sanitize_summary`를 거친 뒤 한 줄씩 `- [critic step N] …`로 원장에 남는다.
+- **시작 실패 게이트 축소**(커밋 0941de8, `run_binary._is_start_failure`): §3.5의 "exit code ≠ 0이고 stdout 비어 있음 2회"가 아니라, (a) 출력이 전혀 없고 **치명 시그널**로 죽었을 때(`run_cmd` 음수 코드 또는 132/134/135/136/139), 또는 (b) 비어 있지 않은 줄이 **3줄 이하**인 로더형 출력에 `START_FAILURE_MARKERS`(`error while loading shared libraries`, `Exec format error`, `err:module:`, `Bad EXE format` 등)가 있을 때만 시작 실패로 센다. "exit 1, 출력 없음"은 오답 패턴이므로 세지 않는다. 2회(`START_FAILURES_TO_BLOCK`)면 `env_blocked`.
+- **`observe` 실패 처리**: §5의 "`(observation not recorded)`를 붙인다"는 구현하지 않았다. `ToolContext.observe`는 예외를 조용히 삼킨다(`try/except: pass`).
+- **같은 플래그 3회 제한의 범위**: §5의 "거부 3회 후 4회째"가 아니라, `two_independent_readings`인데 방법이 하나뿐인 거부 분기 안에서만 `flag_attempts`를 세고 `SAME_FLAG_LIMIT`에 닿으면 `[rejected] same flag 3× — change approach`. 정규식 불일치·빈 `how_verified` 거부는 세지 않는다.
+- **`run_gui` 원장 형식**: §3.2 예시와 달리 `run_gui <path> [args]: windows: <창>; <state>; inputs: N (changed a, unchanged b, undelivered c); captures: NNN-MMM`. 창이 `(none)`/`(timeout)`이면 `note_start_failure`.
+- **`win_gui_nodll` → `win_gui_32`**: §6의 "존재하지 않는 DLL을 임포트하는 PE"는 wine이 로더 오류를 내며 정직하게 실패하지 않아 폐기했고, 이미지가 실행 못 하는 **PE32**(`bench/mini/win_gui_32`, i686-mingw)로 대체했다. `run_binary`가 `[cannot run here]`로 게이트를 연다. 기대 결과는 `runbook` 또는 정적 XOR 복호에 의한 `solved`(README 벤치 표 참조).
+- **막힌 대상 기록**: `ToolContext.env_blocked_paths`에 `[cannot run here]`/시작 실패가 난 경로를 모으고, `env_note()`(`[env] …` 꼬리말)와 `runbook.md`의 `Blocked target(s): …` 줄에 표시한다. `env_blocked` 자체는 여전히 run 전체의 단일 플래그.
+- **툴 타임아웃과 run 마감**: `ToolContext.clamp_timeout(seconds)`가 모든 run/bash/gui 대기 시간을 run의 남은 시간으로 자른다(하한 `MIN_TOOL_SECONDS = 5`). damnida run 1이 120분 상한을 넘겨 외부 래퍼에 죽은 뒤 추가.

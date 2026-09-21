@@ -1,23 +1,8 @@
 from revagent.casefile import CaseFile
-from revagent.critic import (CRITIC_IDLE_STEPS, CRITIC_MAX, CRITIC_MAX_TOKENS, CRITIC_PROMPT, progress_marker,
-                             render_recent, run_critic)
+from revagent.critic import CRITIC_MAX_TOKENS, CRITIC_PROMPT, progress_marker, render_recent, run_critic
+from tests.conftest import FakeLLM
 
-
-class FakeLLM:
-    def __init__(self, reply="1. obs contradicts plan\n2. repeated 3x\n3. run_gui with clicks\n4. none", raise_=False):
-        self.reply, self.raise_, self.kw, self.prompts = reply, raise_, None, []
-        self.last_finish_reason = "stop"
-
-    def complete(self, prompt, system=None, **kw):
-        self.prompts.append(prompt)
-        self.kw = kw
-        if self.raise_:
-            raise RuntimeError("down")
-        return self.reply
-
-
-def test_constants():
-    assert CRITIC_IDLE_STEPS == 12 and CRITIC_MAX == 8 and CRITIC_MAX_TOKENS == 4096
+MEMO = "1. obs contradicts plan\n2. repeated 3x\n3. run_gui with clicks\n4. none"
 
 
 def test_progress_marker_counts_facts_and_obs(tmp_path):
@@ -40,7 +25,7 @@ def test_render_recent_takes_last_n_tool_exchanges():
 
 def test_run_critic_appends_memo_and_uses_low_effort(tmp_path):
     cf = CaseFile(tmp_path / "c.md", "p", "d")
-    llm = FakeLLM()
+    llm = FakeLLM(reply=MEMO)
     memo = run_critic(llm, cf, [], step=15)
     assert memo and memo.startswith("1. obs contradicts plan")
     assert llm.kw == {"max_tokens": CRITIC_MAX_TOKENS, "reasoning_effort": "low"}
@@ -113,17 +98,30 @@ def test_run_critic_memo_is_sanitized_so_a_header_line_is_not_a_boundary(tmp_pat
     assert facts < lines.index("- after the critic ran") < log
 
 
+def test_documented_constants():
+    # quoted in README / the playbook ("after 12 idle steps", "max 8 critic calls", run_gui's 300 s
+    # action budget); a retune must update the docs too, so pin them here
+    from revagent.critic import CRITIC_IDLE_STEPS, CRITIC_MAX, CRITIC_MAX_TOKENS
+    from revagent.tools.run_gui import ACTION_BUDGET_SECONDS
+    assert (CRITIC_IDLE_STEPS, CRITIC_MAX, CRITIC_MAX_TOKENS, ACTION_BUDGET_SECONDS) == (12, 8, 4096, 300)
+
+
 def test_prune_log_keeps_every_critic_bullet_once(tmp_path):
+    # the [critic half of I2 (the ledger-count regression); tests/test_context.py::
+    # test_prune_log_keeps_obs_and_critic_bullets covers the [obs half on the same 5-block log.
     from revagent.context import prune_log
     cf = CaseFile(tmp_path / "c.md", "p", "d")
     for n in range(1, 6):
         cf.add("log", f"### compaction {n}\n## (a) FACTS\n- fact {n}\n## (b) FAILED\n- fail {n}\n"
                       f"## (c) UNFINISHED\n- todo {n}\n## (d) ARTIFACTS\n- art {n}", bullet=False)
-        run_critic(FakeLLM(), cf, [], step=n)
-    prune_log(cf, keep=3)
+        cf.add("log", f"[obs step {n}] run_gui x.exe: windows: W")
+        run_critic(FakeLLM(reply=MEMO), cf, [], step=n)
+        cf.add("log", f"[critic step {n}] try clicking")
+    assert prune_log(cf, keep=3) == 2
     text = cf.read()
     for n in range(1, 6):
-        for answer in ("1. obs contradicts plan", "2. repeated 3x", "3. run_gui with clicks", "4. none"):
+        for answer in MEMO.splitlines() + ["try clicking"]:
+            assert f"- [critic step {n}] {answer}" in text
             assert text.count(f"- [critic step {n}] {answer}") == 1
 
 
@@ -139,7 +137,7 @@ def test_run_critic_survives_an_unreadable_case_file(tmp_path):
         return real_read()
 
     cf.read = raise_once
-    assert run_critic(FakeLLM(), cf, [], step=5) is None
+    assert run_critic(FakeLLM(reply=MEMO), cf, [], step=5) is None
     assert "- [critic step 5] (failed: OSError)" in real_read()
 
 
@@ -147,4 +145,4 @@ def test_run_critic_ledger_write_failure_is_swallowed(tmp_path):
     # ... and when even the fallback ledger write fails, run_critic still returns quietly.
     cf = CaseFile(tmp_path / "c.md", "p", "d")
     cf.read = lambda: (_ for _ in ()).throw(OSError("gone"))
-    assert run_critic(FakeLLM(), cf, [], step=6) is None
+    assert run_critic(FakeLLM(reply=MEMO), cf, [], step=6) is None

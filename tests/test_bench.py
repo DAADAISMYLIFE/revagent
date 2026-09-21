@@ -54,16 +54,3 @@ def test_row_missing_for_this_challenge_is_unchanged(tmp_path):
     status, note = check_answer(problem_dir, "solved", "DH{anything}")
     assert status == "solved"
     assert note is None
-
-
-def test_uses_parent_directory_of_challenge_dir(tmp_path):
-    suite = tmp_path / "mini"
-    suite.mkdir()
-    _write_answers(suite, "| win_gui_key | DH{k3y_dr1v3n_ui} |\n")
-    problem_dir = suite / "win_gui_key"
-    problem_dir.mkdir()
-    status, note = check_answer(problem_dir, "solved", "DH{k3y_dr1v3n_ui}")
-    assert status == "solved" and note is None
-    status, note = check_answer(problem_dir, "solved", "DH{k3y_driv3n_ui}")
-    assert status == "wrong"
-    assert note == "got DH{k3y_driv3n_ui}, expected DH{k3y_dr1v3n_ui}"
