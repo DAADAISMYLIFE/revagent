@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from revagent.emulate import (BUF_BASE, RET_PAGE, EmulateError, Image, Result, emulate_call, load_image)
+from revagent.emulate import (BUF_BASE, BUF_MAX, RET_PAGE, STACK_SIZE, EmulateError, Image, Result, emulate_call,
+                              load_image)
 
 CODE = 0x100000
 
@@ -107,3 +108,23 @@ def test_load_image_pie_elf_at_ghidra_base(tmp_path):
     f_off = next(int(l.split()[0], 16) for l in out.splitlines() if l.endswith(" T f"))
     r = emulate_call(img, 0x100000 + f_off, [("hex", b"\x00")])
     assert r.stopped is None and r.rax == 0x55 and r.buffers == [b"\x55"]
+
+
+def test_stack_holds_a_two_megabyte_local_frame():
+    # sub rsp, 0x200000 ; mov byte [rsp], 1 ; add rsp, 0x200000 ; ret   (the spec says 8 MB of stack)
+    r = emulate_call(_image(bytes.fromhex("4881ec00002000 c6042401 4881c400002000 c3")), CODE, [])
+    assert r.stopped is None
+    assert STACK_SIZE == 0x800000
+
+
+def test_overrun_from_one_buffer_faults_instead_of_landing_in_the_next():
+    # mov byte [rdi+0x10000], 1 ; ret   -> beyond arg0's mapping, must NOT silently hit arg1
+    r = emulate_call(_image(bytes.fromhex("c68700000100 01 c3")), CODE, [("hex", b"\x00"), ("hex", b"\x00")])
+    assert r.stopped["reason"] == "unmapped" and r.buffers == [b"\x00", b"\x00"]
+
+
+def test_hex_argument_size_cap_leaves_a_guard_page():
+    r = emulate_call(_image(bytes.fromhex("c3")), CODE, [("hex", b"\x00" * BUF_MAX)])
+    assert r.stopped is None and len(r.buffers[0]) == BUF_MAX
+    with pytest.raises(EmulateError, match="too large"):
+        emulate_call(_image(bytes.fromhex("c3")), CODE, [("hex", b"\x00" * (BUF_MAX + 1))])

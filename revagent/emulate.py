@@ -13,9 +13,10 @@ from pathlib import Path
 from typing import Callable
 
 STACK_TOP = 0x7FFF_0000
-STACK_SIZE = 0x100000
+STACK_SIZE = 0x800000        # 8 MB, committed lazily by unicorn: a 2 MB local frame must not read as "unmapped"
 BUF_BASE = 0x1000_0000
-BUF_STRIDE = 0x10000
+BUF_STRIDE = 0x20000         # per hex arg; a buffer maps at most BUF_MAX + 1 page, so >= 0x1000 stays unmapped
+BUF_MAX = 0xE000             # largest hex argument; an overrun then faults instead of landing in the next buffer
 TLS_PAGE = 0x2000_0000
 RET_PAGE = 0x3000_0000
 PAGE = 0x1000
@@ -160,10 +161,9 @@ def emulate_call(image: Image, func: int, args: list[Arg], out_lens: "list[int] 
         if kind == "hex":
             data = bytes(val)
             addr = BUF_BASE + i * BUF_STRIDE
+            if len(data) > BUF_MAX:
+                raise EmulateError(f"hex argument {i} is too large ({len(data)} bytes; limit {BUF_MAX})")
             size = _page_up(len(data) + PAGE)
-            if size > BUF_STRIDE:
-                raise EmulateError(f"hex argument {i} is too large ({len(data)} bytes; "
-                                   f"limit {BUF_STRIDE - PAGE})")
             mu.mem_map(addr, size, UC_PROT_ALL)
             if data:
                 mu.mem_write(addr, data)

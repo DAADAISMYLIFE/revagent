@@ -73,3 +73,14 @@ spike(2026-09-21 밤, 호스트 venv, cle 9.3.3 + unicorn 2.1.0): chall9.exe의 
 - libc 스텁(strlen/memcmp/memcpy)과 syscall 에뮬레이션. import 보고로 충분한지 basic·captain-hook에서 확인한 뒤 결정.
 - 다른 아키텍처(ARM/MIPS): qemu-user가 있으니 프로그램 단위 실행은 이미 가능하고, 함수 단위는 unicorn 아키텍처 추가로 가능하지만 이번엔 x86-64만.
 - 게이트와의 연동(예: G3가 "emulate로 비교하라"를 요구하는 문구)은 플레이북 문구로만.
+
+## 수정 이력 (2026-09-21)
+
+구현이 위 설계와 달라진 점. 본문은 고치지 않고 여기에만 적는다.
+
+- §3.1 `Image`: 필드는 `segments/base/min_addr/max_addr/is_pe/symbol_at`. `plt`/`imports`/`insns`는 없고, import 이름은 cle의 `find_symbol`/`describe_addr`로 정지 시점에 찾는다.
+- §3.1 스택은 8 MB(`STACK_SIZE = 0x800000`, unicorn이 지연 커밋). `UC_HOOK_CODE` 명령 카운터는 없고 `emu_start(count=max_insns)`로 상한을 건다.
+- §3.1 `hex:` 버퍼는 인자 인덱스 × `0x20000` 간격, 최대 `0xE000` 바이트(뒤에 최소 한 페이지가 비매핑으로 남아 넘침이 다음 버퍼로 새지 않고 `unmapped`로 잡힌다).
+- §3.2 출력에 `instructions=` 줄은 없다. 함수 이름은 `FUN_<hex>`/`thunk_FUN_<hex>`/`0x<hex>`를 그대로 파싱한다(functions.json 조회 없음). `addr:`는 `DAT_00106020`/`00106020`/`0x106020` 모두 받는다.
+- §3.2 버퍼 표시와 원장(`arg1=...`)은 버퍼 순번이 아니라 인자 인덱스로 붙인다. 이미지 캐시 키는 `(경로, mtime_ns, size)`(모델이 바이너리를 패치하면 다시 로드).
+- §6 functions.json 환산 테스트와 bench/mini 통합 테스트는 없다. gcc로 만든 PIE ELF 테스트(`test_load_image_pie_elf_at_ghidra_base`)와 컨트롤러의 레포 밖 PE 확인이 그 자리를 맡는다.

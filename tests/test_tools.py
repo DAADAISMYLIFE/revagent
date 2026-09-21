@@ -1386,3 +1386,67 @@ def test_emulate_tool_coerces_and_validates_loosely_typed_arguments(tmp_path, mo
     assert em.run(ctx, binary="chal", function="0x100000", args=[], max_insns=None) == "[tool error] max_insns must be a positive integer"
     assert em.run(ctx, binary="chal", function="0x100000", args=[], max_insns="100", out_lens=[3]).startswith("rax=")
     assert seen["max_insns"] == 100 and seen["out_lens"] == [3]
+
+
+def test_emulate_tool_labels_buffers_by_argument_index(tmp_path, monkeypatch):
+    # args=["int:5", "hex:00"]: the only buffer is arg1, not arg0 (buffers come back in hex-arg order)
+    from revagent.emulate import Result
+    from revagent.tools import emulate as em
+    (tmp_path / "chal").write_bytes(b"\x7fELF")
+    monkeypatch.setattr(em, "load_image", lambda p: _fake_image())
+    monkeypatch.setattr(em, "emulate_call", lambda *a, **k: Result(rax=0, buffers=[b"\x00"], stopped=None))
+    ctx = ctx_for(tmp_path)
+    out = em.run(ctx, binary="chal", function="0x100000", args=["int:5", "hex:00"])
+    assert "arg1 (1 bytes): 00" in out and "arg0" not in out
+    assert "emulate 0x100000: rax=0x0, arg1=00" in ctx.casefile.read()
+
+
+def test_emulate_tool_reports_any_loader_failure(tmp_path, monkeypatch):
+    from revagent.tools import emulate as em
+    (tmp_path / "chal").write_bytes(b"\x7fELF")
+    monkeypatch.setattr(em, "load_image", lambda p: (_ for _ in ()).throw(MemoryError("cle blew up")))
+    out = em.run(ctx_for(tmp_path), binary="chal", function="0x100000", args=[])
+    assert out == "[cannot emulate] MemoryError: cle blew up"
+
+
+def test_emulate_tool_reloads_a_modified_binary(tmp_path, monkeypatch):
+    # the playbook has the model patch binaries in place: a path-only cache would keep running the old bytes
+    from revagent.emulate import Result
+    from revagent.tools import emulate as em
+    (tmp_path / "chal").write_bytes(b"\x7fELF")
+    loads = []
+    monkeypatch.setattr(em, "load_image", lambda p: loads.append(p) or _fake_image())
+    monkeypatch.setattr(em, "emulate_call", lambda *a, **k: Result(0, [], None))
+    ctx = ctx_for(tmp_path)
+    em.run(ctx, binary="chal", function="0x100000", args=[])
+    (tmp_path / "chal").write_bytes(b"\x7fELF" + b"\x90")
+    em.run(ctx, binary="chal", function="0x100000", args=[])
+    assert len(loads) == 2
+
+
+def test_emulate_tool_rejects_args_that_are_not_a_list(tmp_path, monkeypatch):
+    # a bare string would be iterated per character
+    from revagent.tools import emulate as em
+    (tmp_path / "chal").write_bytes(b"\x7fELF")
+    monkeypatch.setattr(em, "load_image", lambda p: _fake_image())
+    out = em.run(ctx_for(tmp_path), binary="chal", function="0x100000", args="hex:41")
+    assert out == "[tool error] args must be a list of 'hex:'/'int:'/'addr:' strings"
+
+
+def test_emulate_parses_decompiler_style_addresses():
+    from revagent.tools import emulate as em
+    assert em.parse_args(["addr:DAT_00106020", "addr:00106020", "addr:0x106020"]) == [
+        ("addr", 0x106020), ("addr", 0x106020), ("addr", 0x106020)]
+    assert em.parse_args(["addr:PTR_DAT_00106020", "addr:LAB_00101234"]) == [("addr", 0x106020), ("addr", 0x101234)]
+    assert em.parse_args(["addr:1234"]) == [("addr", 1234)]        # short: not an address-sized hex run
+    assert em.parse_args(["int:106020"]) == [("int", 106020)]      # ints stay int(val, 0): decimal...
+    with pytest.raises(ValueError, match="int:00106020"):           # ...and no tolerant-hex rule
+        em.parse_args(["int:00106020"])
+    with pytest.raises(ValueError, match="addr:DAT_"):
+        em.parse_args(["addr:DAT_"])
+
+
+def test_emulate_schema_says_hex_buffers_are_output_buffers():
+    from revagent.tools import emulate as em
+    d = em.SCHEMA["function"]["description"]
+    assert "zero-filled for at least one page past your bytes" in d and "out_lens reads back that many bytes" in d

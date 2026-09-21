@@ -944,7 +944,8 @@ def test_playbook_puts_emulate_before_solve_check_in_the_constraint_class():
     assert "`emulate`" in p
     sec3 = p.index("## 3.")
     assert p.index("emulate", sec3) < p.index("solve_check", sec3)
-    assert "Observation (program output" in p and "emulate" in p[p.index("11. **Evidence ladder."):p.index("# Environment")]
+    rule11 = p[p.index("11. **Evidence ladder."):p.index("# Environment")]
+    assert "Observation (program output" in rule11 and "`emulate`" in rule11   # the tool, not the plain verb
     for n in range(1, 11):
         assert f"\n{n}. **" in p
 
