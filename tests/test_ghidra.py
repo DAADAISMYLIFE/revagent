@@ -84,10 +84,7 @@ def test_list_text_name_filter():
     assert "1 functions" in lines[0]
     assert "check" in text
     assert "main" not in text and "printf" not in text and "_start" not in text
-
-
-def test_list_text_name_filter_case_insensitive_and_no_match():
-    db = FunctionDB.load(FIX)
+    # case-insensitive, and a miss reports zero functions
     assert "check" in db.list_text(name_filter="CHECK")
     empty = db.list_text(name_filter="zzz_no_such_function")
     assert "0 functions" in empty.splitlines()[0]

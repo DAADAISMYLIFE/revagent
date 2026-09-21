@@ -261,3 +261,23 @@ out the branch review:
   case-insensitive) so the model can page past the 200-largest-functions default or narrow to a
   name pattern instead of being hard-capped with no escape hatch; falling back to grepping the cached
   `.revagent/ghidra/<binary>.<hash>.functions.json` directly via `bash` remains available either way.
+
+## 11. 수정 이력 추가 (2026-09-21)
+
+§10 이후 코드가 이 스펙과 달라진 지점(각 항목은 현재 소스에서 확인함):
+
+- **범위 확장**: §1 비목표/§9 범위 밖으로 둔 Docker 샌드박스(`revagent/sandbox.py`, `--sandbox`), Windows PE 실행(wine, `run_binary`), GUI PE 관찰(`tools/run_gui.py`), 런북 종료(`tools/handoff_runbook.py`)가 모두 구현·병합됨. 각각 `2026-09-19-sandbox-design.md`, `2026-09-20-evidence-ladder-design.md`, `2026-09-20-pe-stage-design.md` 참조.
+- **툴 수 9개**(§8의 "7개"가 아님): `ask_user`, `bash`, `decompile`, `handoff_runbook`, `notes`, `run_binary`, `run_gui`, `submit_flag`, `summarize`.
+- **플레이북 위치**: `prompts/system.md`가 아니라 패키지 안 `revagent/prompts/system.md`. 규칙은 4개가 아니라 11개(증거 사다리, 그래픽 플래그, 중간 결과 보존, Win64 인자 누락 등 추가).
+- **`bench/run.py` 없음** — §10 첫 항목 그대로(`revagent bench`).
+- **산출물 추가**(§3 목록 외): `results.jsonl`(run마다 한 줄 누적), `screens/NNN.png`·`NNN.diff.png`(run_gui), `runbook.md`(handoff_runbook), `case.md.bak`(shrink_casefile 백업).
+- **llm.py**: `max_tokens` 기본값 8192 → **16384**(`DEFAULT_MAX_TOKENS`; thinking 토큰이 포함되므로). 응답은 **스트리밍**으로 받아 `collect_stream`으로 접는다(runpod 프록시의 100 s 524 회피). SDK 자체 재시도는 `max_retries=0`으로 끄고, 눈에 보이는 재시도 3회(`retries=3`, stderr 출력, `total_retries` → result.json `llm_retries`).
+- **`load_secure`**: 파일 탐색 전에 `QWEN`/`URL`/`MODEL` 환경변수 세 개가 모두 있으면(그리고 `--secure`가 없으면) 그 값을 쓴다. 이후 순서는 §4.1과 동일.
+- **`submit_flag`**: `FLAG_RE`는 `^DH\{.+\}$`가 아니라 `^[A-Za-z0-9_]+\{.+\}$`(어떤 PREFIX{...}든 허용; 접두어는 문제 설명이 정함). 필수 인자 `evidence`(`program_accepted` | `two_independent_readings` | `reimplementation_matches`) 추가, `how_verified` 비어 있으면 거부.
+- **`run_binary`**: PE(MZ)는 "실행 불가"가 아니라 샌드박스 안에서 `WINEDEBUG=-all wine`으로 실행. 32-bit PE(PE32/80386)는 이미지에 wine64만 있어 `[cannot run here]`로 거부. 호스트에 wine이 없을 때도 `[cannot run here]`.
+- **`decompile`**: 인자 `binary`(첫 호출 시 필수), `limit`(기본 200), `filter` 추가 — §10 마지막 항목 참조.
+- **truncate 안내 문구**: `[truncated: N chars total. full output: .revagent/out/NNN.txt — page it with bash: sed -n 'A,Bp' … or grep -n PATTERN …]`(§4.2의 문구와 다름). 끝에 `[env] …` 환경 노트가 있으면 잘라내지 않고 보존.
+- **컴팩션 실패 처리**(§4.5 5항): 연속 초과 **2회째**에 `shrink_casefile`(case.md 축약, `.bak` 보존), **3회째**에 중단(`_reduce_context`가 False 반환). "2회 연속 실패 시 중단"이 아님.
+- **루프 추가 동작**(§4.6 의사코드 외): `finish_reason == "length"`이고 tool call이 없으면 힌트와 `reasoning_effort=low`로 1회 재시도(`output_truncated` 이벤트); 12스텝 무진전 시 비평가 호출(idle critic); 케이스 파일을 못 읽어도 run을 계속(`casefile_unreadable` 이벤트); `handoff_runbook` 수락 시 상태 `runbook`으로 종료.
+- **CLI 플래그 추가**(§4.7): `--secure PATH`, `--sandbox`, `--sandbox-dev`, `--sandbox-ca PATH`(`REVAGENT_SANDBOX_CA`). 종료 코드: solved 0 / unsolved·wrong 1 / usage·preflight 2 / runbook 3.
+- **툴 타임아웃 상한**: §10의 900 s 클램프에 더해 `ToolContext.clamp_timeout`이 run의 남은 시간(`deadline`)으로 다시 잘라 `--max-minutes`가 실제 상한이 되게 한다(하한 `MIN_TOOL_SECONDS = 5`).

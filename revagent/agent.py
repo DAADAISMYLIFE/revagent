@@ -14,7 +14,6 @@ from .tools.base import ToolContext
 from .tools.bash import run_cmd
 from .truncate import truncate
 
-TRUNCATED_RETRY_MAX_TOKENS = 16384
 TRUNCATED_RETRY_EFFORT = "low"  # the retry step only; normal steps keep the client default (medium)
 TRUNCATED_RETRY_HINT = ("[system] Your previous attempt at this step exhausted the output budget while thinking and "
                         "produced nothing. Do not repeat that: decide in a few sentences, then call a tool. If a "
@@ -62,6 +61,9 @@ class Agent:
         self.transcript = open(self.work_dir / "transcript.jsonl", "a", encoding="utf-8")
         self.messages: list[dict] = []
         self.critic_calls = 0
+        self.compactions = 0
+        self.over_streak = 0
+        self.recent: deque = deque(maxlen=3)
 
     # ---- bookkeeping -------------------------------------------------------
     def _log(self, obj: dict) -> None:
@@ -98,6 +100,23 @@ class Agent:
                 result = f"[tool error] {type(e).__name__}: {e}"
         return truncate(result, self.ctx.out_dir, self.ctx.next_out_id)
 
+    def _run_tools(self, step: int, calls: list[ToolCall]) -> None:
+        """Execute one assistant turn's tool calls in order; once a call has set the flag or a
+        runbook, the remaining calls are answered with a skip error instead of being run."""
+        flag_just_set = False
+        for call in calls:
+            if flag_just_set:
+                result = "[tool error] skipped: session ended"
+                self._append({"role": "tool", "tool_call_id": call.id, "content": result})
+                continue
+            self._print(f"[{step}] > {call.name} {call.raw_args[:160]}")
+            result = self._execute(call)
+            self._append({"role": "tool", "tool_call_id": call.id, "content": result})
+            head = "\n".join(result.splitlines()[:3])
+            self._print(f"[{step}] < {head[:300]}")
+            if self.ctx.flag or self.ctx.runbook_path:
+                flag_just_set = True
+
     def _critic(self, step: int, cause: str) -> None:
         if self.critic_calls >= CRITIC_MAX:
             return
@@ -116,9 +135,25 @@ class Agent:
         self._log(messages[2])
         return messages
 
+    def _reduce_context(self, step: int, cause: str) -> bool:
+        """Over-threshold / overflow handling shared by both call sites. Returns False when the
+        context cannot be reduced (third consecutive over-size step); otherwise critic, compact."""
+        self.over_streak += 1
+        if self.over_streak >= 3:
+            return False
+        if self.over_streak == 2:
+            shrunk = shrink_casefile(self.casefile, self.llm)
+            self._log({"role": "_meta", "event": "shrink_casefile", "accepted": shrunk})
+        self._critic(step, "compaction")
+        self.compactions += 1
+        self.messages = self._compact(cause, self.compactions)
+        self.recent.clear()
+        return True
+
     # ---- main loop ---------------------------------------------------------
     def run(self) -> dict:
-        start = time.time()
+        start = time.monotonic()
+        self.ctx.deadline = start + self.max_minutes * 60
         self._log({
             "role": "_meta", "event": "session_start",
             "time": datetime.now(timezone.utc).isoformat(),
@@ -128,10 +163,11 @@ class Agent:
         })
         start_prompt_tokens = self.llm.total_prompt_tokens
         start_completion_tokens = self.llm.total_completion_tokens
+        start_retries = getattr(self.llm, "total_retries", 0)
         no_tool_streak = 0
-        recent = deque(maxlen=3)
-        compactions = 0
-        over_streak = 0
+        self.recent.clear()
+        self.compactions = 0
+        self.over_streak = 0
         status, reason, steps = "unsolved", "", 0
         last_marker = progress_marker(self.casefile.read())
         idle = 0
@@ -143,7 +179,7 @@ class Agent:
                 for step in range(1, self.max_steps + 1):
                     steps = step
                     self.ctx.step = step
-                    if time.time() - start > self.max_minutes * 60:
+                    if time.monotonic() > self.ctx.deadline:
                         reason = "time limit"
                         steps = step - 1
                         break
@@ -151,33 +187,20 @@ class Agent:
                         resp = self.llm.chat(self.messages, self.schemas)
                         if resp.finish_reason == "length" and not resp.tool_calls:
                             # The model spent the whole output budget thinking. Retry once with a
-                            # larger budget before treating it as a no-tool turn.
+                            # hint and low effort (same max_tokens: 44k threshold + 16k output is the
+                            # 65536 ceiling already) before treating it as a no-tool turn.
                             self._log({"role": "_meta", "event": "output_truncated", "step": step,
-                                       "retry_max_tokens": TRUNCATED_RETRY_MAX_TOKENS})
-                            self._print(f"[{step}] -- output truncated mid-thinking; retrying with a larger budget --")
-                            old_max = self.llm.max_tokens
-                            self.llm.max_tokens = max(old_max, TRUNCATED_RETRY_MAX_TOKENS)
+                                       "retry_max_tokens": self.llm.max_tokens})
+                            self._print(f"[{step}] -- output truncated mid-thinking; retrying with a hint at low effort --")
                             self._log({"role": "_meta", "event": "retry_hint", "content": TRUNCATED_RETRY_HINT})
-                            try:
-                                resp = self.llm.chat(
-                                    self.messages + [{"role": "user", "content": TRUNCATED_RETRY_HINT}], self.schemas,
-                                    reasoning_effort=TRUNCATED_RETRY_EFFORT)
-                            finally:
-                                self.llm.max_tokens = old_max
+                            resp = self.llm.chat(
+                                self.messages + [{"role": "user", "content": TRUNCATED_RETRY_HINT}], self.schemas,
+                                reasoning_effort=TRUNCATED_RETRY_EFFORT)
                     except ContextOverflow:
-                        over_streak += 1
-                        if over_streak >= 3:
-                            reason = "context cannot be reduced"
-                            steps = step - 1
-                            break
-                        if over_streak == 2:
-                            shrunk = shrink_casefile(self.casefile, self.llm)
-                            self._log({"role": "_meta", "event": "shrink_casefile", "accepted": shrunk})
-                        self._critic(step, "compaction")
-                        compactions += 1
-                        self.messages = self._compact("overflow", compactions)
-                        recent.clear()
                         steps = step - 1
+                        if not self._reduce_context(step, "overflow"):
+                            reason = "context cannot be reduced"
+                            break
                         continue
                     self._log({"role": "_reasoning", "step": step, "content": resp.reasoning})
                     self._append(resp.message)
@@ -197,19 +220,7 @@ class Agent:
                         continue
                     no_tool_streak = 0
 
-                    flag_just_set = False
-                    for call in resp.tool_calls:
-                        if flag_just_set:
-                            result = "[tool error] skipped: session ended"
-                            self._append({"role": "tool", "tool_call_id": call.id, "content": result})
-                            continue
-                        self._print(f"[{step}] > {call.name} {call.raw_args[:160]}")
-                        result = self._execute(call)
-                        self._append({"role": "tool", "tool_call_id": call.id, "content": result})
-                        head = "\n".join(result.splitlines()[:3])
-                        self._print(f"[{step}] < {head[:300]}")
-                        if self.ctx.flag or self.ctx.runbook_path:
-                            flag_just_set = True
+                    self._run_tools(step, resp.tool_calls)
                     self._print(f"[{step}] tokens: prompt={resp.prompt_tokens} completion={resp.completion_tokens}")
                     if self.ctx.runbook_path:
                         status = "runbook"
@@ -218,10 +229,10 @@ class Agent:
                         status = "solved"
                         break
 
-                    recent.append(tuple((c.name, c.raw_args) for c in resp.tool_calls))
-                    if len(recent) == 3 and len(set(recent)) == 1:
+                    self.recent.append(tuple((c.name, c.raw_args) for c in resp.tool_calls))
+                    if len(self.recent) == 3 and len(set(self.recent)) == 1:
                         self._append({"role": "user", "content": "You have repeated the same tool call 3 times. Read your notes and choose a different approach."})
-                        recent.clear()
+                        self.recent.clear()
 
                     try:
                         marker = progress_marker(self.casefile.read())
@@ -241,20 +252,12 @@ class Agent:
                         idle = 0
 
                     if self.llm.last_prompt_tokens > THRESHOLD:
-                        over_streak += 1
-                        if over_streak >= 3:
+                        if not self._reduce_context(step, "threshold"):
                             reason = "context cannot be reduced"
                             break
-                        if over_streak == 2:
-                            shrunk = shrink_casefile(self.casefile, self.llm)
-                            self._log({"role": "_meta", "event": "shrink_casefile", "accepted": shrunk})
-                        self._critic(step, "compaction")
-                        compactions += 1
-                        self.messages = self._compact("threshold", compactions)
-                        recent.clear()
-                        self._print(f"[{step}] -- context compacted ({compactions}) --")
+                        self._print(f"[{step}] -- context compacted ({self.compactions}) --")
                     else:
-                        over_streak = 0
+                        self.over_streak = 0
                 else:
                     reason = "step limit"
             except Exception as e:  # never lose the run: still write result.json and report
@@ -269,17 +272,27 @@ class Agent:
                 "runbook": ".revagent/runbook.md" if self.ctx.runbook_path else None,
                 "reason": reason,
                 "steps": steps,
-                "compactions": compactions,
+                "compactions": self.compactions,
                 "prompt_tokens": self.llm.total_prompt_tokens - start_prompt_tokens,
                 "completion_tokens": self.llm.total_completion_tokens - start_completion_tokens,
-                "minutes": round((time.time() - start) / 60, 1),
+                "llm_retries": getattr(self.llm, "total_retries", 0) - start_retries,
+                "minutes": round((time.monotonic() - start) / 60, 1),
             }
-            (self.work_dir / "result.json").write_text(json.dumps(result, indent=2, ensure_ascii=False))
-            self._log({"role": "_meta", "event": "end", **result})
+            self._finish(result)
         finally:
             self.transcript.close()
         self._report(result)
         return result
+
+    def _finish(self, result: dict) -> None:
+        (self.work_dir / "result.json").write_text(json.dumps(result, indent=2, ensure_ascii=False))
+        # result.json is "latest run" and gets overwritten by the next run, including a run that died
+        # at step 1 because the server was down (ROVM: 44 steps of results were lost that way).
+        # results.jsonl keeps one line per run, forever.
+        with open(self.work_dir / "results.jsonl", "a", encoding="utf-8") as hist:
+            hist.write(json.dumps({"time": datetime.now(timezone.utc).isoformat(), **result},
+                                  ensure_ascii=False) + "\n")
+        self._log({"role": "_meta", "event": "end", **result})
 
     def _report(self, result: dict) -> None:
         if result["status"] == "solved":

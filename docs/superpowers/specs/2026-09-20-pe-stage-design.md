@@ -73,3 +73,14 @@ API 후킹(프록시 DLL), Windows Sandbox 경유 실행, 헬퍼 툴(calls/emula
 ## 수정 이력
 
 - 2026-09-20: `run_gui`의 `type_text`/`clicks` 파라미터를 일반 입력 스크립트 `actions`(`click` | `click X Y` | `key NAME` | `type TEXT` | `wait N`, 최대 32개, 입력마다 캡처)로 교체. 이유: 클릭 횟수 전용 파라미터와 "한 글자만 보이면 clicks=16" 힌트는 captain-hook 한 문제에 맞춘 오버핏이었다. 플레이북 규칙도 "인터랙티브 프로그램은 입력을 넣어 캡처를 비교한다"는 일반 원칙으로 바꿨고, 클릭이 아닌 키 입력으로 진행하는 미니 벤치 `win_gui_key`를 추가해 일반화를 검증한다.
+
+### 수정 이력 추가 (2026-09-21)
+
+- **`actions` 동사 추가**: `click` 외에 `rclick`(오른쪽), `dclick`(더블) — 각각 `click X Y` 좌표 형식도 받는다. 파싱 실패는 `ignored`, xdotool 실패는 `NOT DELIVERED (…)`로 각 줄에 표시.
+- **32-bit PE 거부**: `run_binary`가 PE32(80386)를 만나면 이미지에 wine64만 있으므로 `[cannot run here]`로 거부하고 런북 게이트를 연다(§5 표의 "wine 없음" 경우 외). `run_gui`에는 별도 아키텍처 검사가 없고, 창이 안 뜨면 시작 실패로 센다.
+- **화면 초기화**: 매 `run_gui` 호출 전에 `_reset_display`가 남아 있는 wine 창을 `wineserver -k`로 정리한다(이전 호출의 창이 캡처에 섞이지 않도록). 정리 결과는 반환 텍스트에 노트로 남는다.
+- **변화 보고**: 입력마다 이전 캡처와 비교해 바뀐 픽셀만 담은 `screens/NNN.diff.png`(흰 바탕에 검정)를 쓰고 `changed: N px in bbox …` 또는 `changed: nothing`을 붙인다(정적 노이즈 상쇄).
+- **빈 창 감지**: 창 내용이 단색이면 OCR 결과 대신 `window content: blank (uniform colour; the program drew nothing visible)`로 명시한다(§5 "OCR 빈 결과"와 구분).
+- **액션 예산**: 액션 루프 전체에 `ACTION_BUDGET_SECONDS = 300` 상한(run 마감으로 다시 클램프). 초과하면 남은 액션은 건너뛰고 그 사실을 보고.
+- **`[env]` 꼬리말**: `env_blocked`가 서면 `run_binary`/`run_gui` 반환 텍스트 끝에 `ctx.env_note()`(`[env] this environment could not start the program …`)를 붙여 런북이 허용됐음을 직접 알린다. `truncate`는 이 꼬리말을 잘라내지 않는다.
+- **PE 호출 시그니처**: §3의 `run_gui(path, wait_seconds=5, type_text="", args=[])`는 위 `수정 이력` 첫 항목대로 `actions` 스크립트로 바뀌었다.

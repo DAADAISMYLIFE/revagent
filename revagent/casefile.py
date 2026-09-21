@@ -6,6 +6,18 @@ SECTIONS = {
     "todo": "## Todo",
     "log": "## Log",
 }
+HEADERS = frozenset(SECTIONS.values())
+
+
+def section_span(lines: list[str], section: str) -> tuple[int, int] | None:
+    """(start, end) of `section` in `lines`: start is the index of its exact header line, end the
+    index of the next canonical header (or len(lines)). None if the header line is absent."""
+    try:
+        start = lines.index(SECTIONS[section])
+    except ValueError:
+        return None
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].strip() in HEADERS), len(lines))
+    return start, end
 
 
 class CaseFile:
@@ -28,20 +40,17 @@ class CaseFile:
     def write(self, text: str) -> None:
         self.path.write_text(text, encoding="utf-8")
 
+    def _span(self, lines: list[str], section: str) -> tuple[int, int]:
+        span = section_span(lines, section)
+        if span is None:
+            raise ValueError(f"{self.path} has no {SECTIONS[section]!r} section")
+        return span
+
     def add(self, section: str, text: str, bullet: bool = True) -> None:
         if section not in SECTIONS:
             raise ValueError(f"unknown section {section!r}; use one of {list(SECTIONS)}")
-        header = SECTIONS[section]
         lines = self.read().split("\n")
-        try:
-            start = lines.index(header)
-        except ValueError:
-            raise ValueError(f"{self.path} has no {header!r} section")
-        valid_headers = set(SECTIONS.values())
-        end = next(
-            (i for i in range(start + 1, len(lines)) if lines[i].strip() in valid_headers),
-            len(lines),
-        )
+        start, end = self._span(lines, section)
         while end - 1 > start and lines[end - 1].strip() == "":
             end -= 1
         if bullet:
@@ -56,17 +65,8 @@ class CaseFile:
         header) with `text`, leaving other sections untouched."""
         if section not in SECTIONS:
             raise ValueError(f"unknown section {section!r}; use one of {list(SECTIONS)}")
-        header = SECTIONS[section]
         lines = self.read().split("\n")
-        try:
-            start = lines.index(header)
-        except ValueError:
-            raise ValueError(f"{self.path} has no {header!r} section")
-        valid_headers = set(SECTIONS.values())
-        end = next(
-            (i for i in range(start + 1, len(lines)) if lines[i].strip() in valid_headers),
-            len(lines),
-        )
+        start, end = self._span(lines, section)
         body = text.rstrip("\n").splitlines()
         lines[start + 1:end] = ["", *body, ""]
         self.write("\n".join(lines))

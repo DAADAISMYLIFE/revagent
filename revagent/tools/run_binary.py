@@ -4,6 +4,7 @@ import shlex
 import shutil
 import subprocess
 
+from .base import PathError, resolve_inside
 from .bash import MAX_TIMEOUT, run_cmd
 
 # Substrings that indicate the OS/loader could not even start the target (as opposed to the
@@ -60,8 +61,7 @@ def run(ctx, path: str, args: list[str] | None = None, stdin: str = "", timeout:
 
 def _observe(ctx, path: str, out: str) -> None:
     if out.startswith("[cannot run here]"):
-        ctx.block_env(path)
-        ctx.observe(f"run_binary {path}: [cannot run here]")
+        ctx.observe_cannot_run("run_binary", path)
         return
     if out.startswith("[tool error]"):
         return
@@ -98,19 +98,17 @@ def _is_start_failure(code: str, body: str) -> bool:
 
 
 def _run(ctx, path: str, args: list[str] | None = None, stdin: str = "", timeout: int = 10) -> str:
-    problem_dir = ctx.problem_dir.resolve()
-    p = (ctx.problem_dir / path).resolve()
-    if not p.is_relative_to(problem_dir):
-        return f"[tool error] path escapes the challenge directory: {path}"
-    if not p.is_file():
-        return f"[tool error] no such file: {path}"
+    try:
+        p = resolve_inside(ctx, path)
+    except PathError as e:
+        return str(e)
     try:
         kind = subprocess.run(["file", "-b", str(p)], capture_output=True, text=True).stdout.strip()
     except (FileNotFoundError, OSError, subprocess.SubprocessError):
         kind = ""
     with p.open("rb") as f:
         magic = f.read(2)
-    timeout = max(1, min(int(timeout), MAX_TIMEOUT))
+    timeout = ctx.clamp_timeout(max(1, min(int(timeout), MAX_TIMEOUT)))
     if "PE32" in kind or "MS Windows" in kind or magic == b"MZ":
         if shutil.which("wine") is None:
             return (f"[cannot run here] {kind} — Windows PE and wine is not installed on the host. "

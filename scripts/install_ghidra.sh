@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Installs Temurin JDK 21 and the latest Ghidra release under ~/tools (no sudo),
 # then verifies headless analysis + DumpFunctions.java on a small binary.
+# SKIP_VERIFY=1 stops after the install (the Docker build runs the verify as a separate, later step
+# so that editing revagent/ghidra_scripts does not invalidate the Ghidra layer).
 set -euo pipefail
 TOOLS="$HOME/tools"
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -39,7 +41,13 @@ fi
 GH="$(ls -d "$TOOLS"/ghidra_*_PUBLIC | tail -1)"
 echo "Ghidra: $GH"
 
+if [ "${SKIP_VERIFY:-}" = "1" ]; then
+  echo "[3/3] verify skipped (SKIP_VERIFY=1)"
+  exit 0
+fi
+
 T="$(mktemp -d)"
+trap 'rm -rf "$T"' EXIT
 if command -v gcc >/dev/null 2>&1; then
   cat > "$T/hello.c" <<'C'
 #include <stdio.h>

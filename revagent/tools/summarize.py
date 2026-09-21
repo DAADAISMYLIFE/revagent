@@ -1,3 +1,5 @@
+from .base import PathError, resolve_inside
+
 CAP = 40_000
 
 SCHEMA = {
@@ -31,12 +33,10 @@ PROMPT = (
 
 
 def run(ctx, file: str, question: str) -> str:
-    problem_dir = ctx.problem_dir.resolve()
-    p = (ctx.problem_dir / file).resolve()
-    if not p.is_relative_to(problem_dir):
-        return f"[tool error] path escapes the challenge directory: {file}"
-    if not p.is_file():
-        return f"[tool error] no such file: {file}"
+    try:
+        p = resolve_inside(ctx, file)
+    except PathError as e:
+        return str(e)
     text = p.read_text(encoding="utf-8", errors="replace")
     note = ""
     if len(text) > CAP:

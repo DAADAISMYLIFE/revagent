@@ -1,11 +1,14 @@
 """OpenAI-compatible client for the vLLM Qwen server."""
 import json
 import os
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
-from openai import APIConnectionError, APIStatusError, BadRequestError, OpenAI
+import httpx
+from openai import APIConnectionError, APIError, APIStatusError, BadRequestError, OpenAI
 
 REPO_SECURE = Path(__file__).resolve().parent.parent / ".secure"
 
@@ -31,8 +34,15 @@ def load_secure(explicit: Path | None = None) -> Secure:
         candidates.append(Path(explicit))
     if os.environ.get("REVAGENT_SECURE"):
         candidates.append(Path(os.environ["REVAGENT_SECURE"]))
+    try:
+        cwd = Path.cwd()
+    except FileNotFoundError:
+        # the shell's cwd was deleted or re-created underneath it (a DrvFs directory on WSL after a
+        # Windows-side rename): an explicit --secure must still work, so just skip the cwd candidate
+        cwd = None
+    if cwd is not None:
+        candidates.append(cwd / ".secure")
     candidates += [
-        Path.cwd() / ".secure",
         REPO_SECURE,
         Path.home() / ".revagent" / ".secure",
     ]
@@ -102,48 +112,123 @@ def parse_assistant(m) -> tuple[str, str, list[ToolCall], dict]:
     return content, reasoning, calls, msg
 
 
+def collect_stream(chunks) -> SimpleNamespace:
+    """Fold a chat-completions stream into one response-shaped object (choices[0].message with content,
+    reasoning_content, tool_calls; choices[0].finish_reason; usage), so parse_assistant() and the
+    accounting code do not care whether the reply was streamed.
+
+    Why stream at all: the runpod proxy (Cloudflare) drops any request whose response has not STARTED
+    within ~100 s (HTTP 524). A non-streamed reply starts only after the whole generation, and a hard
+    step thinks for longer than that; a streamed reply starts with the first reasoning token."""
+    content, reasoning, finish, usage = [], [], None, None
+    tool_calls: dict[int, dict] = {}
+    for ch in chunks:
+        if getattr(ch, "usage", None):
+            usage = ch.usage
+        choices = getattr(ch, "choices", None) or []
+        if not choices:
+            continue
+        c = choices[0]
+        if getattr(c, "finish_reason", None):
+            finish = c.finish_reason
+        d = getattr(c, "delta", None)
+        if d is None:
+            continue
+        if getattr(d, "content", None):
+            content.append(d.content)
+        me = getattr(d, "model_extra", None) or {}
+        r = getattr(d, "reasoning_content", None) or me.get("reasoning_content") \
+            or getattr(d, "reasoning", None) or me.get("reasoning")
+        if r:
+            reasoning.append(r)
+        for tc in getattr(d, "tool_calls", None) or []:
+            slot = tool_calls.setdefault(tc.index, {"id": None, "name": "", "arguments": []})
+            if getattr(tc, "id", None):
+                slot["id"] = tc.id
+            fn = getattr(tc, "function", None)
+            if fn is not None:
+                if getattr(fn, "name", None):
+                    slot["name"] = fn.name
+                if getattr(fn, "arguments", None):
+                    slot["arguments"].append(fn.arguments)
+    calls = [
+        SimpleNamespace(id=v["id"] or f"call_{i}", type="function",
+                        function=SimpleNamespace(name=v["name"], arguments="".join(v["arguments"])))
+        for i, v in sorted(tool_calls.items())
+    ] or None
+    message = SimpleNamespace(content="".join(content) or None, reasoning_content="".join(reasoning) or None,
+                              tool_calls=calls, model_extra={})
+    return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason=finish or "stop")],
+                           usage=usage)
+
+
 def _retryable(e: Exception) -> bool:
-    """Connection errors and 5xx/429 are transient and worth a retry; any other
-    APIStatusError (401/403/404/409/422/...) is a real failure and must not be retried."""
-    if isinstance(e, APIConnectionError):
+    """Connection errors, 5xx/429 and a stream that dies mid-reply are transient and worth a retry;
+    any other APIStatusError (401/403/404/409/422/...) is a real failure and must not be retried.
+
+    A dropped stream does NOT arrive as APIConnectionError: the SDK's Stream iterator lets httpx
+    transport errors (RemoteProtocolError, ReadError, ReadTimeout) propagate unwrapped and raises a
+    bare APIError for an in-band `{"error": ...}` SSE event."""
+    if isinstance(e, (APIConnectionError, httpx.TransportError)):
         return True
     if isinstance(e, APIStatusError):
         return e.status_code >= 500 or e.status_code == 429
+    if isinstance(e, APIError):
+        return True
     return False
 
 
 class LLM:
+    # 16384: thinking tokens count toward max_tokens, and a hard step routinely thinks past 8k (relativity
+    # run 1: 12 of 107 steps were cut at 8192 and every retry fitted in 16k). It is a cap, not a cost.
+    # 44k compaction threshold + 16k output stays under the server's 65536 max_model_len.
+    DEFAULT_MAX_TOKENS = 16384
+
     def __init__(self, secure: Secure, reasoning_effort: str = "medium", temperature: float = 0.6,
-                 max_tokens: int = 8192, retries: int = 3):
-        self.client = OpenAI(api_key=secure.key, base_url=secure.url + "/v1", timeout=600)
+                 max_tokens: int = DEFAULT_MAX_TOKENS, retries: int = 3, stream: bool = True):
+        # max_retries=0: the SDK's own silent 5xx retries would multiply with ours and never show up
+        # in the run log. Every retry goes through _create below, which counts and reports it.
+        self.client = OpenAI(api_key=secure.key, base_url=secure.url + "/v1", timeout=600, max_retries=0)
         self.model = secure.model
         self.reasoning_effort = reasoning_effort
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.retries = retries
+        self.stream = stream   # see collect_stream(); False only for tests and direct-to-vLLM setups
         self.last_prompt_tokens = 0
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
+        self.total_retries = 0   # transient failures retried this session (5xx/429/connection)
 
     def _create(self, reasoning_effort: str | None = None, **kw):
+        """One request, retried on transient failures. When streaming, the whole stream is consumed here
+        (inside the retry loop) so a connection dropped mid-reply is retried like a failed request."""
         delay = 2.0
+        if self.stream:
+            kw = {**kw, "stream": True, "stream_options": {"include_usage": True}}
         for attempt in range(self.retries + 1):
             try:
-                return self.client.chat.completions.create(
+                resp = self.client.chat.completions.create(
                     model=self.model,
                     temperature=self.temperature,
                     max_tokens=self.max_tokens,
                     extra_body={"reasoning_effort": reasoning_effort or self.reasoning_effort},
                     **kw,
                 )
+                return collect_stream(resp) if self.stream else resp
             except BadRequestError as e:
                 text = str(e)
                 if "context length" in text or "maximum context" in text or "too long" in text:
                     raise ContextOverflow(text) from e
                 raise
-            except (APIConnectionError, APIStatusError) as e:
+            except (APIError, httpx.TransportError) as e:
                 if not _retryable(e) or attempt == self.retries:
                     raise
+                self.total_retries += 1
+                what = f"HTTP {e.status_code}" if isinstance(e, APIStatusError) else type(e).__name__
+                # visible in the terminal/log: a 524 here means the runpod proxy cut a >100 s generation
+                print(f"[llm] retry {attempt + 1}/{self.retries} after {what}; waiting {delay:.0f}s",
+                      file=sys.stderr, flush=True)
                 time.sleep(delay)
                 delay *= 2
 

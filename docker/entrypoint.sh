@@ -14,4 +14,9 @@ if ! xdpyinfo -display "${DISPLAY:-:99}" >/dev/null 2>&1; then
   for i in 1 2 3 4 5 6 7 8 9 10; do xdpyinfo -display "${DISPLAY:-:99}" >/dev/null 2>&1 && break; sleep 0.5; done
   xdpyinfo -display "${DISPLAY:-:99}" >/dev/null 2>&1 || echo "warning: Xvfb did not start; run_gui will fail" >&2
 fi
+# Wine prefix: the image ships /root/.wine already (wineboot at build time; creating it here costs ~20 s).
+# Fallback for a missing/overridden WINEPREFIX only.
+if [ ! -d "${WINEPREFIX:-$HOME/.wine}" ] && command -v wineboot >/dev/null 2>&1; then
+  { wineboot -u >/dev/null 2>&1 && wineserver -w; } || echo "warning: wineboot failed; wine may initialise its prefix on first use instead" >&2
+fi
 exec revagent "$@"

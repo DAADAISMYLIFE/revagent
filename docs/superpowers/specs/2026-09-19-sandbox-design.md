@@ -159,3 +159,9 @@ def run_sandbox(cmd: list[str]) -> int:
 - **자격증명 전달 방식**: `docker run` argv에는 `-e QWEN -e URL -e MODEL`처럼 **이름만** 실리고 값은 싣지 않는다(호스트 프로세스 테이블에서 `ps`/`/proc/<pid>/cmdline`으로 노출되는 것을 막기 위해). 실제 값은 `run_sandbox(cmd, env_extra=...)`가 `subprocess.run(cmd, env={**os.environ, **env_extra})`로 docker CLI 프로세스 자신의 환경에만 실어 전달한다. 단, `docker inspect`로는 실행 중인 컨테이너의 환경변수 값을 여전히 볼 수 있으므로 로컬 docker 그룹 사용자에게는 노출 범위가 동일하다(README에 명시).
 - **`check_docker` 타임아웃**: `docker info`/`docker image inspect` 호출에 `timeout=20`을 두고, `subprocess.TimeoutExpired`를 데몬 무응답(`MSG_NO_DAEMON`)으로 처리한다. 데몬이 멈춰 있을 때 무한 대기하지 않기 위함.
 - **bench의 오래된 결과 방지 (R2)**: `bench --sandbox`는 컨테이너 실행 전 `result.json`의 mtime을 기록해 두고, 컨테이너가 실패 종료(non-zero)했는데 파일이 갱신되지 않았으면 "이전 실행의 결과"를 성공으로 잘못 읽지 않고 `error: container exited <rc>`로 보고한다.
+
+### 수정 이력 추가 (2026-09-21)
+
+- **`build_sandbox_cmd` 시그니처**: §3.2와 달리 `extra_ca: Path | None = None` 인자를 받아 `-v <ca>:/usr/local/share/ca-certificates/extra-ca.crt:ro`를 붙인다(§8 "런타임 CA" 항목의 구현 위치). 또 `--cap-add SYS_PTRACE --security-opt seccomp=unconfined`를 항상 추가한다(gdb의 ptrace와 `personality(ADDR_NO_RANDOMIZE)`가 docker 기본 seccomp에 막혀 relativity의 로드 시점 테이블이 매번 달라졌음).
+- **호스트 쪽 정답 확인**: `solve --sandbox`가 종료 코드 0으로 끝나면 호스트가 `<문제폴더>/../ANSWERS.md`와 대조(`_mark_wrong_if_answer_mismatch`)해 불일치면 `result.json`을 `wrong`으로 고쳐 쓰고 **1**을 돌려준다. §5 "종료 코드 1 전달"에 더해, 컨테이너가 0을 돌려줘도 호스트가 1을 낼 수 있다.
+- **종료 코드 3**: 컨테이너 안 `solve`가 `runbook` 상태로 끝나면 3을 돌려주고, 호스트는 그 값을 그대로 전달한다(§5 표에는 0/1/2만 있음).

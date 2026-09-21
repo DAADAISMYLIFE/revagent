@@ -3,16 +3,13 @@ import stat
 import subprocess
 from pathlib import Path
 
-from revagent.casefile import CaseFile
+import pytest
+
 from revagent.tools import load_tools
-from revagent.tools.base import ToolContext
 from revagent.tools import bash, run_binary, notes, ask_user, submit_flag, run_gui
+from tests.conftest import make_ctx, FakeLLM
 
-
-def ctx_for(tmp_path, interactive=True):
-    work = tmp_path / ".revagent"
-    cf = CaseFile(work / "case.md", "t", "d")
-    return ToolContext(problem_dir=tmp_path, work_dir=work, casefile=cf, llm=None, interactive=interactive)
+ctx_for = make_ctx   # thin alias: most call sites below predate tests/conftest.py
 
 
 def test_registry_has_all_tools():
@@ -40,38 +37,17 @@ def test_bash_timeout_kills(tmp_path):
 
 def test_bash_timeout_survives_missing_process_group(tmp_path, monkeypatch):
     # The child may already be gone by the time we killpg it; that must not crash the tool.
-    monkeypatch.setattr("revagent.tools.bash.os.killpg", lambda pid, sig: (_ for _ in ()).throw(ProcessLookupError()))
+    # Really kill the group first, so the test exercises the except path instead of waiting ~5 s
+    # for `sleep 5` to exit on its own.
+    real_killpg = os.killpg
+
+    def gone_killpg(pid, sig):
+        real_killpg(pid, sig)
+        raise ProcessLookupError()
+
+    monkeypatch.setattr("revagent.tools.bash.os.killpg", gone_killpg)
     out = bash.run(ctx_for(tmp_path), cmd="echo start; sleep 5; echo end", timeout=1)
     assert out.startswith("[timeout after 1s]")
-
-
-def test_bash_timeout_is_clamped_to_900(tmp_path, monkeypatch):
-    captured = {}
-
-    def fake_run_cmd(cmd, cwd, timeout, stdin_text=None):
-        captured["timeout"] = timeout
-        return "[exit 0]\nx"
-
-    monkeypatch.setattr("revagent.tools.bash.run_cmd", fake_run_cmd)
-    out = bash.run(ctx_for(tmp_path), cmd="echo x", timeout=99999)
-    assert out.startswith("[exit 0]")
-    assert captured["timeout"] == 900
-
-
-def test_run_binary_timeout_is_clamped_to_900(tmp_path, monkeypatch):
-    script = tmp_path / "p.sh"
-    script.write_text("#!/bin/bash\necho ran\n")
-    script.chmod(0o755)
-    captured = {}
-
-    def fake_run_cmd(cmd, cwd, timeout, stdin_text=None):
-        captured["timeout"] = timeout
-        return "[exit 0]\nran"
-
-    monkeypatch.setattr("revagent.tools.run_binary.run_cmd", fake_run_cmd)
-    out = run_binary.run(ctx_for(tmp_path), path="p.sh", timeout=99999)
-    assert "ran" in out
-    assert captured["timeout"] == 900
 
 
 def test_bash_run_cmd_scrubs_secrets_from_child_env(monkeypatch, tmp_path):
@@ -108,13 +84,6 @@ def test_run_binary_missing(tmp_path):
     assert run_binary.run(ctx_for(tmp_path), path="nope").startswith("[tool error]")
 
 
-def test_run_binary_refuses_pe(tmp_path, monkeypatch):
-    (tmp_path / "x.exe").write_bytes(b"MZ" + b"\0" * 100)
-    monkeypatch.setattr("revagent.tools.run_binary.shutil.which", lambda n: None)
-    out = run_binary.run(ctx_for(tmp_path), path="x.exe")
-    assert out.startswith("[cannot run here]")
-
-
 def test_run_binary_pe_without_wine_says_use_sandbox(tmp_path, monkeypatch):
     (tmp_path / "x.exe").write_bytes(b"MZ" + b"\0" * 100)
     monkeypatch.setattr("revagent.tools.run_binary.shutil.which", lambda n: None)
@@ -143,50 +112,20 @@ def test_run_binary_pe_runs_under_wine(tmp_path, monkeypatch):
     assert captured["timeout"] == 7 and captured["stdin"] == "in\n"
 
 
-def test_run_binary_pe_32bit_blocked_by_kind_80386(tmp_path, monkeypatch):
+@pytest.mark.parametrize("kind", [
+    "PE32 executable (console) Intel 80386, for MS Windows",
+    "PE32 executable for MS Windows",      # file(1) output that names no architecture
+])
+def test_run_binary_pe_32bit_blocked(tmp_path, monkeypatch, kind):
     import subprocess as sp
     (tmp_path / "x.exe").write_bytes(b"MZ" + b"\0" * 100)
     monkeypatch.setattr("revagent.tools.run_binary.shutil.which", lambda n: "/usr/bin/wine")
-    monkeypatch.setattr(
-        "revagent.tools.run_binary.subprocess.run",
-        lambda *a, **k: sp.CompletedProcess(a, 0, "PE32 executable (console) Intel 80386, for MS Windows", ""),
-    )
+    monkeypatch.setattr("revagent.tools.run_binary.subprocess.run",
+                        lambda *a, **k: sp.CompletedProcess(a, 0, kind, ""))
     out = run_binary.run(ctx_for(tmp_path), path="x.exe")
     assert out.startswith("[cannot run here] 32-bit Windows PE")
     assert "wine64 only" in out
     assert "unicorn" in out
-
-
-def test_run_binary_pe_32bit_blocked_when_kind_lacks_arch(tmp_path, monkeypatch):
-    import subprocess as sp
-    (tmp_path / "x.exe").write_bytes(b"MZ" + b"\0" * 100)
-    monkeypatch.setattr("revagent.tools.run_binary.shutil.which", lambda n: "/usr/bin/wine")
-    monkeypatch.setattr(
-        "revagent.tools.run_binary.subprocess.run",
-        lambda *a, **k: sp.CompletedProcess(a, 0, "PE32 executable for MS Windows", ""),
-    )
-    out = run_binary.run(ctx_for(tmp_path), path="x.exe")
-    assert out.startswith("[cannot run here] 32-bit Windows PE")
-
-
-def test_run_binary_pe_64bit_path_unchanged(tmp_path, monkeypatch):
-    import subprocess as sp
-    (tmp_path / "x.exe").write_bytes(b"MZ" + b"\0" * 100)
-    monkeypatch.setattr("revagent.tools.run_binary.shutil.which", lambda n: "/usr/bin/wine")
-    monkeypatch.setattr(
-        "revagent.tools.run_binary.subprocess.run",
-        lambda *a, **k: sp.CompletedProcess(a, 0, "PE32+ executable (console) x86-64, for MS Windows", ""),
-    )
-    captured = {}
-
-    def fake_run_cmd(cmd, cwd, timeout, stdin_text=None):
-        captured["cmd"] = cmd
-        return "[exit 0]\nCorrect!\n"
-
-    monkeypatch.setattr("revagent.tools.run_binary.run_cmd", fake_run_cmd)
-    out = run_binary.run(ctx_for(tmp_path), path="x.exe")
-    assert "Correct!" in out
-    assert captured["cmd"].startswith("WINEDEBUG=-all wine ")
 
 
 def test_run_binary_rejects_escape(tmp_path):
@@ -241,15 +180,6 @@ from revagent.tools import decompile, summarize
 import revagent.tools.decompile as decompile_mod
 
 
-class FakeLLM:
-    def __init__(self):
-        self.prompts = []
-
-    def complete(self, prompt, system=None, **kw):
-        self.prompts.append(prompt)
-        return "SUMMARY"
-
-
 def test_decompile_needs_binary_first(tmp_path):
     assert decompile.run(ctx_for(tmp_path), action="list").startswith("[decompile unavailable]")
 
@@ -257,7 +187,7 @@ def test_decompile_needs_binary_first(tmp_path):
 def test_decompile_uses_cached_db(tmp_path, monkeypatch):
     fix = Path(__file__).parent / "fixtures" / "functions.json"
     (tmp_path / "prog").write_bytes(b"\x7fELF")
-    monkeypatch.setattr(decompile_mod, "analyze", lambda binary, cache_dir: fix)
+    monkeypatch.setattr(decompile_mod, "analyze", lambda binary, cache_dir, timeout=None: fix)
     c = ctx_for(tmp_path)
     out = decompile.run(c, action="list", binary="prog")
     assert out.startswith("4 functions")
@@ -283,7 +213,7 @@ def test_decompile_negative_caches_analysis_failure(tmp_path, monkeypatch):
     (tmp_path / "prog").write_bytes(b"\x7fELF")
     calls = []
 
-    def boom(binary, cache_dir):
+    def boom(binary, cache_dir, timeout=None):
         calls.append(1)
         raise decompile_mod.GhidraError("headless analysis timed out after 5s")
 
@@ -302,7 +232,7 @@ def test_decompile_negative_caches_analysis_failure(tmp_path, monkeypatch):
 def test_decompile_list_limit_and_filter(tmp_path, monkeypatch):
     fix = Path(__file__).parent / "fixtures" / "functions.json"
     (tmp_path / "prog").write_bytes(b"\x7fELF")
-    monkeypatch.setattr(decompile_mod, "analyze", lambda binary, cache_dir: fix)
+    monkeypatch.setattr(decompile_mod, "analyze", lambda binary, cache_dir, timeout=None: fix)
     c = ctx_for(tmp_path)
     out = decompile.run(c, action="list", binary="prog", filter="main")
     assert "main" in out and "check" not in out
@@ -342,17 +272,6 @@ def test_submit_flag_accepts_any_prefix_from_description(tmp_path):
     assert submit_flag.run(c2, flag="{x}", how_verified="v").startswith("[rejected]")
 
 
-def test_registry_includes_run_gui():
-    schemas, handlers = load_tools()
-    assert "run_gui" in handlers and any(s["function"]["name"] == "run_gui" for s in schemas)
-
-
-def test_run_gui_without_wine(tmp_path, monkeypatch):
-    (tmp_path / "g.exe").write_bytes(b"MZ" + b"\0" * 50)
-    monkeypatch.setattr("revagent.tools.run_gui.shutil.which", lambda n: None)
-    assert run_gui.run(ctx_for(tmp_path), path="g.exe").startswith("[cannot run here]")
-
-
 def test_run_gui_cannot_run_here_appends_env_note_immediately(tmp_path, monkeypatch):
     (tmp_path / "g.exe").write_bytes(b"MZ" + b"\0" * 50)
     monkeypatch.setattr("revagent.tools.run_gui.shutil.which", lambda n: None)
@@ -369,44 +288,14 @@ def test_run_gui_rejects_escape(tmp_path, monkeypatch):
 
 
 def test_run_gui_happy_path(tmp_path, monkeypatch):
-    import subprocess as sp
-    (tmp_path / "g.exe").write_bytes(b"MZ" + b"\0" * 50)
-    monkeypatch.setattr("revagent.tools.run_gui.shutil.which", lambda n: "/usr/bin/" + n)
-    monkeypatch.setattr("revagent.tools.run_gui.time.sleep", lambda s: None)
-    calls = []
-
-    class FakeProc:
-        pid = 4242
-        def poll(self): return None
-        def communicate(self, timeout=None): return (b"wine: out\n", None)
-
-    def fake_popen(cmd, **kw):
-        calls.append(("popen", cmd, kw.get("env", {}).get("DISPLAY")))
-        return FakeProc()
-
-    def fake_run(cmd, **kw):
-        calls.append(("run", cmd))
-        if cmd[0] == "import":
-            Path(cmd[-1]).write_bytes(b"\x89PNG")
-            return sp.CompletedProcess(cmd, 0, "", "")
-        if cmd[0] == "tesseract":
-            psm = cmd[cmd.index("--psm") + 1]
-            return sp.CompletedProcess(cmd, 0, f"OCR{psm}: DH{{gui}}\n", "")
-        if cmd[0] == "xdotool" and cmd[1] == "search":
-            return sp.CompletedProcess(cmd, 0, "CaptainHook\n", "")
-        if cmd[0] == "xdpyinfo":
-            return sp.CompletedProcess(cmd, 0, "name of display: :99\n", "")
-        return sp.CompletedProcess(cmd, 0, "", "")
-
-    killed = []
-    monkeypatch.setattr("revagent.tools.run_gui.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", fake_run)
-    monkeypatch.setattr("revagent.tools.run_gui.os.killpg", lambda pid, sig: killed.append(pid))
-    c = ctx_for(tmp_path)
+    calls, popen_calls, killed = [], [], []
+    c = _gui_fixture(tmp_path, monkeypatch, calls, ocr=lambda psm: f"OCR{psm}: DH{{gui}}", tail=b"wine: out\n",
+                     pid=4242, popen_calls=popen_calls, killed=killed)
     out = run_gui.run(c, path="g.exe", args=["-x"], wait_seconds=3, actions=["type hello", "key Return"])
-    popen = [x for x in calls if x[0] == "popen"][0]
-    assert popen[1][:2] == ["wine", str((tmp_path / "g.exe").resolve())] and popen[1][2] == "-x" and popen[2] == ":99"
-    run_calls = [x[1] for x in calls if x[0] == "run"]
+    (popen_cmd, popen_kw), = popen_calls
+    assert popen_cmd[:2] == ["wine", str((tmp_path / "g.exe").resolve())] and popen_cmd[2] == "-x"
+    assert popen_kw["env"]["DISPLAY"] == ":99"
+    run_calls = [x for x in calls if x[0] != "sleep"]
     focus_idx = next(i for i, c2 in enumerate(run_calls) if c2[:2] == ["xdotool", "search"] and c2[-2:] == ["windowfocus", "%@"])
     type_idx = next(i for i, c2 in enumerate(run_calls) if c2[:2] == ["xdotool", "type"])
     assert focus_idx < type_idx
@@ -419,119 +308,46 @@ def test_run_gui_happy_path(tmp_path, monkeypatch):
     assert killed == [4242]
 
 
-def test_run_gui_popen_uses_stdin_devnull(tmp_path, monkeypatch):
-    import subprocess as sp
-    (tmp_path / "g.exe").write_bytes(b"MZ" + b"\0" * 50)
-    monkeypatch.setattr("revagent.tools.run_gui.shutil.which", lambda n: "/usr/bin/" + n)
-    monkeypatch.setattr("revagent.tools.run_gui.time.sleep", lambda s: None)
-
-    class FakeProc:
-        pid = 4242
-        def poll(self): return None
-        def communicate(self, timeout=None): return (b"", None)
-
-    captured = {}
-
-    def fake_popen(cmd, **kw):
-        captured.update(kw)
-        return FakeProc()
-
-    def fake_run(cmd, **kw):
-        if cmd[0] == "import":
-            Path(cmd[-1]).write_bytes(b"\x89PNG")
-            return sp.CompletedProcess(cmd, 0, "", "")
-        if cmd[0] == "xdpyinfo":
-            return sp.CompletedProcess(cmd, 0, "name of display: :99\n", "")
-        return sp.CompletedProcess(cmd, 0, "", "")
-
-    monkeypatch.setattr("revagent.tools.run_gui.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", fake_run)
-    monkeypatch.setattr("revagent.tools.run_gui.os.killpg", lambda pid, sig: None)
-    run_gui.run(ctx_for(tmp_path), path="g.exe")
-    assert captured["stdin"] is sp.DEVNULL
-
-
-def test_run_gui_env_excludes_secrets(tmp_path, monkeypatch):
+def test_run_gui_popen_kwargs_use_stdin_devnull_and_scrubbed_env(tmp_path, monkeypatch):
     import subprocess as sp
     monkeypatch.setenv("QWEN", "sekrit")
     monkeypatch.setenv("URL", "https://h")
     monkeypatch.setenv("MODEL", "m/x")
-    (tmp_path / "g.exe").write_bytes(b"MZ" + b"\0" * 50)
-    monkeypatch.setattr("revagent.tools.run_gui.shutil.which", lambda n: "/usr/bin/" + n)
-    monkeypatch.setattr("revagent.tools.run_gui.time.sleep", lambda s: None)
-
-    class FakeProc:
-        pid = 4242
-        def poll(self): return None
-        def communicate(self, timeout=None): return (b"", None)
-
-    captured_env = {}
-
-    def fake_popen(cmd, **kw):
-        captured_env.update(kw.get("env", {}))
-        return FakeProc()
-
-    def fake_run(cmd, **kw):
-        if cmd[0] == "import":
-            Path(cmd[-1]).write_bytes(b"\x89PNG")
-            return sp.CompletedProcess(cmd, 0, "", "")
-        if cmd[0] == "xdpyinfo":
-            return sp.CompletedProcess(cmd, 0, "name of display: :99\n", "")
-        return sp.CompletedProcess(cmd, 0, "", "")
-
-    monkeypatch.setattr("revagent.tools.run_gui.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", fake_run)
-    monkeypatch.setattr("revagent.tools.run_gui.os.killpg", lambda pid, sig: None)
-    run_gui.run(ctx_for(tmp_path), path="g.exe")
+    popen_calls = []
+    c = _gui_fixture(tmp_path, monkeypatch, [], windows="", pid=4242, popen_calls=popen_calls)
+    run_gui.run(c, path="g.exe")
+    (_, captured), = popen_calls
+    assert captured["stdin"] is sp.DEVNULL
+    captured_env = captured["env"]
     assert "QWEN" not in captured_env and "URL" not in captured_env and "MODEL" not in captured_env
     assert captured_env.get("DISPLAY") == ":99" and captured_env.get("WINEDEBUG") == "-all"
 
 
 def test_run_gui_communicate_timeout_kills_and_waits(tmp_path, monkeypatch):
     import subprocess as sp
-    (tmp_path / "g.exe").write_bytes(b"MZ" + b"\0" * 50)
-    monkeypatch.setattr("revagent.tools.run_gui.shutil.which", lambda n: "/usr/bin/" + n)
-    monkeypatch.setattr("revagent.tools.run_gui.time.sleep", lambda s: None)
+    c = _gui_fixture(tmp_path, monkeypatch, [], windows="")
     actions = []
 
-    class FakeProc:
+    class HangingProc:
         pid = 4242
         def poll(self): return None
         def communicate(self, timeout=None): raise sp.TimeoutExpired(cmd=["wine"], timeout=timeout)
         def kill(self): actions.append("kill")
         def wait(self, timeout=None): actions.append("wait")
 
-    def fake_popen(cmd, **kw):
-        return FakeProc()
-
-    def fake_run(cmd, **kw):
-        if cmd[0] == "import":
-            Path(cmd[-1]).write_bytes(b"\x89PNG")
-            return sp.CompletedProcess(cmd, 0, "", "")
-        if cmd[0] == "xdpyinfo":
-            return sp.CompletedProcess(cmd, 0, "name of display: :99\n", "")
-        return sp.CompletedProcess(cmd, 0, "", "")
-
-    monkeypatch.setattr("revagent.tools.run_gui.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", fake_run)
-    monkeypatch.setattr("revagent.tools.run_gui.os.killpg", lambda pid, sig: None)
-    out = run_gui.run(ctx_for(tmp_path), path="g.exe")
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.Popen", lambda cmd, **kw: HangingProc())
+    out = run_gui.run(c, path="g.exe")
     assert actions == ["kill", "wait"]
     assert "(none)" in out  # tail defaults empty since communicate never returned output
 
 
-def test_display_ok_returns_false_when_run_quiet_times_out(monkeypatch):
-    monkeypatch.setattr("revagent.tools.run_gui._run_quiet", lambda cmd, env, timeout: None)
-    assert run_gui._display_ok({"DISPLAY": ":99"}) is False
-
-
-def test_display_ok_true_when_probe_succeeds(monkeypatch):
+@pytest.mark.parametrize("probe_ok, expected", [(False, False), (True, True)],
+                         ids=["probe-times-out", "probe-succeeds"])
+def test_display_ok_reflects_probe_result(monkeypatch, probe_ok, expected):
     import subprocess as sp
-    monkeypatch.setattr(
-        "revagent.tools.run_gui._run_quiet",
-        lambda cmd, env, timeout: sp.CompletedProcess(cmd, 0, "", ""),
-    )
-    assert run_gui._display_ok({"DISPLAY": ":99"}) is True
+    monkeypatch.setattr("revagent.tools.run_gui._run_quiet",
+                        lambda cmd, env, timeout: sp.CompletedProcess(cmd, 0, "", "") if probe_ok else None)
+    assert run_gui._display_ok({"DISPLAY": ":99"}) is expected
 
 
 def test_run_gui_no_display(tmp_path, monkeypatch):
@@ -547,82 +363,59 @@ def test_run_gui_screenshot_timeout_still_kills(tmp_path, monkeypatch):
     # A TimeoutExpired from any post-launch subprocess.run (here: the "import" screenshot call)
     # must not skip the killpg cleanup, and must degrade the report instead of raising.
     import subprocess as sp
-    (tmp_path / "g.exe").write_bytes(b"MZ" + b"\0" * 50)
-    monkeypatch.setattr("revagent.tools.run_gui.shutil.which", lambda n: "/usr/bin/" + n)
-    monkeypatch.setattr("revagent.tools.run_gui.time.sleep", lambda s: None)
+    killed = []
+    c = _gui_fixture(tmp_path, monkeypatch, [], windows="", pid=4242, killed=killed)
+    real_run = run_gui.subprocess.run
 
-    class FakeProc:
-        pid = 4242
-        def poll(self): return None
-        def communicate(self, timeout=None): return (b"", None)
-
-    def fake_popen(cmd, **kw):
-        return FakeProc()
-
-    def fake_run(cmd, **kw):
+    def import_hangs(cmd, **kw):
         if cmd[0] == "import":
             raise sp.TimeoutExpired(cmd, 30)
-        if cmd[0] == "xdpyinfo":
-            return sp.CompletedProcess(cmd, 0, "name of display: :99\n", "")
-        return sp.CompletedProcess(cmd, 0, "", "")
+        return real_run(cmd, **kw)
 
-    killed = []
-    monkeypatch.setattr("revagent.tools.run_gui.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", fake_run)
-    monkeypatch.setattr("revagent.tools.run_gui.os.killpg", lambda pid, sig: killed.append(pid))
-    out = run_gui.run(ctx_for(tmp_path), path="g.exe")
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", import_hangs)
+    out = run_gui.run(c, path="g.exe")
     assert "screenshot: failed" in out
     assert killed == [4242]
 
 
 def test_run_gui_screenshot_numbering_skips_to_next_after_gaps(tmp_path, monkeypatch):
-    import subprocess as sp
-    (tmp_path / "g.exe").write_bytes(b"MZ" + b"\0" * 50)
-    monkeypatch.setattr("revagent.tools.run_gui.shutil.which", lambda n: "/usr/bin/" + n)
-    monkeypatch.setattr("revagent.tools.run_gui.time.sleep", lambda s: None)
-    c = ctx_for(tmp_path)
+    c = _gui_fixture(tmp_path, monkeypatch, [], windows="", pid=4242)
     screens = c.work_dir / "screens"
     screens.mkdir(parents=True)
     (screens / "002.png").write_bytes(b"\x89PNG")
     (screens / "003.png").write_bytes(b"\x89PNG")
-
-    class FakeProc:
-        pid = 4242
-        def poll(self): return None
-        def communicate(self, timeout=None): return (b"", None)
-
-    def fake_popen(cmd, **kw):
-        return FakeProc()
-
-    def fake_run(cmd, **kw):
-        if cmd[0] == "import":
-            Path(cmd[-1]).write_bytes(b"\x89PNG")
-            return sp.CompletedProcess(cmd, 0, "", "")
-        if cmd[0] == "xdpyinfo":
-            return sp.CompletedProcess(cmd, 0, "name of display: :99\n", "")
-        return sp.CompletedProcess(cmd, 0, "", "")
-
-    monkeypatch.setattr("revagent.tools.run_gui.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", fake_run)
-    monkeypatch.setattr("revagent.tools.run_gui.os.killpg", lambda pid, sig: None)
     out = run_gui.run(c, path="g.exe")
     assert (screens / "004.png").exists()
     assert ".revagent/screens/004.png" in out
 
 
-def _gui_fixture(tmp_path, monkeypatch, calls):
+def _gui_fixture(tmp_path, monkeypatch, calls, *, windows="CaptainHook", ocr="digit", tail=b"", pid=7,
+                 popen_calls=None, killed=None):
+    """Fake wine/X/OCR for run_gui. `calls` receives every subprocess.run argv and ["sleep", s].
+
+    windows: stdout of `xdotool search ...` ("" = no window found)
+    ocr:     tesseract stdout, or a callable(psm) -> str
+    tail:    bytes the wine process prints (FakeProc.communicate)
+    popen_calls / killed: lists that receive (cmd, kwargs) per Popen and the pid per killpg
+    """
     import subprocess as sp
     (tmp_path / "g.exe").write_bytes(b"MZ" + b"\0" * 50)
     monkeypatch.setattr("revagent.tools.run_gui.shutil.which", lambda n: "/usr/bin/" + n)
     monkeypatch.setattr("revagent.tools.run_gui.time.sleep", lambda s: calls.append(["sleep", s]))
 
     class FakeProc:
-        pid = 7
         returncode = None
         def poll(self): return None
-        def communicate(self, timeout=None): return (b"", None)
+        def communicate(self, timeout=None): return (tail, None)
 
-    monkeypatch.setattr("revagent.tools.run_gui.subprocess.Popen", lambda cmd, **kw: FakeProc())
+    FakeProc.pid = pid
+
+    def fake_popen(cmd, **kw):
+        if popen_calls is not None:
+            popen_calls.append((cmd, kw))
+        return FakeProc()
+
+    monkeypatch.setattr("revagent.tools.run_gui.subprocess.Popen", fake_popen)
 
     def fake_run(cmd, **kw):
         calls.append(cmd)
@@ -630,15 +423,19 @@ def _gui_fixture(tmp_path, monkeypatch, calls):
             Path(cmd[-1]).write_bytes(b"\x89PNG")
             return sp.CompletedProcess(cmd, 0, "", "")
         if cmd[0] == "tesseract":
-            return sp.CompletedProcess(cmd, 0, "digit\n", "")
+            text = ocr(int(cmd[cmd.index("--psm") + 1])) if callable(ocr) else ocr
+            return sp.CompletedProcess(cmd, 0, text + "\n", "")
         if cmd[0] == "xdotool" and "getwindowgeometry" in cmd:
             return sp.CompletedProcess(cmd, 0, "Window 123\n  Position: 10,20 (screen: 0)\n  Geometry: 200x250\n", "")
         if cmd[0] == "xdotool" and cmd[1] == "search":
-            return sp.CompletedProcess(cmd, 0, "CaptainHook\n", "")
+            return sp.CompletedProcess(cmd, 0, windows + "\n" if windows else "", "")
+        if cmd[0] == "xdpyinfo":
+            return sp.CompletedProcess(cmd, 0, "name of display: :99\n", "")
         return sp.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr("revagent.tools.run_gui.subprocess.run", fake_run)
-    monkeypatch.setattr("revagent.tools.run_gui.os.killpg", lambda pid, sig: None)
+    monkeypatch.setattr("revagent.tools.run_gui.os.killpg",
+                        lambda pid, sig: killed.append(pid) if killed is not None else None)
     return ctx_for(tmp_path)
 
 
@@ -871,43 +668,29 @@ def test_run_binary_observes_exit_and_first_line(tmp_path):
     assert c.env_blocked is False
 
 
-def test_run_binary_wrong_answer_twice_does_not_set_env_blocked(tmp_path):
+@pytest.mark.parametrize("script, exit_marker", [
     # exit 1 with no output is the normal "wrong guess" shape for a check binary; two of these
     # must not falsely trip env_blocked for the rest of the run.
-    (tmp_path / "chal").write_text("#!/bin/bash\nexit 1\n")
-    c = ctx_for(tmp_path)
-    run_binary.run(c, path="chal")
-    assert c.env_blocked is False
-    run_binary.run(c, path="chal")
-    assert c.env_blocked is False
-    assert c.start_failures == 0
-
-
-def test_run_binary_nonzero_exit_with_output_twice_does_not_set_env_blocked(tmp_path):
+    pytest.param("#!/bin/bash\nexit 1\n", "[exit 1]", id="exit-1-no-output"),
     # I1: `return -1` from a failed check is reported by bash as exit 255. A binary that prints a
     # wrong-answer message and exits 255 is running fine; it must not open the runbook gate.
-    (tmp_path / "chal").write_text("#!/bin/bash\necho 'Wrong password'\nexit 255\n")
-    c = ctx_for(tmp_path)
-    out1 = run_binary.run(c, path="chal")
-    assert "[exit 255]" in out1 and c.env_blocked is False
-    run_binary.run(c, path="chal")
-    assert c.env_blocked is False and c.start_failures == 0
-
-
-def test_run_binary_start_failure_marker_inside_long_output_is_ignored(tmp_path):
+    pytest.param("#!/bin/bash\necho 'Wrong password'\nexit 255\n", "[exit 255]", id="exit-255-with-output"),
     # I1: "No such file or directory" printed by the program itself among ten lines of its own
     # output is program behaviour, not a loader failure.
-    (tmp_path / "chal").write_text(
+    pytest.param(
         "#!/bin/bash\n"
         "echo 'banner'\n"
         "echo 'opening the vault'\n"
         "echo 'No such file or directory'\n"
         "for i in 4 5 6 7 8 9 10; do echo \"line $i\"; done\n"
-        "exit 1\n"
-    )
+        "exit 1\n",
+        "[exit 1]", id="start-failure-marker-inside-long-output"),
+])
+def test_run_binary_wrong_answer_twice_does_not_set_env_blocked(tmp_path, script, exit_marker):
+    (tmp_path / "chal").write_text(script)
     c = ctx_for(tmp_path)
-    run_binary.run(c, path="chal")
-    assert c.env_blocked is False
+    out1 = run_binary.run(c, path="chal")
+    assert exit_marker in out1 and c.env_blocked is False
     run_binary.run(c, path="chal")
     assert c.env_blocked is False and c.start_failures == 0
 
@@ -932,34 +715,20 @@ def test_run_binary_signal_kill_twice_sets_env_blocked(tmp_path):
     assert c.env_blocked is True
 
 
-def test_run_binary_loader_failure_marker_twice_sets_env_blocked(tmp_path):
+def test_run_binary_two_strike_sets_env_blocked_note_and_blocked_path(tmp_path):
+    # Pins 0941de8 / I4-lite: the second loader failure (not the first) flips env_blocked, appends
+    # the [env] note to the tool output, and records the blocked target for the runbook.
     (tmp_path / "chal").write_text(
         "#!/bin/bash\necho 'error while loading shared libraries: libfoo.so.1' 1>&2\nexit 127\n"
     )
     c = ctx_for(tmp_path)
-    run_binary.run(c, path="chal")
-    assert c.env_blocked is False
-    run_binary.run(c, path="chal")
-    assert c.env_blocked is True
-
-
-def test_run_binary_second_start_failure_appends_env_note_not_first(tmp_path):
-    (tmp_path / "chal").write_text(
-        "#!/bin/bash\necho 'error while loading shared libraries: libfoo.so.1' 1>&2\nexit 127\n"
-    )
-    c = ctx_for(tmp_path)
+    assert c.env_blocked_paths == []
     out1 = run_binary.run(c, path="chal")
+    assert c.env_blocked is False and c.env_blocked_paths == []
     assert "[env]" not in out1 and "handoff_runbook is now allowed" not in out1
     out2 = run_binary.run(c, path="chal")
+    assert c.env_blocked is True and c.env_blocked_paths == ["chal"]
     assert "[env]" in out2 and "handoff_runbook is now allowed" in out2
-
-
-def test_run_binary_cannot_run_here_appends_env_note_immediately(tmp_path, monkeypatch):
-    (tmp_path / "x.exe").write_bytes(b"MZ" + b"\0" * 100)
-    monkeypatch.setattr("revagent.tools.run_binary.shutil.which", lambda n: None)
-    out = run_binary.run(ctx_for(tmp_path), path="x.exe")
-    assert out.startswith("[cannot run here]")
-    assert "[env]" in out and "handoff_runbook is now allowed" in out
 
 
 def test_run_gui_observes_windows_and_change_counts(tmp_path, monkeypatch):
@@ -1012,22 +781,15 @@ def test_submit_flag_evidence_enum_and_default(tmp_path):
     assert submit_flag.SCHEMA["function"]["parameters"]["properties"]["evidence"]["enum"] == list(submit_flag.EVIDENCE_KINDS)
 
 
-def test_submit_flag_same_flag_spam_guard(tmp_path):
-    from revagent.tools import submit_flag
+def test_submit_flag_same_flag_spam_guard_then_two_methods_accepted(tmp_path):
+    # Pins fb833e9: the two-method rule is evaluated before the spam guard, so a genuine two-method
+    # submission of the same flag is still accepted after the guard has fired.
     c = ctx_for(tmp_path)
     for _ in range(3):
         out = submit_flag.run(c, flag="DH{zzz}", how_verified="one method only", evidence="two_independent_readings")
         assert out.startswith("[rejected] second independent reading required")
     out = submit_flag.run(c, flag="DH{zzz}", how_verified="one method only", evidence="two_independent_readings")
     assert out == "[rejected] same flag 3× — change approach"
-
-
-def test_submit_flag_two_methods_accepted_after_spam_guard(tmp_path):
-    from revagent.tools import submit_flag
-    c = ctx_for(tmp_path)
-    for _ in range(3):
-        out = submit_flag.run(c, flag="DH{zzz}", how_verified="one method only", evidence="two_independent_readings")
-        assert out.startswith("[rejected] second independent reading required")
     out = submit_flag.run(c, flag="DH{zzz}",
                           how_verified="① read captures after real clicks\n② rebuilt from decoded bytes",
                           evidence="two_independent_readings")
@@ -1089,10 +851,6 @@ def test_run_gui_action_budget_skips_the_rest(tmp_path, monkeypatch):
     assert ["xdotool", "key", "--", "Return"] not in calls
 
 
-def test_run_gui_action_budget_constant():
-    assert run_gui.ACTION_BUDGET_SECONDS == 300
-
-
 def test_reset_display_note_only_claims_a_kill_it_performed(tmp_path, monkeypatch):
     # M2: the wineserver -k call is conditional, the "killed ..." note was not.
     import subprocess as sp
@@ -1128,26 +886,12 @@ def test_run_binary_records_blocked_path(tmp_path, monkeypatch):
     monkeypatch.setattr("revagent.tools.run_binary.shutil.which", lambda n: None)
     c = ctx_for(tmp_path)
     out = run_binary.run(c, path="inner.exe")
+    assert out.startswith("[cannot run here]")
     assert c.env_blocked_paths == ["inner.exe"]
-    assert "could not start the program (2 attempts): inner.exe." in out
+    assert "[env]" in out and "could not start the program (2 attempts): inner.exe." in out   # note appended at once
     assert "handoff_runbook is now allowed" in out
     run_binary.run(c, path="inner.exe")
     assert c.env_blocked_paths == ["inner.exe"]   # deduped
-
-
-def test_run_binary_two_strike_path_records_blocked_path(tmp_path):
-    (tmp_path / "chal").write_text(
-        "#!/bin/bash\necho 'error while loading shared libraries: libfoo.so.1' 1>&2\nexit 127\n"
-    )
-    c = ctx_for(tmp_path)
-    run_binary.run(c, path="chal")
-    assert c.env_blocked_paths == []
-    run_binary.run(c, path="chal")
-    assert c.env_blocked is True and c.env_blocked_paths == ["chal"]
-
-
-def test_env_blocked_paths_default_empty(tmp_path):
-    assert ctx_for(tmp_path).env_blocked_paths == []
 
 
 def test_handoff_runbook_names_the_blocked_targets(tmp_path):
@@ -1168,3 +912,88 @@ def test_revagent_secure_is_scrubbed_from_child_environments(tmp_path, monkeypat
     out = bash.run(ctx_for(tmp_path), cmd="echo [$REVAGENT_SECURE][$QWEN]")
     assert "[][]" in out
     assert "REVAGENT_SECURE" in run_gui.SCRUB_ENV and "REVAGENT_SECURE" in bash.SCRUB_ENV
+
+
+# ---- run-budget clamp: no tool call may outlive the run's wall-clock budget ----------------------
+
+def test_clamp_timeout_without_deadline_is_identity(tmp_path):
+    ctx = ctx_for(tmp_path)
+    assert ctx.deadline is None
+    assert ctx.clamp_timeout(900) == 900
+
+
+def test_clamp_timeout_caps_to_remaining_and_floors(tmp_path, monkeypatch):
+    import time as _t
+    from revagent.tools.base import MIN_TOOL_SECONDS
+    ctx = ctx_for(tmp_path)
+    monkeypatch.setattr("revagent.tools.base.time.monotonic", lambda: 1000.0)
+    ctx.deadline = 1000.0 + 42.7
+    assert ctx.clamp_timeout(900) == 42
+    assert ctx.clamp_timeout(10) == 10
+    # a short request is never raised to the floor (the model's `timeout=2` must stay 2 s, or the
+    # returned "[timeout after 2s]" text would change)
+    assert ctx.clamp_timeout(2) == 2 and ctx.clamp_timeout(1) == 1
+    ctx.deadline = 1000.0 - 5  # already past the deadline: still give the tool a few seconds
+    assert ctx.clamp_timeout(900) == MIN_TOOL_SECONDS
+    assert ctx.clamp_timeout(2) == 2
+
+
+@pytest.mark.parametrize("tool, seconds_left, requested, expected", [
+    ("bash", None, 99999, 900),        # hard cap of 900 s
+    ("run_binary", None, 99999, 900),
+    ("bash", 30, 900, 30),             # run deadline closer than the cap
+    ("run_binary", 30, 900, 30),
+])
+def test_tool_timeout_is_clamped_to_cap_and_run_deadline(tmp_path, monkeypatch, tool, seconds_left, requested, expected):
+    captured = {}
+
+    def fake_run_cmd(cmd, cwd, timeout, stdin_text=None):
+        captured["timeout"] = timeout
+        return "[exit 0]\nran"
+
+    monkeypatch.setattr(f"revagent.tools.{tool}.run_cmd", fake_run_cmd)
+    ctx = ctx_for(tmp_path)
+    if seconds_left is not None:
+        monkeypatch.setattr("revagent.tools.base.time.monotonic", lambda: 50.0)
+        ctx.deadline = 50.0 + seconds_left
+    if tool == "bash":
+        out = bash.run(ctx, cmd="echo x", timeout=requested)
+    else:
+        (tmp_path / "p.sh").write_text("#!/bin/bash\necho ran\n")
+        out = run_binary.run(ctx, path="p.sh", timeout=requested)
+    assert out.startswith("[exit 0]") and "ran" in out
+    assert captured["timeout"] == expected
+
+
+def test_decompile_analysis_timeout_clamped_to_run_deadline(tmp_path, monkeypatch):
+    # Ghidra headless is the longest tool (1200 s default) and used to be the only one not capped
+    # to the run's wall-clock budget.
+    fix = Path(__file__).parent / "fixtures" / "functions.json"
+    (tmp_path / "prog").write_bytes(b"\x7fELF")
+    captured = {}
+
+    def fake_analyze(binary, cache_dir, timeout=None):
+        captured["timeout"] = timeout
+        return fix
+
+    monkeypatch.setattr(decompile_mod, "analyze", fake_analyze)
+    monkeypatch.setattr("revagent.tools.base.time.monotonic", lambda: 50.0)
+    ctx = ctx_for(tmp_path)
+    ctx.deadline = 50.0 + 30
+    assert decompile.run(ctx, action="list", binary="prog").startswith("4 functions")
+    assert captured["timeout"] == 30
+    ctx2 = ctx_for(tmp_path)  # no deadline: the full 1200 s Ghidra budget is passed through
+    decompile.run(ctx2, action="list", binary="prog")
+    assert captured["timeout"] == 1200
+
+
+def test_run_gui_wait_clamped_to_run_deadline(tmp_path, monkeypatch):
+    calls = []
+    ctx = _gui_fixture(tmp_path, monkeypatch, calls, windows="W", pid=4242)
+    monkeypatch.setattr("revagent.tools.base.time.monotonic", lambda: 50.0)
+    ctx.deadline = 50.0 + 8
+    run_gui.run(ctx, path="g.exe", wait_seconds=60)
+    sleeps = [x[1] for x in calls if x[0] == "sleep"]
+    # sleeps[0] is _reset_display's 1 s after killing the leftover fake window; the first capture wait
+    # asked for 60 s and must be cut to the 8 s left in the run
+    assert sleeps[-1] == 8 and 60 not in sleeps

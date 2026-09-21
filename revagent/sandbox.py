@@ -32,6 +32,10 @@ def build_sandbox_cmd(problem_dir: Path, passthrough: list[str], secure: Secure,
     """Assemble the docker run command. Pure: nothing is executed."""
     root = problem_dir.resolve()
     cmd = ["docker", "run", "--rm", "--init", "-it" if interactive else "-i",
+           # gdb: ptrace and personality(ADDR_NO_RANDOMIZE) are blocked by docker's default seccomp
+           # profile ("Error disabling address space randomization: Operation not permitted"), so a
+           # program whose data depends on its load address changed on every run (relativity run 1).
+           "--cap-add", "SYS_PTRACE", "--security-opt", "seccomp=unconfined",
            "-v", f"{root}:/work/{root.name}"]
     # names only, no values: docker run argv is visible to any local user via `ps`/the process table.
     # Values travel separately through run_sandbox's env_extra (the docker CLI's own environment).

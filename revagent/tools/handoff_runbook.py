@@ -38,7 +38,7 @@ def run(ctx, steps: list[str], expected_observation: str, flag_rule: str) -> str
     if not steps:
         return "[rejected] steps is empty. Give the human a numbered procedure."
     body = [RUNBOOK_HEADER]
-    blocked = list(getattr(ctx, "env_blocked_paths", []) or [])
+    blocked = list(ctx.env_blocked_paths)
     if blocked:  # env_blocked is global for the run; name what actually failed to start
         body.append("Blocked target(s): " + ", ".join(blocked))
     body += ["", f"# Runbook: {ctx.problem_dir.name}", "", "## Steps"]
