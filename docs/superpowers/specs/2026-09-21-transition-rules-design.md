@@ -104,3 +104,46 @@
 | 긴 생각 횟수 (8천 자 초과 스텝) | **5회째** | **0/7** (해결 최대 4회) | basic 5, captain-hook 16, relativity 1회차 25, damnida 14, archive 9~17 | **채택** |
 
 확정값: D3 유사도 = 앞 200자 동일 또는 Jaccard > 0.6, T = 4. D4 = 8,000자, 5회째. 자동 해제 3스텝, 냉각 10스텝. 200자 접두를 100자로 줄이면 basic 검출이 16스텝 연속으로 늘지만 T=3에서 오탐 3회가 생기므로 이번엔 200자로 두고 다음 리플레이에서 재검토한다.
+
+### 구현 후 리플레이 (실제 Gate 코드)
+
+`scripts/replay_detectors.py`가 루프와 같은 `Gate`(revagent/gate.py)와 `LONG_REASONING_*`(revagent/detectors.py)를 import해 계산한 결과. 실행:
+
+```bash
+~/.revagent-venv/bin/python scripts/replay_detectors.py /mnt/c/Users/강순우/Documents/vs/rev/quiz/*/.revagent/transcript.jsonl /mnt/c/Users/강순우/Documents/vs/rev/quiz/captain-hook.archive-pre-ladder/transcript.jsonl bench/mini/*/.revagent/transcript.jsonl
+```
+
+| transcript | session | status | steps | G3 blocks at | released at | max streak | long-thinking steps | G4 at |
+|---|---|---|---|---|---|---|---|---|
+| basic | 1 | unsolved | 32 | [9, 10, 11, 32] | [11] | 6 | 5 | 30 |
+| captain-hook | 1 | solved FALSE POSITIVE | 191 | - | - | 3 | 16 | 99 |
+| damnida | 1 | incomplete | 237 | [49, 107, 108, 145, 146, 203] | - | 5 | 14 | 118 |
+| multipoint | 1 | solved | 48 | - | - | 3 | 4 | - |
+| relativity | 1 | unsolved | 0 | - | - | 0 | 0 | - |
+| relativity | 2 | unsolved | 0 | - | - | 0 | 0 | - |
+| relativity | 3 | unsolved | 107 | - | - | 3 | 25 | 37 |
+| relativity | 4 | incomplete | 3 | - | - | 0 | 0 | - |
+| relativity | 5 | unsolved | 43 | - | - | 2 | 4 | - |
+| relativity | 6 | unsolved | 85 | - | - | 3 | 16 | 38 |
+| relativity | 7 | solved | 38 | - | - | 1 | 4 | - |
+| revlogin | 1 | unsolved | 56 | - | - | 3 | 0 | - |
+| revlogin | 2 | solved | 70 | - | - | 2 | 3 | - |
+| captain-hook.archive-pre-ladder | 1 | unsolved | 95 | [24, 29, 30, 48, 49, 55] | - | 5 | 14 | 70 |
+| captain-hook.archive-pre-ladder | 2 | incomplete | 197 | [48] | - | 4 | 16 | 90 |
+| captain-hook.archive-pre-ladder | 3 | incomplete | 120 | - | - | 3 | 12 | 70 |
+| captain-hook.archive-pre-ladder | 4 | unsolved | 138 | - | - | 2 | 17 | 54 |
+| captain-hook.archive-pre-ladder | 5 | incomplete | 36 | - | - | 1 | 2 | - |
+| captain-hook.archive-pre-ladder | 6 | incomplete | 62 | - | - | 2 | 4 | - |
+| captain-hook.archive-pre-ladder | 7 | incomplete | 103 | - | - | 2 | 9 | 88 |
+| captain-hook.archive-pre-ladder | 8 | incomplete | 75 | - | - | 2 | 6 | 70 |
+| captain-hook.archive-pre-ladder | 9 | incomplete | 25 | - | - | 1 | 2 | - |
+| captain-hook.archive-pre-ladder | 10 | solved FALSE POSITIVE | 89 | - | - | 2 | 9 | 54 |
+| win_console | 1 | solved | 8 | - | - | 1 | 0 | - |
+| win_gui | 1 | solved | 9 | - | - | 1 | 0 | - |
+| win_gui_32 | 1 | solved | 17 | - | - | 1 | 0 | - |
+| win_gui_key | 1 | solved | 12 | - | - | 1 | 0 | - |
+
+- 종료 코드 **1** (`2 solved session(s) would have fired: raise a threshold before shipping.`). `FALSE POSITIVE` 두 행은 transcript의 `end.status`가 `solved`인 captain-hook 현재 1세션과 archive 10세션으로, 위 측정 표에서 이미 오답 제출로 미해결에 분류한 두 세션이다. 리플레이 스크립트는 정답표를 갖지 않으므로(내용 무관 원칙) `end.status`를 그대로 쓴다. 둘 다 G3가 아니라 G4(긴 생각 5회째, 99·54스텝)만 울렸다.
+- 진짜 해결 7세션(multipoint, relativity 7회차, revlogin 2회차, mini 4개)은 G3·G4 모두 0회 — 측정 표와 일치. 상수는 바꾸지 않았다.
+- 미해결 검출: G3는 basic(9·10·11 차단 → 11에서 해제, 냉각 21까지, 32에서 재차단), damnida, archive 1·2세션; G4는 basic 30, damnida 118, relativity 3·6회차, archive 다수.
+- 오답 "solved" 세션을 리플레이가 미해결로 다루려면 정답표 없이 표시할 방법(예: `end` 이벤트의 검증 필드 또는 CLI 제외 옵션)이 필요하다 — 미결.
