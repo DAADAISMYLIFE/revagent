@@ -14,7 +14,7 @@
 4. **개입 강도.** 차단형을 기본으로 한다. 감지되면 그 호출을 실행하지 않고 `[blocked by G3] ...`로 이유와 요구 행동을 돌려준다. 생각 길이는 차단할 대상이 없으므로 예외적으로 "한 번 경고 + 남은 실행의 reasoning_effort 하향"으로 개입한다. 강제형(루프가 대신 도구 호출)은 쓰지 않는다.
 5. **교착 방지.** 같은 게이트가 연속 3스텝 차단하면 스스로 열리고 이벤트를 남긴다. 차단이 실행을 죽이는 일은 없다.
 6. **도구로 메우는 능력 결손.** "C를 z3 제약으로 옮겨 뒤집기"는 모델이 반복해서 못 하는 단일 작업이라 규칙이 아니라 도구(`solve_check`)로 준다.
-7. **탈락한 신호도 지표로는 남긴다.** Facts 첫 기록 스텝, 관찰 없는 스크립트 연속 길이는 result.json에 기록만 한다. 데이터가 쌓여 판단이 바뀌면 그때 게이트로 올린다.
+7. **탈락한 신호도 지표로는 남긴다.** Facts 첫 기록 스텝은 result.json `signals.first_facts_step`에 기록만 한다. 관찰 없는 스크립트 연속 길이는 "bash가 대상 바이너리를 실행했는지"의 판정이 정의되지 않아 지금은 기록하지 않고 보류한다(§3.1). 데이터가 쌓여 판단이 바뀌면 그때 게이트로 올린다.
 8. **검증 데이터의 한계를 명시한다.** 해결 세션 7개 중 4개가 20스텝 미만의 mini 벤치다. 임계값은 이 작은 표본에서 오탐 0인 값이지 일반 진리가 아니다. 새 실행이 끝날 때마다 리플레이를 다시 돌려 오탐이 생기면 임계값을 올린다(§3.4).
 
 ## 3. 구성 요소
@@ -23,7 +23,7 @@
 
 - **D3 `artifact_streak(messages) -> (length, start_step)`** — 연속된 `bash` 호출 중 스크립트 본문(heredoc 본문 또는 `python3 -c` 문자열, 공백 정규화)이 직전 것과 유사한 것의 연속 길이. 유사 = 앞 200자 동일 또는 줄 집합 Jaccard > 0.6. 유사하지 않은 bash, 다른 도구, notes는 스트릭을 끊는다.
 - **D4 `long_reasoning_count(transcript) -> int`** — 이 세션에서 reasoning이 8,000자를 넘은 스텝의 누적 수. 루프는 매 스텝 `resp.reasoning` 길이로 갱신한다.
-- **지표 전용** (§2.7): `first_facts_step`, `scripting_streak`(관찰 = run_binary/run_gui **또는** 대상 바이너리를 실행하는 bash) — result.json에 `signals` 항목으로 기록.
+- **지표 전용** (§2.7): `first_facts_step` — result.json에 `signals` 항목으로 기록. `scripting_streak`(관찰 = run_binary/run_gui **또는** 대상 바이너리를 실행하는 bash)은 "대상 바이너리를 실행하는 bash"의 판정 기준이 정의되지 않아 **보류**하고 현재 기록하지 않는다(`signals`에는 gate_blocks·max_script_streak·long_reasoning_steps·first_facts_step만 있다).
 
 ### 3.2 게이트 (`revagent/gate.py`)
 
@@ -147,3 +147,15 @@
 - `wrong` 두 행(captain-hook 현재 1세션, archive 10세션)은 transcript의 `end.status`가 `solved`이지만 ANSWERS.md와 flag가 다른 오답 제출로, 위 측정 표에서 미해결에 분류한 그 두 세션이다. 둘 다 G3가 아니라 G4(긴 생각 5회째, 99·54스텝)만 울렸다.
 - 미해결 검출: G3는 basic(9·10·11 차단 → 11에서 해제, 냉각 21까지, 32에서 재차단), damnida, archive 1·2세션; G4는 basic 30, damnida 118, relativity 3·6회차, archive 다수.
 - 회귀 고정: `tests/fixtures/transcripts/pefile_loop.jsonl`(basic 1~16스텝: 9·10·11 차단, 11 해제)과 `extractor_variants.jsonl`(multipoint 28~36스텝: 차단 0, G4 없음), `tests/test_replay.py`.
+
+### 라이브 검증 (2026-09-21 저녁, 이미지 재빌드 후)
+
+| 실행 | 결과 | 스텝 / 분 | signals | 비고 |
+|---|---|---|---|---|
+| basic 2회차 (케이스 파일 새로, `--max-minutes 15`) | **unsolved** | 32 / 15.5 | gate_blocks 0, max_script_streak 3, long_reasoning_steps 4, first_facts_step 28 | G3·G4 모두 임계값에 하나 모자라 안 울림. 모델은 z3 스크립트를 스스로 10번 썼지만 forward 모델이 틀려 전부 unsat; `solve_check`는 한 번도 부르지 않음. 오탐 없음 |
+
+basic 2회차를 잡을 수 있는 임계값이 있는지 전 세션에 다시 재 봤다(접두 100/150/200자 × Jaccard 0.4/0.5/0.6). 접두 100자로 낮추면 basic 2회차가 스트릭 4로 걸리지만 **multipoint(해결)도 5로 걸려 오탐**이 생긴다. 접두 150자는 basic 2회차를 못 잡는다(3). 즉 §2.3 기준(해결 세션 오탐 0)을 만족하면서 basic 2회차를 잡는 값은 없다. 임계값은 그대로 둔다. 이 실행이 보여준 실패 모양은 "비슷한 스크립트 반복"이 아니라 "매번 다르게 쓴 z3 모델이 전부 unsat"이라, 다음 후보 신호는 "연속된 스크립트가 같은 결과 문자열(예: unsat/Traceback)로 끝남"이다. 데이터가 더 쌓이면 §2.3 기준으로 검토한다.
+
+### 구현 중 변경 (2026-09-21)
+
+- 지표 전용 신호 중 `signals`에 기록되는 것은 `first_facts_step`뿐이다. 관찰 없는 스크립트 연속(`scripting_streak`)은 "대상 바이너리를 실행하는 bash"를 가려낼 기준이 없어 구현하지 않고 보류한다(§2.7, §3.1).

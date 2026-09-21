@@ -2,16 +2,27 @@
 (what it can do); the solver finds the input (what it repeatedly could not do by hand).
 
 The user script defines transform(x) over a list of 8-bit values using integer arithmetic
-(+ - * ^ & | << >> % and constant-table lookups). We run it with x = symbolic values wrapped in Sym,
-which keeps Python-int semantics (logical >>, wrap-around only when the script masks) on top of
-64-bit z3 bit-vectors, then ask z3 for x such that transform(x) == target."""
+(+ - * // ^ & | << >> % and constant-table lookups). We run it with x = symbolic values wrapped in Sym
+on top of 64-bit z3 bit-vectors, then ask z3 for x such that transform(x) == target.
+
+Semantics: intermediate values are treated as non-negative 64-bit integers — mask as the program does
+(`& 0xff`, `& 0xffffffff`) and keep intermediates in range; a shift of a negative intermediate or an
+unmasked overflow diverges from Python (`>>` and `//` are unsigned, `%` follows Python's floor-mod, `<<`
+past bit 63 drops bits). Every sat answer is re-run concretely, so a divergence shows up as `[sat?]`,
+never as a wrong `[sat]`."""
+import contextlib
 import re
+import signal
+import threading
 import traceback
 
 from .base import PathError, resolve_inside
 
 WIDTH = 64
 DEFAULT_TIMEOUT = 60
+SEMANTICS = ("intermediate values are treated as non-negative 64-bit integers — mask as the program does "
+             "(`& 0xff`, `& 0xffffffff`) and keep intermediates in range; a shift of a negative intermediate or an "
+             "unmasked overflow diverges from Python.")
 
 SCHEMA = {
     "type": "function",
@@ -20,11 +31,14 @@ SCHEMA = {
         "description": (
             "Invert a byte-wise check with z3 instead of by hand. Write the FORWARD transform as plain Python in a "
             "file: `def transform(x): ...` takes a list of `length` byte values (ints 0-255) and returns the list "
-            "the program compares against its target, using only + - * ^ & | << >> % and indexing into constant "
+            "the program compares against its target, using only + - * // ^ & | << >> % and indexing into constant "
             "tables (wrap tables as Table([...]) — Table is provided). The tool runs transform on symbolic bytes and "
             "returns an input whose transform equals `target`. Works for byte-wise / sequential / stateful checks "
-            "(XOR, add, S-box, rotations, per-block rounds); useless for hashes and standard ciphers. Data-dependent "
-            "branches, int() casts and loops whose bounds depend on x are not symbolic: the tool names the line."
+            "(XOR, add, S-box, rotations, per-block rounds); useless for hashes and standard ciphers. Intermediate "
+            "values are treated as non-negative 64-bit integers — mask as the program does (`& 0xff`, `& 0xffffffff`) "
+            "and keep intermediates in range; a shift of a negative intermediate or an unmasked overflow diverges "
+            "from Python. Data-dependent branches, int() casts and loops whose bounds depend on x are not symbolic: "
+            "the tool names the line."
         ),
         "parameters": {
             "type": "object",
@@ -43,6 +57,31 @@ SCHEMA = {
 
 class NotSymbolic(Exception):
     pass
+
+
+class SolverTimeout(Exception):
+    """The user's Python (import, transform on symbols, or the concrete re-check) ran past the time bound."""
+
+
+@contextlib.contextmanager
+def _time_limit(seconds: float):
+    """Raise SolverTimeout inside the block after `seconds` of wall time. exec/transform run in-process, so
+    without this a `while True` in the user's file would hang the whole agent. SIGALRM handlers can only be
+    installed from the main thread; elsewhere the block runs unbounded (z3 keeps its own timeout)."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def on_alarm(signum, frame):
+        raise SolverTimeout()
+
+    prev_handler = signal.signal(signal.SIGALRM, on_alarm)
+    prev_timer = signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, *prev_timer)
+        signal.signal(signal.SIGALRM, prev_handler)
 
 
 _TABLES: list = []   # every Table built since the current symbolic_solve started (import time or inside transform)
@@ -84,14 +123,22 @@ class Sym:
     def __rshift__(self, o):
         import z3
         return self._bin(o, lambda a, b: z3.LShR(a, b))       # Python >> on non-negative ints is logical
+    def __rrshift__(self, o):
+        import z3
+        return self._bin(o, lambda a, b: z3.LShR(b, a))
+    def __rlshift__(self, o): return self._bin(o, lambda a, b: b << a)
+    def __floordiv__(self, o):
+        import z3
+        return self._bin(o, lambda a, b: z3.UDiv(a, b))      # unsigned: equals Python // while both sides are in range
     def __mod__(self, o): return self._bin(o, lambda a, b: a % b)   # z3 BitVec % is bvsmod: sign of the divisor, like Python
+    def __rmod__(self, o): return self._bin(o, lambda a, b: b % a)
     def __neg__(self): return Sym(-self.v)
     def __invert__(self): return Sym(~self.v)
     def __eq__(self, o): return Sym(self.v == Sym._raw(o))
     def __ne__(self, o): return Sym(self.v != Sym._raw(o))
     def __hash__(self): return id(self)
     def __int__(self): raise NotSymbolic("int() on a symbolic value")
-    def __index__(self): raise NotSymbolic("a symbolic value used as an index/range bound (wrap the table in Table)")
+    def __index__(self): raise NotSymbolic("a symbolic value was used where a plain int is required (bytes(), range(), list index); index a Table with it instead")
     def __bool__(self): raise NotSymbolic("a symbolic value used in a branch (if/while/and/or)")
     def __lt__(self, o): raise NotSymbolic("comparison used as a value; only == against constants is supported")
     __le__ = __gt__ = __ge__ = __lt__
@@ -103,6 +150,9 @@ class Table:
     Values keep their full width (a 32-bit round-constant table is not truncated)."""
 
     def __init__(self, values):
+        values = list(values)
+        if any(isinstance(v, Sym) for v in values):
+            raise NotSymbolic("Table entries must be constants; pass the input through indexing, not into the table")
         self.values = [int(v) for v in values]
         self._arr = None
         self._cons = []
@@ -152,18 +202,31 @@ def _concrete_matches(fn, sol: bytes, target: bytes) -> bool:
     floor-mod, table width), and only the real Python run says whether the input actually works."""
     try:
         out = list(fn(list(sol)))
+    except SolverTimeout:
+        raise
     except Exception:
         return False
     return len(out) == len(target) and all((int(v) & 0xff) == t for v, t in zip(out, target))
 
 
 def symbolic_solve(source: str, target: bytes, length: int, charset: str, timeout_s: int):
-    """Returns ("sat", bytes) | ("unverified", bytes) | ("unsat", None) | ("timeout", None) | ("error: <text>", None)."""
+    """Returns ("sat", bytes) | ("unverified", bytes) | ("unsat", None) | ("timeout", None)
+    | ("timeout: transform", None) | ("error: <text>", None)."""
+    try:
+        with _time_limit(timeout_s):
+            return _symbolic_solve(source, target, length, charset, timeout_s)
+    except SolverTimeout:
+        return "timeout: transform", None
+
+
+def _symbolic_solve(source: str, target: bytes, length: int, charset: str, timeout_s: int):
     import z3
     ns = {"Table": Table, "__name__": "transform_module"}
     _TABLES.clear()
     try:
         exec(compile(source, "transform.py", "exec"), ns)
+    except SolverTimeout:
+        raise
     except Exception as e:
         return f"error: the file failed to import: {type(e).__name__}: {e}", None
     fn = ns.get("transform")
@@ -173,6 +236,8 @@ def symbolic_solve(source: str, target: bytes, length: int, charset: str, timeou
     try:
         out = fn([Sym(v) for v in xs])
         out = list(out)
+    except SolverTimeout:
+        raise
     except NotSymbolic as e:
         return f"error: not symbolic at {_where(source, e)} — {e}. Rewrite that line with arithmetic (masks, Table lookups) only.", None
     except Exception as e:
@@ -240,10 +305,16 @@ def run(ctx, file: str, target: str, length: int, charset: str = "", timeout: in
             return (f"[sat] input ({len(sol)} bytes)\n{body}verified: transform(input) == target\n"
                     f"Verify it on the real program before submit_flag (run_binary / run_gui).")
         return (f"[sat?] z3 found an input but transform(input) != target when run concretely — the symbolic "
-                f"semantics diverged (%, //, table width, index range); do not trust it\n{body}")
+                f"semantics diverged; do not trust it. {SEMANTICS} Other causes: `//` on a negative intermediate, "
+                f"table width, index range.\n{body}")
     if status == "unsat":
         return ("[unsat] no input of that length maps to the target under this transform. Either the transform is "
-                "not faithful (compare it against the real program on a known input) or the length/charset is wrong.")
+                "not faithful (compare it against the real program on a known input), the length/charset is wrong, "
+                f"or the symbolic semantics diverged from Python: {SEMANTICS}")
+    if status == "timeout: transform":
+        return (f"[timeout] the transform itself took longer than {timeout_s}s (importing the file, running it on "
+                f"symbolic bytes, or re-checking the answer concretely) — not z3. Remove loops whose bounds are not "
+                f"constants and keep transform to arithmetic and Table lookups.")
     if status == "timeout":
         return f"[timeout] z3 gave up after {timeout_s}s; simplify the transform or split the input into independent blocks."
     return f"[error] {status[len('error: '):]}"

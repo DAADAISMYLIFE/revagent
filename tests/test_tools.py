@@ -1127,3 +1127,68 @@ def test_solve_check_rejects_non_int_outputs(tmp_path):
     (tmp_path / "t.py").write_text("def transform(x):\n    return [x[0] == 3]\n")
     out = solve_check.run(ctx_for(tmp_path), file="t.py", target="01", length=1)
     assert out.startswith("[error] transform must return ints, got") and "at position 0" in out
+
+
+def test_solve_check_texts_state_the_non_negative_64bit_semantics(tmp_path):
+    # The probe: (x-200)>>1 is an arithmetic shift of a negative int in Python but a logical shift of a
+    # 64-bit two's-complement value here, so a Python solution exists yet z3's answer fails the re-check.
+    from revagent.tools import solve_check
+    key = "non-negative 64-bit integers"
+    assert key in solve_check.__doc__ and key in solve_check.SCHEMA["function"]["description"]
+    assert "shift of a negative intermediate" in solve_check.SCHEMA["function"]["description"]
+    (tmp_path / "t.py").write_text("def transform(x):\n    return [((x[0] - 200) >> 1) % 251]\n")
+    target = ((5 - 200) >> 1) % 251
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target=f"{target:02x}", length=1)
+    assert out.startswith("[sat?]") and key in out and "do not trust it" in out
+    assert "%," not in out                       # % follows Python; it is not listed as a divergence cause
+    (tmp_path / "u.py").write_text("def transform(x):\n    return [x[0] & 0, x[1]]\n")
+    out = solve_check.run(ctx_for(tmp_path), file="u.py", target="0102", length=2)
+    assert out.startswith("[unsat]") and "not faithful" in out and key in out
+    assert "semantics diverged" in out           # the second cause, not only "the transform is not faithful"
+
+
+def test_solve_check_supports_floordiv_and_reflected_shift_and_mod(tmp_path):
+    from revagent.tools import solve_check
+    (tmp_path / "d.py").write_text("def transform(x):\n    return [x[0] // 16]\n")
+    out = solve_check.run(ctx_for(tmp_path), file="d.py", target="05", length=1)
+    assert out.startswith("[sat]") and 80 <= _solution(out)[0] <= 95
+    (tmp_path / "l.py").write_text("def transform(x):\n    return [(1 << (x[0] & 7)) & 0xff]\n")
+    out = solve_check.run(ctx_for(tmp_path), file="l.py", target="08", length=1)
+    assert out.startswith("[sat]") and _solution(out)[0] & 7 == 3
+    (tmp_path / "r.py").write_text("def transform(x):\n    return [(0xff00 >> (x[0] & 15)) & 0xff]\n")
+    out = solve_check.run(ctx_for(tmp_path), file="r.py", target="0f", length=1)
+    assert out.startswith("[sat]") and _solution(out)[0] & 15 == 12
+    (tmp_path / "m.py").write_text("def transform(x):\n    return [300 % (x[0] | 1)]\n")
+    out = solve_check.run(ctx_for(tmp_path), file="m.py", target=f"{300 % 65:02x}", length=1)
+    assert out.startswith("[sat]") and "verified: transform(input) == target" in out
+    assert 300 % (_solution(out)[0] | 1) == 300 % 65
+
+
+def test_solve_check_bounds_the_time_the_user_script_may_run(tmp_path):
+    import time
+    from revagent.tools import solve_check
+    (tmp_path / "t.py").write_text("def transform(x):\n    while True:\n        pass\n")
+    t0 = time.monotonic()
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target="00", length=1, timeout=1)
+    assert time.monotonic() - t0 < 2.5
+    assert out.startswith("[timeout]") and "the transform itself" in out
+    (tmp_path / "i.py").write_text("while True:\n    pass\n")   # a hang at import time is bounded too
+    t0 = time.monotonic()
+    out = solve_check.run(ctx_for(tmp_path), file="i.py", target="00", length=1, timeout=1)
+    assert time.monotonic() - t0 < 2.5 and out.startswith("[timeout]")
+    # the handler and timer are restored: a later long run is not interrupted
+    (tmp_path / "ok.py").write_text("def transform(x):\n    return [x[0] ^ 0x55]\n")
+    assert solve_check.run(ctx_for(tmp_path), file="ok.py", target="00", length=1).startswith("[sat]")
+
+
+def test_solve_check_names_a_symbolic_table_entry_and_a_symbolic_bytes_element(tmp_path):
+    from revagent.tools import solve_check
+    (tmp_path / "t.py").write_text("def transform(x):\n    t = Table([x[0], 1])\n    return [t[0]]\n")
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target="00", length=1)
+    assert out.startswith("[error] not symbolic at line 2") and "Table entries must be constants" in out
+    assert "pass the input through indexing, not into the table" in out
+    (tmp_path / "b.py").write_text("def transform(x):\n    return list(bytes([x[0]]))\n")
+    out = solve_check.run(ctx_for(tmp_path), file="b.py", target="00", length=1)
+    assert out.startswith("[error] not symbolic at line 2")
+    assert "a symbolic value was used where a plain int is required (bytes(), range(), list index)" in out
+    assert "index a Table with it instead" in out

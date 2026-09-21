@@ -15,7 +15,7 @@ def test_basic_pefile_loop_blocks_at_step_9_and_releases():
     r = rows[0]
     # steps 6..11 are six re-edits of the same pefile script (Jaccard 0.67..0.90; step 12 diverges at 0.44);
     # the streak reaches 4 at step 9 -> block; 10, 11 blocked; release at 11 with cooldown to 21
-    assert r["g3_blocks"][:3] == [9, 10, 11]
+    assert r["g3_blocks"] == [9, 10, 11]
     assert r["g3_released"] == [11]
     assert r["max_streak"] >= 4
 
