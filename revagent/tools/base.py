@@ -38,6 +38,7 @@ class ToolContext:
     how_verified: str = ""
     function_dbs: dict = field(default_factory=dict)
     current_binary: str | None = None
+    current_binary_rel: str | None = None   # the binary= path as the model wrote it (quoted back in decompile's emulate hint)
     step: int = 0                      # current loop step; the agent updates it before each tool call
     env_blocked: bool = False          # set by tools only: the sandbox cannot execute the target
     start_failures: int = 0

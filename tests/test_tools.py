@@ -209,6 +209,56 @@ def test_summarize_caps_and_calls_llm(tmp_path):
     assert summarize.run(c, file="nope.txt", question="q").startswith("[tool error]")
 
 
+_EMU_FUNCS = [
+    {"name": "FUN_140001000", "entry": "0x140001000", "size": 10, "is_thunk": False,
+     "callers": [], "callees": [], "string_refs": [], "decompiled_c": "void FUN_140001000(char *s)\n{\n  s[0] ^= 0x5a;\n}\n"},
+    {"name": "FUN_140001100", "entry": "0x140001100", "size": 10, "is_thunk": False,
+     "callers": [], "callees": ["FUN_140001000"], "string_refs": [], "decompiled_c": "void FUN_140001100(char *s)\n{\n  FUN_140001000(s);\n}\n"},
+    {"name": "FUN_140001200", "entry": "0x140001200", "size": 10, "is_thunk": False,
+     "callers": [], "callees": ["FUN_140001000", "strlen"], "string_refs": [], "decompiled_c": "int FUN_140001200(char *s)\n{\n  return strlen(s);\n}\n"},
+]
+
+
+def test_decompile_get_hints_emulate_for_import_free_functions(tmp_path, monkeypatch):
+    import json
+    fix = tmp_path / "funcs.json"
+    fix.write_text(json.dumps(_EMU_FUNCS), encoding="utf-8")
+    (tmp_path / "chal.exe").write_bytes(b"MZ")
+    monkeypatch.setattr(decompile_mod, "analyze", lambda binary, cache_dir, timeout=None: fix)
+    c = ctx_for(tmp_path)
+    assert decompile.run(c, action="list", binary="chal.exe").startswith("3 functions")
+    assert c.current_binary_rel == "chal.exe"
+    out = decompile.run(c, action="get", target="FUN_140001100")
+    hint = ('[hint] this function calls no imports (callees: FUN_140001000), so emulate can run it directly: '
+            'emulate(binary=chal.exe, function=FUN_140001100, args=["hex:<input bytes>"]) — compare its output '
+            'with your re-implementation before inverting anything.\n')
+    assert out == hint + _EMU_FUNCS[1]["decompiled_c"]
+    out = decompile.run(c, action="get", target="0x140001000")
+    assert out == ('[hint] this function calls no imports (callees: none), so emulate can run it directly: '
+                   'emulate(binary=chal.exe, function=FUN_140001000, args=["hex:<input bytes>"]) — compare its output '
+                   'with your re-implementation before inverting anything.\n') + _EMU_FUNCS[0]["decompiled_c"]
+    assert decompile.run(c, action="get", target="FUN_140001200") == _EMU_FUNCS[2]["decompiled_c"]
+    assert decompile.run(c, action="get", target="nope").startswith("[not found]")
+    # list / xrefs outputs carry no hint
+    assert "[hint]" not in decompile.run(c, action="list")
+    xr = decompile.run(c, action="xrefs", target="FUN_140001100")
+    assert "[hint]" not in xr and xr.startswith("FUN_140001100 @0x140001100 size=10\ncallers: -\ncallees: FUN_140001000")
+
+
+def test_decompile_hint_without_a_known_relative_binary(tmp_path, monkeypatch):
+    import json
+    fix = tmp_path / "funcs.json"
+    fix.write_text(json.dumps(_EMU_FUNCS), encoding="utf-8")
+    (tmp_path / "chal.exe").write_bytes(b"MZ")
+    monkeypatch.setattr(decompile_mod, "analyze", lambda binary, cache_dir, timeout=None: fix)
+    c = ctx_for(tmp_path)
+    decompile.run(c, action="list", binary="chal.exe")
+    c.current_binary_rel = None
+    out = decompile.run(c, action="get", target="FUN_140001000")
+    assert out.startswith("[hint] this function calls no imports (callees: none), so emulate can run it directly: "
+                          "emulate(binary=<the binary you analyzed>, function=FUN_140001000, args=[\"hex:<input bytes>\"])")
+
+
 def test_decompile_negative_caches_analysis_failure(tmp_path, monkeypatch):
     (tmp_path / "prog").write_bytes(b"\x7fELF")
     calls = []
