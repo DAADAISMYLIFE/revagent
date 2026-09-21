@@ -88,7 +88,7 @@ def test_run_binary_pe_without_wine_says_use_sandbox(tmp_path, monkeypatch):
     (tmp_path / "x.exe").write_bytes(b"MZ" + b"\0" * 100)
     monkeypatch.setattr("revagent.tools.run_binary.shutil.which", lambda n: None)
     out = run_binary.run(ctx_for(tmp_path), path="x.exe")
-    assert out.startswith("[cannot run here]") and "--sandbox" in out
+    assert out.startswith("[cannot run here]") and "sandbox" in out and "--host" in out
 
 
 def test_run_binary_pe_runs_under_wine(tmp_path, monkeypatch):

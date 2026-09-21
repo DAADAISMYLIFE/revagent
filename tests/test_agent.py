@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -82,10 +83,14 @@ def _write_result(d, **over):
 
 
 def _fake_agent(run):
-    """An Agent stand-in for CLI tests: run(problem_dir) returns the result dict (or raises)."""
+    """An Agent stand-in for CLI tests: run(problem_dir) returns the result dict (or raises).
+    FakeAgent.calls records (problem_dir, kwargs) per construction."""
     class FakeAgent:
+        calls = []
+
         def __init__(self, d, *a, **k):
             self.d = Path(d)
+            FakeAgent.calls.append((self.d, k))
 
         def run(self):
             return run(self.d)
@@ -93,23 +98,41 @@ def _fake_agent(run):
 
 
 def _patch_host(monkeypatch, run):
-    """Run the CLI on the host without a .secure or a real LLM; Agent becomes _fake_agent(run)."""
+    """Run the CLI on the host (the tests pass --host) without a .secure or a real LLM; Agent becomes
+    _fake_agent(run), and docker must never be probed. Returns the FakeAgent class."""
+    monkeypatch.delenv("REVAGENT_IN_SANDBOX", raising=False)
     monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: object())
     monkeypatch.setattr(main_mod, "LLM", lambda secure: object())
-    monkeypatch.setattr(main_mod, "Agent", _fake_agent(run))
+    monkeypatch.setattr(main_mod, "check_docker",
+                        lambda: (_ for _ in ()).throw(AssertionError("docker must not be probed with --host")))
+    fake = _fake_agent(run)
+    monkeypatch.setattr(main_mod, "Agent", fake)
+    return fake
 
 
-def _patch_sandbox(monkeypatch, run_sandbox=None, tty=False, docker=None):
-    """Run the CLI in sandbox mode without docker or a .secure: check_docker returns `docker` (None =
-    available), is_interactive_tty returns `tty`, run_sandbox is replaced when given, and the Agent
-    must never be constructed on the host."""
+def _patch_sandbox(monkeypatch, run_sandbox=None, tty=False, docker=None, home=None):
+    """Run the CLI in sandbox mode (the default) without docker or a .secure: check_docker returns
+    `docker` (None = available), is_interactive_tty returns `tty`, run_sandbox is replaced when given
+    (fakes take (cmd, env_extra)), and the Agent must never be constructed on the host. The machine's
+    own REVAGENT_SANDBOX_CA / ~/.revagent/sandbox-ca.crt are hidden unless `home` (a fake HOME) is given."""
+    monkeypatch.delenv("REVAGENT_SANDBOX_CA", raising=False)
+    monkeypatch.delenv("REVAGENT_IN_SANDBOX", raising=False)
+    if home is None:
+        monkeypatch.setattr(main_mod, "_default_sandbox_ca", lambda: Path("/nonexistent/sandbox-ca.crt"))
+    else:
+        monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(main_mod, "check_docker", lambda: docker)
     monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: Secure("k", "https://h", "m"))
     monkeypatch.setattr(main_mod, "is_interactive_tty", lambda: tty)
     monkeypatch.setattr(main_mod, "Agent",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("Agent must not run on host")))
     if run_sandbox is not None:
-        monkeypatch.setattr(main_mod, "run_sandbox", run_sandbox)
+        monkeypatch.setattr(main_mod, "run_sandbox",
+                            lambda cmd, env_extra=None, stream=False: run_sandbox(cmd, env_extra=env_extra))
+
+
+def _console_log(d):
+    return (d / ".revagent" / "console.log").read_text(encoding="utf-8")
 
 
 def test_solves_and_writes_result(tmp_path):
@@ -306,7 +329,7 @@ def test_bench_isolates_errors(tmp_path, monkeypatch, capsys):
         return _result()
 
     _patch_host(monkeypatch, run)
-    rc = main_mod.main(["bench", str(d_bad), str(d_good)])
+    rc = main_mod.main(["bench", "--host", str(d_bad), str(d_good)])
     out = capsys.readouterr().out
     assert rc == 1
     assert "error" in out
@@ -353,16 +376,18 @@ def test_solve_sandbox_dispatches_docker(tmp_path, monkeypatch):
     (d / "desc.txt").write_text("hi")
     recorded = {}
     _patch_sandbox(monkeypatch, lambda cmd, env_extra=None: recorded.update(cmd=cmd, env_extra=env_extra) or 3)
-    rc = main_mod.main(["solve", "--sandbox", str(d), "--max-steps", "7", "--no-ask", "--desc", str(d / "desc.txt")])
+    rc = main_mod.main(["solve", str(d), "--max-steps", "7", "--desc", str(d / "desc.txt")])
     assert rc == 3
     cmd = recorded["cmd"]
     assert cmd[:2] == ["docker", "run"] and "-i" in cmd
     assert f"{d.resolve()}:/work/chal" in cmd
     tail = cmd[cmd.index("revagent-sandbox"):]
     assert tail[:3] == ["revagent-sandbox", "solve", "/work/chal"]
-    assert "--max-steps" in tail and "7" in tail and "--no-ask" in tail
+    assert "--max-steps" in tail and "7" in tail and "--ask" not in tail
     assert "--desc" in tail and "/work/chal/desc.txt" in tail
     assert "--sandbox" not in tail
+    # the inner run (same __main__, inside the container) must stay on the host side of the container
+    assert "--host" in tail and "--dev" not in tail
     # the secret key never appears in argv (visible in the host process table); it travels via env_extra
     assert "k" not in cmd
     assert recorded["env_extra"] == {"QWEN": "k", "URL": "https://h", "MODEL": "m"}
@@ -373,10 +398,10 @@ def test_solve_sandbox_dev_mounts_repo(tmp_path, monkeypatch):
     d.mkdir()
     recorded = {}
     _patch_sandbox(monkeypatch, lambda cmd, env_extra=None: recorded.setdefault("cmd", cmd) and 0, tty=True)
-    rc = main_mod.main(["solve", "--sandbox-dev", str(d)])
+    rc = main_mod.main(["solve", "--dev", str(d)])
     assert rc == 0
     cmd = recorded["cmd"]
-    assert "-it" in cmd
+    assert "-i" in cmd and "-it" not in cmd      # a tty alone does not make the run interactive: --ask does
     assert any(x.endswith(":/app") for x in cmd)
 
 
@@ -385,9 +410,10 @@ def test_solve_sandbox_docker_missing(tmp_path, monkeypatch, capsys):
     d.mkdir()
     _patch_sandbox(monkeypatch, docker="docker not found. enable it")
     monkeypatch.setattr(main_mod, "load_secure", lambda *a, **k: (_ for _ in ()).throw(AssertionError("not reached")))
-    rc = main_mod.main(["solve", "--sandbox", str(d)])
+    rc = main_mod.main(["solve", str(d)])
     assert rc == 2
-    assert "docker not found" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "error: docker not found. enable it (or run with --host)" in err
 
 
 def test_solve_sandbox_desc_outside_dir(tmp_path, monkeypatch, capsys):
@@ -395,7 +421,7 @@ def test_solve_sandbox_desc_outside_dir(tmp_path, monkeypatch, capsys):
     d.mkdir()
     (tmp_path / "far.txt").write_text("x")
     _patch_sandbox(monkeypatch)
-    rc = main_mod.main(["solve", "--sandbox", str(d), "--desc", str(tmp_path / "far.txt")])
+    rc = main_mod.main(["solve", str(d), "--desc", str(tmp_path / "far.txt")])
     assert rc == 2
     assert "inside the problem dir" in capsys.readouterr().err
 
@@ -408,7 +434,7 @@ def test_solve_sandbox_ca_flag_or_env(tmp_path, monkeypatch, via):
     crt.write_text("cert")
     recorded = {}
     _patch_sandbox(monkeypatch, lambda cmd, env_extra=None: recorded.setdefault("cmd", cmd) and 0)
-    argv = ["solve", "--sandbox", str(d)]
+    argv = ["solve", str(d)]
     if via == "flag":
         argv += ["--sandbox-ca", str(crt)]
     else:
@@ -423,7 +449,7 @@ def test_solve_sandbox_ca_missing_file(tmp_path, monkeypatch, capsys):
     d.mkdir()
     missing = tmp_path / "nope.crt"
     _patch_sandbox(monkeypatch)
-    rc = main_mod.main(["solve", "--sandbox", str(d), "--sandbox-ca", str(missing)])
+    rc = main_mod.main(["solve", str(d), "--sandbox-ca", str(missing)])
     assert rc == 2
     assert "not found" in capsys.readouterr().err
 
@@ -446,7 +472,7 @@ def test_bench_sandbox_runs_each_dir(tmp_path, monkeypatch, capsys):
         return 0 if name == "a" else 1
 
     _patch_sandbox(monkeypatch, fake_run)
-    rc = main_mod.main(["bench", "--sandbox", str(d1), str(d2)])
+    rc = main_mod.main(["bench", str(d1), str(d2)])
     assert seen == ["a", "b"] and rc == 1
     out = capsys.readouterr().out
     assert "| a | solved | DH{a} | 3 | 1.5 |" in out
@@ -475,7 +501,7 @@ def test_wrong_flag_is_downgraded_via_answers_md(tmp_path, monkeypatch, capsys, 
         _patch_host(monkeypatch, run)
     else:
         _patch_sandbox(monkeypatch, fake_run_sandbox)
-    argv = [sub, str(d)] + (["--sandbox"] if mode == "sandbox" else []) + (["--no-ask"] if sub == "solve" else [])
+    argv = [sub, str(d)] + (["--host"] if mode == "host" else [])
     rc = main_mod.main(argv)
     assert rc == 1
     out = capsys.readouterr().out
@@ -494,7 +520,7 @@ def test_bench_sandbox_reports_container_failure_not_stale_result(tmp_path, monk
     _write_result(d1, flag="DH{stale}", steps=9, minutes=9.9)
 
     _patch_sandbox(monkeypatch, lambda cmd, env_extra=None: 125)
-    rc = main_mod.main(["bench", "--sandbox", str(d1)])
+    rc = main_mod.main(["bench", str(d1)])
     assert rc == 1
     out = capsys.readouterr().out
     assert "| a | error | container exited 125 | 0 | 0 |" in out
@@ -518,35 +544,71 @@ def test_bench_sandbox_tolerates_bad_result_json(tmp_path, monkeypatch, capsys):
         return 0
 
     _patch_sandbox(monkeypatch, fake_run)
-    rc = main_mod.main(["bench", "--sandbox", str(d1), str(d2)])
+    rc = main_mod.main(["bench", str(d1), str(d2)])
     assert rc == 1
     out = capsys.readouterr().out
     assert "bad result.json" in out
     assert "| b | solved | DH{b} | 2 | 0.5 |" in out
 
 
-def test_sandbox_ca_flag_without_sandbox_is_rejected(tmp_path, monkeypatch, capsys):
+def test_sandbox_ca_flag_with_host_is_rejected(tmp_path, monkeypatch, capsys):
     d = tmp_path / "chal"
     d.mkdir()
     crt = tmp_path / "corp.crt"
     crt.write_text("cert")
     monkeypatch.setattr(main_mod, "load_secure",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("not reached")))
-    rc = main_mod.main(["solve", str(d), "--sandbox-ca", str(crt)])
+    rc = main_mod.main(["solve", "--host", str(d), "--sandbox-ca", str(crt)])
     assert rc == 2
-    assert "error: --sandbox-ca requires --sandbox" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert err.startswith("error: --sandbox-ca") and "--host" in err
 
 
-def test_sandbox_ca_env_without_sandbox_is_ignored(tmp_path, monkeypatch, capsys):
+def test_sandbox_ca_env_with_host_is_ignored(tmp_path, monkeypatch, capsys):
     d = tmp_path / "chal"
     d.mkdir()
     crt = tmp_path / "corp.crt"
     crt.write_text("cert")
     monkeypatch.setenv("REVAGENT_SANDBOX_CA", str(crt))
     _patch_host(monkeypatch, lambda problem_dir: _result())
-    rc = main_mod.main(["solve", str(d)])
+    rc = main_mod.main(["solve", "--host", str(d)])
     assert rc == 0
     assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("present", [True, False])
+def test_sandbox_ca_defaults_to_home_file(tmp_path, monkeypatch, present):
+    d = tmp_path / "chal"
+    d.mkdir()
+    home = tmp_path / "home"
+    (home / ".revagent").mkdir(parents=True)
+    if present:
+        (home / ".revagent" / "sandbox-ca.crt").write_text("cert")
+    recorded = {}
+    _patch_sandbox(monkeypatch, lambda cmd, env_extra=None: recorded.setdefault("cmd", cmd) and 0, home=home)
+    rc = main_mod.main(["solve", str(d)])
+    assert rc == 0
+    mounts = [x for x in recorded["cmd"] if x.endswith(":/usr/local/share/ca-certificates/extra-ca.crt:ro")]
+    if present:
+        assert mounts == [f"{(home / '.revagent' / 'sandbox-ca.crt').resolve()}:"
+                          f"/usr/local/share/ca-certificates/extra-ca.crt:ro"]
+    else:
+        assert mounts == []
+
+
+def test_sandbox_ca_flag_beats_home_file(tmp_path, monkeypatch):
+    d = tmp_path / "chal"
+    d.mkdir()
+    home = tmp_path / "home"
+    (home / ".revagent").mkdir(parents=True)
+    (home / ".revagent" / "sandbox-ca.crt").write_text("home cert")
+    crt = tmp_path / "corp.crt"
+    crt.write_text("cert")
+    recorded = {}
+    _patch_sandbox(monkeypatch, lambda cmd, env_extra=None: recorded.setdefault("cmd", cmd) and 0, home=home)
+    assert main_mod.main(["solve", str(d), "--sandbox-ca", str(crt)]) == 0
+    assert f"{crt.resolve()}:/usr/local/share/ca-certificates/extra-ca.crt:ro" in recorded["cmd"]
+    assert not any("home/.revagent/sandbox-ca.crt" in x for x in recorded["cmd"])
 
 
 @pytest.mark.parametrize("sub", ["solve", "bench"])
@@ -561,11 +623,222 @@ def test_missing_secure_is_a_usage_error(tmp_path, monkeypatch, capsys, sub, mod
         _patch_host(monkeypatch, lambda problem_dir: (_ for _ in ()).throw(AssertionError("not reached")))
     monkeypatch.setattr(main_mod, "load_secure",
                         lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("no .secure found; tried: a, b")))
-    rc = main_mod.main([sub, str(d)] + (["--sandbox"] if mode == "sandbox" else []))
+    rc = main_mod.main([sub, str(d)] + (["--host"] if mode == "host" else []))
     assert rc == 2
     captured = capsys.readouterr()
     assert captured.err.strip() == "error: no .secure found; tried: a, b"
     assert "|" not in captured.out    # bench prints no table: the failure is reported once, up front
+
+
+# ---- CLI defaults: sandbox unless --host, non-interactive unless --ask -------------------------------
+
+def test_default_mode_is_sandbox(tmp_path, monkeypatch):
+    d = tmp_path / "chal"
+    d.mkdir()
+    recorded = {}
+    _patch_sandbox(monkeypatch, lambda cmd, env_extra=None: recorded.setdefault("cmd", cmd) and 0)
+    assert main_mod.main(["solve", str(d)]) == 0
+    cmd = recorded["cmd"]
+    assert cmd[:2] == ["docker", "run"] and "-i" in cmd and "-it" not in cmd
+    tail = cmd[cmd.index("revagent-sandbox"):]
+    assert tail[:4] == ["revagent-sandbox", "solve", "/work/chal", "--host"]
+    assert not any(x.endswith(":/app") for x in cmd)
+
+
+def test_host_flag_runs_agent_on_host(tmp_path, monkeypatch):
+    d = tmp_path / "chal"
+    d.mkdir()
+    fake = _patch_host(monkeypatch, lambda problem_dir: _result())
+    monkeypatch.setattr(main_mod, "run_sandbox",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("docker must not run")))
+    assert main_mod.main(["solve", "--host", str(d)]) == 0
+    assert [c[0] for c in fake.calls] == [d]
+    assert fake.calls[0][1]["interactive"] is False
+
+
+def test_dev_flag_mounts_repo(tmp_path, monkeypatch):
+    d = tmp_path / "chal"
+    d.mkdir()
+    recorded = {}
+    _patch_sandbox(monkeypatch, lambda cmd, env_extra=None: recorded.setdefault("cmd", cmd) and 0)
+    assert main_mod.main(["solve", "--dev", str(d)]) == 0
+    repo = Path(main_mod.__file__).resolve().parents[1]
+    assert f"{repo}:/app" in recorded["cmd"]
+
+
+@pytest.mark.parametrize("sub", ["solve", "bench"])
+@pytest.mark.parametrize("other", ["--dev", "--sandbox", "--sandbox-dev"])
+def test_host_with_sandbox_flag_is_a_usage_error(tmp_path, monkeypatch, capsys, sub, other):
+    d = tmp_path / "chal"
+    d.mkdir()
+    monkeypatch.setattr(main_mod, "load_secure",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("not reached")))
+    monkeypatch.setattr(main_mod, "check_docker",
+                        lambda: (_ for _ in ()).throw(AssertionError("not reached")))
+    rc = main_mod.main([sub, "--host", other, str(d)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error: ") and "--host" in err
+
+
+@pytest.mark.parametrize("tty, flag", [(True, "-it"), (False, "-i")])
+def test_ask_in_sandbox_attaches_a_tty_only_when_there_is_one(tmp_path, monkeypatch, tty, flag):
+    d = tmp_path / "chal"
+    d.mkdir()
+    recorded = {}
+    _patch_sandbox(monkeypatch, lambda cmd, env_extra=None: recorded.setdefault("cmd", cmd) and 0, tty=tty)
+    assert main_mod.main(["solve", "--ask", str(d)]) == 0
+    cmd = recorded["cmd"]
+    assert flag in cmd and ("-it" in cmd) == tty
+    tail = cmd[cmd.index("revagent-sandbox"):]
+    assert "--ask" in tail and "--no-ask" not in tail
+
+
+def test_ask_on_host_makes_the_agent_interactive(tmp_path, monkeypatch):
+    d = tmp_path / "chal"
+    d.mkdir()
+    fake = _patch_host(monkeypatch, lambda problem_dir: _result())
+    assert main_mod.main(["solve", "--host", "--ask", str(d)]) == 0
+    assert fake.calls[0][1]["interactive"] is True
+
+
+def test_legacy_flags_are_still_accepted(tmp_path, monkeypatch):
+    d = tmp_path / "chal"
+    d.mkdir()
+    # --no-ask on the host: a no-op (non-interactive is the default)
+    fake = _patch_host(monkeypatch, lambda problem_dir: _result())
+    assert main_mod.main(["solve", "--host", "--no-ask", str(d)]) == 0
+    assert fake.calls[0][1]["interactive"] is False
+    # --sandbox: a no-op (sandbox is the default); --sandbox-dev == --dev
+    recorded = []
+    _patch_sandbox(monkeypatch, lambda cmd, env_extra=None: recorded.append(cmd) or 0)
+    assert main_mod.main(["solve", "--sandbox", "--no-ask", str(d)]) == 0
+    assert main_mod.main(["solve", "--sandbox-dev", str(d)]) == 0
+    assert main_mod.main(["bench", "--sandbox", str(d)]) == 1        # no result.json written by the fake
+    assert recorded[0][:2] == ["docker", "run"] and not any(x.endswith(":/app") for x in recorded[0])
+    assert any(x.endswith(":/app") for x in recorded[1])
+    assert recorded[2][:2] == ["docker", "run"]
+
+
+def test_help_shows_new_flags_and_hides_aliases(capsys):
+    with pytest.raises(SystemExit) as e:
+        main_mod.main(["solve", "--help"])
+    assert e.value.code == 0
+    out = capsys.readouterr().out
+    for flag in ("--host", "--dev", "--ask"):
+        assert flag in out
+    for hidden in ("--sandbox-dev", "--no-ask", "--sandbox "):
+        assert hidden not in out
+    # the three mode flags come first, right after the positional
+    assert out.index("--host") < out.index("--dev") < out.index("--ask") < out.index("--desc")
+
+
+# ---- console.log ------------------------------------------------------------------------------------
+
+def test_host_run_appends_console_log_with_header(tmp_path, monkeypatch, capsys):
+    import sys as _sys
+    d = tmp_path / "chal"
+    d.mkdir()
+
+    def run(problem_dir):
+        (problem_dir / ".revagent").mkdir(exist_ok=True)     # the agent creates its work dir itself
+        print("[1] > bash ls")
+        print("[llm] retry 1/3 after 524; waiting 2s", file=_sys.stderr, flush=True)
+        return _result()
+
+    _patch_host(monkeypatch, run)
+    out_before, err_before = _sys.stdout, _sys.stderr
+    assert main_mod.main(["solve", "--host", str(d), "--max-steps", "9"]) == 0
+    assert _sys.stdout is out_before and _sys.stderr is err_before      # restored afterwards
+    log = _console_log(d)
+    first = log.splitlines()[0]
+    assert first.startswith("=== run 20") and "argv:" in first and "--max-steps 9" in first and first.endswith("===")
+    assert "[1] > bash ls\n" in log
+    assert "[llm] retry 1/3 after 524; waiting 2s\n" in log
+    captured = capsys.readouterr()
+    assert "[1] > bash ls" in captured.out and "[llm] retry" in captured.err      # still printed
+    # a second run appends a second header instead of truncating
+    assert main_mod.main(["solve", "--host", str(d)]) == 0
+    assert _console_log(d).count("=== run ") == 2
+
+
+def test_console_log_creates_the_work_dir_when_missing(tmp_path, monkeypatch):
+    d = tmp_path / "chal"
+    d.mkdir()
+    _patch_host(monkeypatch, lambda problem_dir: _result())
+    assert not (d / ".revagent").exists()
+    assert main_mod.main(["solve", "--host", str(d)]) == 0
+    assert _console_log(d).startswith("=== run ")
+
+
+def test_host_tee_is_skipped_inside_the_container(tmp_path, monkeypatch):
+    d = tmp_path / "chal"
+    d.mkdir()
+    _patch_host(monkeypatch, lambda problem_dir: print("inner") or _result())
+    monkeypatch.setenv("REVAGENT_IN_SANDBOX", "1")
+    assert main_mod.main(["solve", "--host", str(d)]) == 0
+    assert not (d / ".revagent" / "console.log").exists()
+
+
+class _FakePopen:
+    """A docker CLI stand-in for sandbox.run_sandbox's streaming path: stdout yields `lines`."""
+    lines = [b"[1] > bash file chal\n", b"[llm] retry 1/3 after 524; waiting 2s\n", b"FLAG: DH{x}\n"]
+    seen = []
+
+    def __init__(self, cmd, **kw):
+        _FakePopen.seen.append((cmd, kw))
+        import io
+        self.stdout = io.BytesIO(b"".join(self.lines))
+        self.returncode = None
+
+    def wait(self, timeout=None):
+        self.returncode = 0
+        return 0
+
+    def kill(self):
+        pass
+
+
+def test_sandbox_run_streams_container_output_into_console_log(tmp_path, monkeypatch, capsys):
+    d = tmp_path / "chal"
+    d.mkdir()
+    _patch_sandbox(monkeypatch)            # real run_sandbox, fake docker
+    _FakePopen.seen = []
+    monkeypatch.setattr("revagent.sandbox.subprocess.Popen", _FakePopen)
+    rc = main_mod.main(["solve", str(d)])
+    assert rc == 0                          # a sandbox solve returns the container's own exit code
+    (cmd, kw), = _FakePopen.seen
+    assert cmd[:2] == ["docker", "run"] and "-e" in cmd and "PYTHONUNBUFFERED=1" in cmd
+    assert kw["stdout"] is subprocess.PIPE and kw["stderr"] is subprocess.STDOUT
+    assert not kw.get("start_new_session")           # Ctrl-C must still reach the docker CLI
+    assert kw["env"]["QWEN"] == "k"
+    log = _console_log(d)
+    assert log.startswith("=== run ") and "argv:" in log.splitlines()[0]
+    assert "[1] > bash file chal\n[llm] retry 1/3 after 524; waiting 2s\nFLAG: DH{x}\n" in log
+    out = capsys.readouterr().out
+    assert "[1] > bash file chal" in out and "FLAG: DH{x}" in out
+
+
+def test_interactive_sandbox_run_skips_console_log(tmp_path, monkeypatch, capsys):
+    d = tmp_path / "chal"
+    d.mkdir()
+    _patch_sandbox(monkeypatch, lambda cmd, env_extra=None: 0, tty=True)
+    assert main_mod.main(["solve", "--ask", str(d)]) == 0
+    assert not (d / ".revagent" / "console.log").exists()
+    assert "console log" in capsys.readouterr().out.lower()
+
+
+def test_bench_writes_one_console_log_per_dir(tmp_path, monkeypatch):
+    d1 = tmp_path / "a"
+    d2 = tmp_path / "b"
+    d1.mkdir()
+    d2.mkdir()
+    _patch_host(monkeypatch, lambda problem_dir: print(f"working on {problem_dir.name}") or _result())
+    assert main_mod.main(["bench", "--host", str(d1), str(d2)]) == 0
+    la, lb = _console_log(d1), _console_log(d2)
+    assert la.count("=== run ") == 1 and "working on a" in la and "working on b" not in la
+    assert lb.count("=== run ") == 1 and "working on b" in lb and "working on a" not in lb
+    assert "| a | solved" not in la                      # the table is printed after the runs, outside the logs
 
 
 def test_system_prompt_loads_and_tells_agent_where_to_save_work_files():

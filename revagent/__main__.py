@@ -1,11 +1,13 @@
 import argparse
+import contextlib
 import json
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .agent import Agent
+from .console import tee_console
 from .llm import LLM, Secure, load_secure
 from .sandbox import (build_sandbox_cmd, check_docker, container_desc_arg, is_interactive_tty,
                       run_sandbox)
@@ -18,23 +20,39 @@ def _read_desc(problem_dir: Path, desc_arg: str | None) -> str:
     return default.read_text(encoding="utf-8") if default.is_file() else ""
 
 
+def _add_mode(p: argparse.ArgumentParser, ask: bool) -> None:
+    """Where and how a run happens. The sandbox is the default; --host runs on this machine.
+    --sandbox / --sandbox-dev / --no-ask are the pre-default spellings, kept working but hidden."""
+    p.add_argument("--host", action="store_true",
+                   help="run on this machine instead of in the revagent-sandbox Docker image")
+    p.add_argument("--dev", action="store_true",
+                   help="sandbox with this repo mounted at /app, so code edits apply without a rebuild")
+    if ask:
+        p.add_argument("--ask", action="store_true",
+                       help="let the agent ask you questions (ask_user) instead of failing forward")
+        p.add_argument("--no-ask", action="store_true", help=argparse.SUPPRESS)      # no-op: the default
+    p.add_argument("--sandbox", action="store_true", help=argparse.SUPPRESS)         # no-op: the default
+    p.add_argument("--sandbox-dev", dest="dev", action="store_true", help=argparse.SUPPRESS)
+
+
 def _add_limits(p: argparse.ArgumentParser) -> None:
     p.add_argument("--max-steps", type=int, default=300)
     p.add_argument("--max-minutes", type=int, default=120)
     p.add_argument("--secure", help="path to .secure (default: search order in llm.load_secure)")
     p.add_argument("--show-thinking", action="store_true")
-    p.add_argument("--sandbox", action="store_true", help="run inside the revagent-sandbox Docker image")
-    p.add_argument("--sandbox-dev", action="store_true",
-                   help="like --sandbox, but mount this repo at /app so code edits apply without a rebuild")
     p.add_argument("--sandbox-ca",
                    help="trust this CA cert (.crt) at runtime inside the sandbox, for TLS-inspecting "
-                        "proxies (default: env REVAGENT_SANDBOX_CA)")
+                        "proxies (default: env REVAGENT_SANDBOX_CA, then ~/.revagent/sandbox-ca.crt)")
 
 
-def _sandbox_passthrough(args, desc_in_container: str | None, no_ask: bool) -> list[str]:
+def _default_sandbox_ca() -> Path:
+    return Path.home() / ".revagent" / "sandbox-ca.crt"
+
+
+def _sandbox_passthrough(args, desc_in_container: str | None, ask: bool) -> list[str]:
     out = ["--max-steps", str(args.max_steps), "--max-minutes", str(args.max_minutes)]
-    if no_ask:
-        out.append("--no-ask")
+    if ask:
+        out.append("--ask")
     if args.show_thinking:
         out.append("--show-thinking")
     if desc_in_container:
@@ -50,20 +68,21 @@ class _Usage(Exception):
 class _Runtime:
     """What a run needs once preflight has passed: an LLM on the host, or the docker inputs in the sandbox."""
     sandbox: bool
+    argv: list[str] = field(default_factory=list)   # for the console.log header
     llm: LLM | None = None
     secure: Secure | None = None
     extra_ca: Path | None = None
     dev_repo: Path | None = None
 
 
-def _preflight(args, sandbox: bool, problem_dir: Path | None = None, desc_arg: str | None = None) -> _Runtime:
+def _preflight(args, argv: list[str], problem_dir: Path | None = None, desc_arg: str | None = None) -> _Runtime:
     """Checks and loads that happen once per invocation, before any challenge runs. Order matters for
     which error a user sees first: docker, --desc placement, --sandbox-ca file, then .secure."""
-    if not sandbox:
-        return _Runtime(sandbox=False, llm=LLM(_load_secure(args)))
+    if args.host:
+        return _Runtime(sandbox=False, argv=argv, llm=LLM(_load_secure(args)))
     msg = check_docker()
     if msg:
-        raise _Usage(msg)
+        raise _Usage(f"{msg} (or run with --host)")
     try:
         container_desc_arg(problem_dir, desc_arg)   # validated here; _run_one maps it again per dir
     except ValueError as e:
@@ -72,8 +91,10 @@ def _preflight(args, sandbox: bool, problem_dir: Path | None = None, desc_arg: s
     extra_ca = Path(ca_arg) if ca_arg else None
     if extra_ca is not None and not extra_ca.is_file():
         raise _Usage(f"--sandbox-ca file not found: {extra_ca}")
-    dev_repo = Path(__file__).resolve().parents[1] if args.sandbox_dev else None
-    return _Runtime(sandbox=True, secure=_load_secure(args), extra_ca=extra_ca, dev_repo=dev_repo)
+    if extra_ca is None and _default_sandbox_ca().is_file():
+        extra_ca = _default_sandbox_ca()
+    dev_repo = Path(__file__).resolve().parents[1] if args.dev else None
+    return _Runtime(sandbox=True, argv=argv, secure=_load_secure(args), extra_ca=extra_ca, dev_repo=dev_repo)
 
 
 def _load_secure(args) -> Secure:
@@ -83,20 +104,37 @@ def _load_secure(args) -> Secure:
         raise _Usage(e) from e
 
 
-def _run_one(d: Path, args, desc_arg: str | None, no_ask: bool, rt: _Runtime) -> tuple[dict, int]:
+def _console(d: Path, rt: _Runtime):
+    """The console.log tee for one run, or nothing inside the container (the host side captures the
+    container's output into the same file)."""
+    if os.environ.get("REVAGENT_IN_SANDBOX"):
+        return contextlib.nullcontext()
+    return tee_console(d, rt.argv)
+
+
+def _run_one(d: Path, args, desc_arg: str | None, ask: bool, rt: _Runtime) -> tuple[dict, int]:
     """Run one challenge directory and return (result dict, exit code). On the host the code is
-    0 solved / 3 runbook / 1 anything else; in the sandbox it is the container's own exit code."""
+    0 solved / 3 runbook / 1 anything else; in the sandbox it is the container's own exit code.
+    Everything the run prints is also appended to <d>/.revagent/console.log, except for an
+    interactive sandbox run (`--ask` on a terminal), whose container owns the terminal."""
     if not rt.sandbox:
-        r = Agent(d, _read_desc(d, desc_arg), rt.llm, max_steps=args.max_steps, max_minutes=args.max_minutes,
-                  interactive=not no_ask, show_thinking=args.show_thinking).run()
+        with _console(d, rt):
+            r = Agent(d, _read_desc(d, desc_arg), rt.llm, max_steps=args.max_steps,
+                      max_minutes=args.max_minutes, interactive=ask, show_thinking=args.show_thinking).run()
         return r, {"solved": 0, "runbook": 3}.get(r["status"], 1)
-    interactive = (not no_ask) and is_interactive_tty()
-    cmd = build_sandbox_cmd(d, _sandbox_passthrough(args, container_desc_arg(d, desc_arg), no_ask), rt.secure,
+    interactive = ask and is_interactive_tty()
+    cmd = build_sandbox_cmd(d, _sandbox_passthrough(args, container_desc_arg(d, desc_arg), ask), rt.secure,
                             interactive, rt.dev_repo, rt.extra_ca)
     env_extra = {"QWEN": rt.secure.key, "URL": rt.secure.url, "MODEL": rt.secure.model}
     p = d / ".revagent" / "result.json"
     before = p.stat().st_mtime_ns if p.exists() else None
-    rc = run_sandbox(cmd, env_extra=env_extra)
+    if interactive:
+        print("console log is off in interactive mode (--ask on a terminal): the container owns the terminal",
+              flush=True)
+        rc = run_sandbox(cmd, env_extra=env_extra)
+    else:
+        with _console(d, rt):
+            rc = run_sandbox(cmd, env_extra=env_extra, stream=True)
     if rc != 0 and (not p.exists() or p.stat().st_mtime_ns == before):
         # the container failed before the agent wrote a result: never report a stale result.json as this run
         return {"status": "error", "reason": f"container exited {rc}", "flag": None, "steps": 0, "minutes": 0}, rc
@@ -167,21 +205,39 @@ def _print_bench_table(rows) -> int:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="revagent", description="Autonomous reversing agent on Qwen3.8/vLLM")
+    if argv is None:
+        argv = sys.argv[1:]
+    ap = argparse.ArgumentParser(
+        prog="revagent",
+        description="Autonomous reversing agent on Qwen3.8/vLLM. Runs in the revagent-sandbox Docker "
+                    "image by default (build it once: bash scripts/sandbox-build.sh) and never asks "
+                    "questions unless told to.")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    s = sub.add_parser("solve", help="solve one challenge directory")
+    s = sub.add_parser("solve", help="solve one challenge directory",
+                       description="Solve one challenge directory. Output goes to the terminal and to "
+                                   "<dir>/.revagent/console.log.")
     s.add_argument("dir")
+    _add_mode(s, ask=True)
     s.add_argument("--desc", help="description file (default <dir>/desc.txt)")
-    s.add_argument("--no-ask", action="store_true", help="never block on ask_user")
     _add_limits(s)
-    b = sub.add_parser("bench", help="solve several directories non-interactively")
+    b = sub.add_parser("bench", help="solve several directories, never asking; prints a table",
+                       description="Solve several directories one after another, never asking, and print "
+                                   "a result table. Each run logs to its own <dir>/.revagent/console.log.")
     b.add_argument("dirs", nargs="+")
+    _add_mode(b, ask=False)
     _add_limits(b)
     args = ap.parse_args(argv)
-    sandbox = args.sandbox or args.sandbox_dev
+    ask = bool(getattr(args, "ask", False))
 
-    if args.sandbox_ca and not sandbox:
-        print("error: --sandbox-ca requires --sandbox", file=sys.stderr)
+    if args.host and args.dev:
+        print("error: --host runs on this machine; it cannot be combined with --dev (the sandbox)",
+              file=sys.stderr)
+        return 2
+    if args.host and args.sandbox:
+        print("error: --host cannot be combined with --sandbox", file=sys.stderr)
+        return 2
+    if args.sandbox_ca and args.host:
+        print("error: --sandbox-ca applies to the sandbox; it cannot be combined with --host", file=sys.stderr)
         return 2
 
     solve = args.cmd == "solve"
@@ -190,13 +246,13 @@ def main(argv=None) -> int:
         print(f"error: {d} is not a directory", file=sys.stderr)
         return 2
     try:
-        rt = _preflight(args, sandbox, d, getattr(args, "desc", None))
+        rt = _preflight(args, argv, d, getattr(args, "desc", None))
     except _Usage as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
 
     if solve:
-        r, rc = _run_one(d, args, args.desc, args.no_ask, rt)
+        r, rc = _run_one(d, args, args.desc, ask, rt)
         if rc == 0 and _mark_wrong_if_answer_mismatch(d):
             return 1
         return rc
@@ -204,7 +260,7 @@ def main(argv=None) -> int:
     rows = []
     for d in map(Path, args.dirs):
         try:
-            r, _ = _run_one(d, args, None, True, rt)
+            r, _ = _run_one(d, args, None, False, rt)
             rows.append(_row(d, r))
         except Exception as e:
             print(f"error: {d}: {e}", file=sys.stderr)

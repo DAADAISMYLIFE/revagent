@@ -20,9 +20,12 @@ def test_build_cmd_basic(tmp_path):
     assert "-i" in cmd and "-it" not in cmd
     assert cmd[cmd.index("-v") + 1] == f"{d.resolve()}:/work/revlogin"
     env = [cmd[i + 1] for i, x in enumerate(cmd) if x == "-e"]
-    assert env == ["QWEN", "URL", "MODEL"]
+    # secrets by name only; PYTHONUNBUFFERED so the container's stdout streams line by line into the
+    # console log; REVAGENT_IN_SANDBOX so the inner run does not open a console log of its own
+    assert env == ["QWEN", "URL", "MODEL", "PYTHONUNBUFFERED=1", "REVAGENT_IN_SANDBOX=1"]
     assert "k1" not in cmd and "https://h" not in cmd and "m/x" not in cmd
-    assert cmd[-6:] == [IMAGE, "solve", "/work/revlogin", "--no-ask", "--max-steps", "5"]
+    # the inner invocation is the same __main__, whose default is the sandbox: it must get --host
+    assert cmd[-7:] == [IMAGE, "solve", "/work/revlogin", "--host", "--no-ask", "--max-steps", "5"]
     # gdb inside the container must be able to disable ASLR (personality(ADDR_NO_RANDOMIZE)) and
     # ptrace: without these, runs whose data depends on the load address are not reproducible.
     assert cmd[cmd.index("--cap-add") + 1] == "SYS_PTRACE"
@@ -114,3 +117,44 @@ def test_run_sandbox_passes_env(monkeypatch):
     assert env["URL"] == "https://h"
     assert env["MODEL"] == "m"
     assert env["PATH"] == os.environ["PATH"]
+
+
+class _FakePopen:
+    """Stands in for the docker CLI in run_sandbox's streaming mode."""
+    instances = []
+
+    def __init__(self, cmd, **kw):
+        import io
+        self.cmd, self.kw = cmd, kw
+        self.stdout = io.BytesIO(b"one\n[llm] retry 1/3\nbad \xff byte\n")
+        self.waited = False
+        _FakePopen.instances.append(self)
+
+    def wait(self, timeout=None):
+        self.waited = True
+        return 5
+
+    def kill(self):
+        raise AssertionError("must not kill a container that exited on its own")
+
+
+def test_run_sandbox_streams_lines_to_stdout(monkeypatch, capsys):
+    _FakePopen.instances = []
+    monkeypatch.setattr("revagent.sandbox.subprocess.Popen", _FakePopen)
+    monkeypatch.setattr("revagent.sandbox.subprocess.run",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("stream mode must not use run()")))
+    rc = run_sandbox(["docker", "run"], env_extra={"QWEN": "sekrit"}, stream=True)
+    assert rc == 5
+    (p,) = _FakePopen.instances
+    assert p.kw["stdout"] is subprocess.PIPE and p.kw["stderr"] is subprocess.STDOUT
+    assert p.kw["env"]["QWEN"] == "sekrit"
+    assert not p.kw.get("start_new_session")     # same process group: Ctrl-C reaches the docker CLI
+    assert p.waited and p.stdout.closed
+    assert capsys.readouterr().out == "one\n[llm] retry 1/3\nbad \ufffd byte\n"
+
+
+def test_run_sandbox_default_is_the_foreground_run(monkeypatch):
+    monkeypatch.setattr("revagent.sandbox.subprocess.Popen",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("interactive mode must not pipe")))
+    monkeypatch.setattr("revagent.sandbox.subprocess.run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 3))
+    assert run_sandbox(["docker", "run", "-it"], env_extra=None) == 3

@@ -7,8 +7,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
-import httpx
 from openai import APIConnectionError, APIError, APIStatusError, BadRequestError, OpenAI
+
+# The transport exceptions a dropped stream raises are the ones of the HTTP client the SDK itself uses:
+# openai>=3 ships its own fork `httpx2` (a plain `httpx` may be absent, as in the sandbox image, or be
+# an unrelated install whose exception classes never match); openai 1.x/2.x use `httpx`.
+try:
+    import httpx2 as httpx
+except ImportError:  # pragma: no cover - openai < 3
+    import httpx
 
 REPO_SECURE = Path(__file__).resolve().parent.parent / ".secure"
 

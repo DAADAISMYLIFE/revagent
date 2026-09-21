@@ -2,11 +2,12 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
-import httpx
 import pytest
 from openai import APIConnectionError, APIError, APIStatusError, BadRequestError
 
 from revagent.llm import ContextOverflow, LLM, Secure, collect_stream, load_secure, parse_assistant
+# the same HTTP client module the SDK (and therefore llm.py's retry loop) uses: httpx2 for openai>=3
+from revagent.llm import httpx
 
 
 def test_load_secure_parses_and_strips_slash(tmp_path, monkeypatch):

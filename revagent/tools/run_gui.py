@@ -238,7 +238,7 @@ def run(ctx, path: str, args: list[str] | None = None, wait_seconds: int = 5,
     for tool in ("wine", "import", "tesseract", "xdotool", "xdpyinfo"):
         if shutil.which(tool) is None:
             ctx.observe_cannot_run("run_gui", path)
-            return (f"[cannot run here] {tool} is not installed on the host; run with --sandbox (the image has "
+            return (f"[cannot run here] {tool} is not installed on the host; run in the sandbox (the default; drop --host: the image has "
                     f"wine + Xvfb + OCR).") + ctx.env_note()
     try:
         p = resolve_inside(ctx, path)

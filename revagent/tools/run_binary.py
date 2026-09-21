@@ -112,7 +112,7 @@ def _run(ctx, path: str, args: list[str] | None = None, stdin: str = "", timeout
     if "PE32" in kind or "MS Windows" in kind or magic == b"MZ":
         if shutil.which("wine") is None:
             return (f"[cannot run here] {kind} — Windows PE and wine is not installed on the host. "
-                    f"Run with --sandbox (the image has wine), or analyze statically / emulate with unicorn.")
+                    f"Run in the sandbox (the default; drop --host: the image has wine), or analyze statically / emulate with unicorn.")
         if "80386" in kind or ("x86-64" not in kind and "PE32+" not in kind):
             return ("[cannot run here] 32-bit Windows PE: the image has wine64 only. "
                      "Analyze statically / emulate with unicorn (x86 32-bit), or re-implement the check.")
