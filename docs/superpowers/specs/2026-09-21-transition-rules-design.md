@@ -81,7 +81,7 @@
 
 - `tests/test_detectors.py`: D3 경계(200자 접두, Jaccard, 끊는 조건), D4 누적.
 - `tests/test_gate.py`: 차단 텍스트, 열림 조건, 3스텝 자동 해제와 냉각기, 예외 시 전부 허용, G4 한 번만 경고.
-- `tests/test_agent.py`: ScriptedLLM으로 G3 차단→해제 흐름, G4 경고 후 effort=low가 chat에 전달되는지, `_meta`와 원장 줄, 차단 스텝은 진행 없음으로 세는지.
+- `tests/test_agent.py`: ScriptedLLM으로 G3 차단→해제 흐름, G4 경고가 한 번만 나가고 effort는 바뀌지 않는지 (2026-09-22: 하향 제거), `_meta`와 원장 줄, 차단 스텝은 진행 없음으로 세는지.
 - `tests/test_tools.py`: `solve_check` 성공(xor_check, basic 변환)·unsat·기호 실행 불가 줄 번호·타임아웃·charset.
 - `tests/test_replay.py`: fixture 발췌에 대한 리플레이 표 고정.
 - 라이브: basic 1회(목표: G3가 pefile 루프에서 울리고 solve_check로 풀리는지), relativity 1회(회귀: 4회차와 같은 케이스 파일로 시작해 게이트가 울리지 않고 풀리는지).
@@ -158,7 +158,7 @@
 
 | basic 3회차 (emulate 도구 추가 빌드, 케이스 파일 새로) | **solved** | 43 / 11.2 | gate_blocks 4, max_script_streak 5, long_reasoning_steps 0, first_facts_step 24 | **G3 첫 라이브 발동.** 22·23·28·37스텝에서 막았고 매번 다음 스텝에 접근이 바뀌었다(24 notes → open, 29 emulate → open, 38 새 파일 → open). 차단이 실행을 죽이지 않고 방향을 바꾼 첫 사례. 리플레이 규칙 보완: 게이트가 켜진 세션의 차단은 오탐이 아니므로 `(gated)`로 표시하고 오탐 집계에서 제외 |
 
-**G4의 effort 하향은 아직 라이브에서 한 번도 발동하지 않았다** (basic 2회차는 긴 생각 4회에서 멈춤). 이 개입의 효과는 미검증이며, 처음 발동하는 실행에서 확인한다.
+**G4 effort 하향의 라이브 결과 (2026-09-22 새벽, ROVM·damnida 각 120분).** 첫 발동. 경고 뒤 reasoning 중앙값이 ROVM 2,201 → 15,631자(이후 29스텝 중 20스텝이 8천 자 초과, 122분에 54스텝), damnida 720 → 5,382자(67스텝 중 26스텝 초과). 하향은 생각을 줄이지 못했고 오히려 길어졌다(인과인지 막힌 실행의 후반부라 원래 길어진 것인지는 표본 2개로 못 가르지만, 이득이 없는 것은 확실). §3.2의 예고대로 하향을 뺐다. 경고와 이벤트, 원장 줄, `long_reasoning_steps` 신호는 유지.
 
 basic 2회차를 잡을 수 있는 임계값이 있는지 전 세션에 다시 재 봤다(접두 100/150/200자 × Jaccard 0.4/0.5/0.6). 접두 100자로 낮추면 basic 2회차가 스트릭 4로 걸리지만 **multipoint(해결)도 5로 걸려 오탐**이 생긴다. 접두 150자는 basic 2회차를 못 잡는다(3). 즉 §2.3 기준(해결 세션 오탐 0)을 만족하면서 basic 2회차를 잡는 값은 없다. 임계값은 그대로 둔다. 이 실행이 보여준 실패 모양은 "비슷한 스크립트 반복"이 아니라 "매번 다르게 쓴 z3 모델이 전부 unsat"이라, 다음 후보 신호는 "연속된 스크립트가 같은 결과 문자열(예: unsat/Traceback)로 끝남"이다. 데이터가 더 쌓이면 §2.3 기준으로 검토한다.
 
