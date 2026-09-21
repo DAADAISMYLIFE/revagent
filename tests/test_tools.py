@@ -230,12 +230,12 @@ def test_decompile_get_hints_emulate_for_import_free_functions(tmp_path, monkeyp
     assert c.current_binary_rel == "chal.exe"
     out = decompile.run(c, action="get", target="FUN_140001100")
     hint = ('[hint] this function calls no imports (callees: FUN_140001000), so emulate can run it directly: '
-            'emulate(binary=chal.exe, function=FUN_140001100, args=["hex:<input bytes>"]) — compare its output '
+            'emulate(binary=chal.exe, function=0x140001100, args=["hex:<input bytes>"]) — compare its output '
             'with your re-implementation before inverting anything.\n')
     assert out == hint + _EMU_FUNCS[1]["decompiled_c"]
     out = decompile.run(c, action="get", target="0x140001000")
     assert out == ('[hint] this function calls no imports (callees: none), so emulate can run it directly: '
-                   'emulate(binary=chal.exe, function=FUN_140001000, args=["hex:<input bytes>"]) — compare its output '
+                   'emulate(binary=chal.exe, function=0x140001000, args=["hex:<input bytes>"]) — compare its output '
                    'with your re-implementation before inverting anything.\n') + _EMU_FUNCS[0]["decompiled_c"]
     assert decompile.run(c, action="get", target="FUN_140001200") == _EMU_FUNCS[2]["decompiled_c"]
     assert decompile.run(c, action="get", target="nope").startswith("[not found]")
@@ -256,7 +256,23 @@ def test_decompile_hint_without_a_known_relative_binary(tmp_path, monkeypatch):
     c.current_binary_rel = None
     out = decompile.run(c, action="get", target="FUN_140001000")
     assert out.startswith("[hint] this function calls no imports (callees: none), so emulate can run it directly: "
-                          "emulate(binary=<the binary you analyzed>, function=FUN_140001000, args=[\"hex:<input bytes>\"])")
+                          "emulate(binary=<the binary you analyzed>, function=0x140001000, args=[\"hex:<input bytes>\"])")
+
+
+def test_decompile_hint_quotes_the_entry_address_for_named_functions(tmp_path, monkeypatch):
+    # emulate.parse_function only accepts FUN_<hex> / thunk_FUN_<hex> / 0x<hex>, so a named function
+    # (check) must be quoted by its entry address, zero-padding dropped.
+    fix = Path(__file__).parent / "fixtures" / "functions.json"
+    (tmp_path / "prog").write_bytes(b"\x7fELF")
+    monkeypatch.setattr(decompile_mod, "analyze", lambda binary, cache_dir, timeout=None: fix)
+    c = ctx_for(tmp_path)
+    decompile.run(c, action="list", binary="prog")
+    out = decompile.run(c, action="get", target="check")
+    assert out.startswith("[hint] this function calls no imports (callees: none), so emulate can run it directly: "
+                          "emulate(binary=prog, function=0x4011a0, args=[\"hex:<input bytes>\"])")
+    from revagent.tools.emulate import parse_function
+    assert parse_function("0x4011a0") == 0x4011a0
+    assert "s[i]^0x5a" in out and "[hint]" not in decompile.run(c, action="get", target="main")
 
 
 def test_decompile_negative_caches_analysis_failure(tmp_path, monkeypatch):

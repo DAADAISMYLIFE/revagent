@@ -67,8 +67,12 @@ def _emulate_hint(ctx, f: dict) -> str:
     image: the model can run it under emulate as the oracle for its re-implementation."""
     callees = ", ".join(sorted(f["callees"])) or "none"
     binary = ctx.current_binary_rel or "<the binary you analyzed>"
+    try:   # emulate accepts FUN_<hex> / thunk_FUN_<hex> / 0x<hex>, not a name like `check`
+        function = f"0x{int(f['entry'], 16):x}"
+    except ValueError:
+        function = f["name"]
     return (f"[hint] this function calls no imports (callees: {callees}), so emulate can run it directly: "
-            f"emulate(binary={binary}, function={f['name']}, args=[\"hex:<input bytes>\"]) — compare its output "
+            f"emulate(binary={binary}, function={function}, args=[\"hex:<input bytes>\"]) — compare its output "
             "with your re-implementation before inverting anything.\n")
 
 
