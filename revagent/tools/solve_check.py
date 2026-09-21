@@ -47,7 +47,7 @@ SCHEMA = {
                 "target": {"type": "string", "description": "expected output as hex, e.g. '7e7d9a8b...'"},
                 "length": {"type": "integer", "description": "number of input bytes (len(x))"},
                 "charset": {"type": "string", "description": "optional regex character class each input byte must match, e.g. '[ -~]' for printable"},
-                "timeout": {"type": "integer", "description": "solver seconds (default 60)"},
+                "timeout": {"type": "integer", "description": "solver and transform seconds (default 60)"},
             },
             "required": ["file", "target", "length"],
         },
@@ -59,15 +59,18 @@ class NotSymbolic(Exception):
     pass
 
 
-class SolverTimeout(Exception):
-    """The user's Python (import, transform on symbols, or the concrete re-check) ran past the time bound."""
+class SolverTimeout(BaseException):
+    """The user's Python (import, transform on symbols, or the concrete re-check) ran past the time bound.
+    A BaseException so an `except Exception: pass` inside the user's transform cannot swallow it."""
 
 
 @contextlib.contextmanager
 def _time_limit(seconds: float):
     """Raise SolverTimeout inside the block after `seconds` of wall time. exec/transform run in-process, so
-    without this a `while True` in the user's file would hang the whole agent. SIGALRM handlers can only be
-    installed from the main thread; elsewhere the block runs unbounded (z3 keeps its own timeout)."""
+    without this a `while True` in the user's file would hang the whole agent. Armed only around the Python
+    phases, never around s.check(): z3 has its own timeout, and an alarm pending across the C call would
+    surface after it returned and discard a genuine answer. SIGALRM handlers can only be installed from the
+    main thread; elsewhere the block runs unbounded."""
     if threading.current_thread() is not threading.main_thread():
         yield
         return
@@ -213,8 +216,7 @@ def symbolic_solve(source: str, target: bytes, length: int, charset: str, timeou
     """Returns ("sat", bytes) | ("unverified", bytes) | ("unsat", None) | ("timeout", None)
     | ("timeout: transform", None) | ("error: <text>", None)."""
     try:
-        with _time_limit(timeout_s):
-            return _symbolic_solve(source, target, length, charset, timeout_s)
+        return _symbolic_solve(source, target, length, charset, timeout_s)
     except SolverTimeout:
         return "timeout: transform", None
 
@@ -223,25 +225,26 @@ def _symbolic_solve(source: str, target: bytes, length: int, charset: str, timeo
     import z3
     ns = {"Table": Table, "__name__": "transform_module"}
     _TABLES.clear()
-    try:
-        exec(compile(source, "transform.py", "exec"), ns)
-    except SolverTimeout:
-        raise
-    except Exception as e:
-        return f"error: the file failed to import: {type(e).__name__}: {e}", None
-    fn = ns.get("transform")
-    if not callable(fn):
-        return "error: the file must define transform(x)", None
     xs = [z3.BitVec(f"x{i}", WIDTH) for i in range(length)]
-    try:
-        out = fn([Sym(v) for v in xs])
-        out = list(out)
-    except SolverTimeout:
-        raise
-    except NotSymbolic as e:
-        return f"error: not symbolic at {_where(source, e)} — {e}. Rewrite that line with arithmetic (masks, Table lookups) only.", None
-    except Exception as e:
-        return f"error: transform raised {type(e).__name__}: {e} at {_where(source, e)}", None
+    with _time_limit(timeout_s):                    # phase 1: the user's Python (import + symbolic run)
+        try:
+            exec(compile(source, "transform.py", "exec"), ns)
+        except SolverTimeout:
+            raise
+        except Exception as e:
+            return f"error: the file failed to import: {type(e).__name__}: {e}", None
+        fn = ns.get("transform")
+        if not callable(fn):
+            return "error: the file must define transform(x)", None
+        try:
+            out = fn([Sym(v) for v in xs])
+            out = list(out)
+        except SolverTimeout:
+            raise
+        except NotSymbolic as e:
+            return f"error: not symbolic at {_where(source, e)} — {e}. Rewrite that line with arithmetic (masks, Table lookups) only.", None
+        except Exception as e:
+            return f"error: transform raised {type(e).__name__}: {e} at {_where(source, e)}", None
     if len(out) != len(target):
         return f"error: transform returned {len(out)} values but target has {len(target)} bytes", None
     s = z3.Solver()
@@ -268,11 +271,13 @@ def _symbolic_solve(source: str, target: bytes, length: int, charset: str, timeo
         if not isinstance(ov, z3.BitVecRef):
             return f"error: transform must return ints, got {type(ov).__name__} at position {i}", None
         s.add((ov & 0xff) == tb_)
-    r = s.check()
+    r = s.check()                                   # z3's own timeout; no alarm armed here
     if r == z3.sat:
         m = s.model()
         sol = bytes(m.eval(x, model_completion=True).as_long() & 0xff for x in xs)
-        return ("sat" if _concrete_matches(fn, sol, target) else "unverified"), sol
+        with _time_limit(timeout_s):                # phase 2: the user's Python again (concrete re-check)
+            ok = _concrete_matches(fn, sol, target)
+        return ("sat" if ok else "unverified"), sol
     if r == z3.unsat:
         return "unsat", None
     return "timeout", None

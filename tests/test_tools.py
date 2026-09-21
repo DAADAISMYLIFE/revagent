@@ -1192,3 +1192,27 @@ def test_solve_check_names_a_symbolic_table_entry_and_a_symbolic_bytes_element(t
     assert out.startswith("[error] not symbolic at line 2")
     assert "a symbolic value was used where a plain int is required (bytes(), range(), list index)" in out
     assert "index a Table with it instead" in out
+
+
+def test_solve_check_z3_timeout_is_reported_as_z3_not_the_transform(tmp_path):
+    # A 16-byte multiplicative hash with a full 64-bit carry chain: z3 runs into its own timeout, and the
+    # wall alarm must not be armed across s.check() or the report would blame the transform instead.
+    from revagent.tools import solve_check
+    (tmp_path / "t.py").write_text(
+        "def transform(x):\n"
+        "    h = 0xcbf29ce484222325\n"
+        "    for c in x:\n"
+        "        h = ((h ^ c) * 0x100000001b3) & 0xffffffffffffffff\n"
+        "        h = (h * 0x9e3779b97f4a7c15) & 0xffffffffffffffff\n"
+        "        h = h ^ (h >> 29)\n"
+        "    return [(h >> (8 * i)) & 0xff for i in range(8)] + [0] * 8\n")
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target="0123456789abcdef" + "00" * 8, length=16, timeout=1)
+    assert out.startswith("[timeout]") and "z3 gave up" in out and "the transform itself" not in out
+
+
+def test_solve_check_timeout_cannot_be_swallowed_by_the_transform(tmp_path):
+    from revagent.tools import solve_check
+    (tmp_path / "t.py").write_text("def transform(x):\n    try:\n        while True:\n            pass\n"
+                                   "    except Exception:\n        pass\n    return x\n")
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target="00", length=1, timeout=1)
+    assert out.startswith("[timeout]") and "the transform itself" in out
