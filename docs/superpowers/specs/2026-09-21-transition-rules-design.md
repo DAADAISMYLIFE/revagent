@@ -152,7 +152,10 @@
 
 | 실행 | 결과 | 스텝 / 분 | signals | 비고 |
 |---|---|---|---|---|
+| relativity 회귀 (4회차 케이스 파일 이어받음, `--max-minutes 30`; 첫 시도는 파드 다운으로 4스텝에 죽음) | **solved** `DH{1d459fbdd…` | 46 / 20.4 | {"gate_blocks": 0, "max_script_streak": 2, "long_reasoning_steps": 3, "first_facts_step": 1} | 게이트 발동 0 = 오탐 0. 풀던 실행이 게이트 아래에서도 다시 풀림 |
 | basic 2회차 (케이스 파일 새로, `--max-minutes 15`) | **unsolved** | 32 / 15.5 | gate_blocks 0, max_script_streak 3, long_reasoning_steps 4, first_facts_step 28 | G3·G4 모두 임계값에 하나 모자라 안 울림. 모델은 z3 스크립트를 스스로 10번 썼지만 forward 모델이 틀려 전부 unsat; `solve_check`는 한 번도 부르지 않음. 오탐 없음 |
+
+**G4의 effort 하향은 아직 라이브에서 한 번도 발동하지 않았다** (basic 2회차는 긴 생각 4회에서 멈춤). 이 개입의 효과는 미검증이며, 처음 발동하는 실행에서 확인한다.
 
 basic 2회차를 잡을 수 있는 임계값이 있는지 전 세션에 다시 재 봤다(접두 100/150/200자 × Jaccard 0.4/0.5/0.6). 접두 100자로 낮추면 basic 2회차가 스트릭 4로 걸리지만 **multipoint(해결)도 5로 걸려 오탐**이 생긴다. 접두 150자는 basic 2회차를 못 잡는다(3). 즉 §2.3 기준(해결 세션 오탐 0)을 만족하면서 basic 2회차를 잡는 값은 없다. 임계값은 그대로 둔다. 이 실행이 보여준 실패 모양은 "비슷한 스크립트 반복"이 아니라 "매번 다르게 쓴 z3 모델이 전부 unsat"이라, 다음 후보 신호는 "연속된 스크립트가 같은 결과 문자열(예: unsat/Traceback)로 끝남"이다. 데이터가 더 쌓이면 §2.3 기준으로 검토한다.
 
