@@ -26,8 +26,7 @@ TRUNCATED_NUDGE = ("Your previous reply hit the output budget while thinking, so
                    "notes, then call a tool (write a script for any parsing).")
 G4_TEXT = (f"[gate] This is the {LONG_REASONING_LIMIT}th step whose thinking exceeded {LONG_REASONING_CHARS} characters. "
            "No solved run has ever needed that many. Stop tracing in your head: put the derivation into a script "
-           "(python3), save its output to a file, and reason from the printed result. Thinking effort is now lowered "
-           "for the rest of this run.")
+           "(python3), save its output to a file, and reason from the printed result.")
 
 TASK_TEMPLATE = """# Challenge
 Directory: {dir}
@@ -69,7 +68,6 @@ class Agent:
         self.critic_calls = 0
         self.gate = Gate()
         self.long_reasoning = 0
-        self.effort_override: str | None = None
         self.first_facts_step: int | None = None
         self.compactions = 0
         self.over_streak = 0
@@ -140,21 +138,21 @@ class Agent:
                 "gate_open": "G3 opened: approach changed",
                 "gate_released": f"G3 released after {RELEASE_AFTER} blocked steps; quiet until step {ev.get('cooldown_until')}",
                 "gate_error": f"gate error: {ev.get('error')}",
-                "gate_warn": f"G4 warned: long-thinking step #{ev.get('count')}; effort lowered to low"}.get(ev["event"], ev["event"])
+                "gate_warn": f"G4 warned: long-thinking step #{ev.get('count')}"}.get(ev["event"], ev["event"])
         try:
             self.casefile.add("log", f"[gate step {step}] {text}")
         except Exception:
             pass
 
     def _g4_warn(self, step: int) -> None:
-        """The LONG_REASONING_LIMITth long-thinking step: lower the effort for the rest of the run
-        and tell the model once. Called after the step's tool results (or after the no-tool nudge)."""
-        self.effort_override = "low"
+        """The LONG_REASONING_LIMITth long-thinking step: tell the model once. Called after the step's
+        tool results (or after the no-tool nudge). Warning only: an effort downgrade here was tried
+        live (2026-09-22, ROVM/damnida) and reasoning got longer after it, so it was removed."""
         ev = {"event": "gate_warn", "gate": "G4", "step": step, "count": self.long_reasoning}
         self._log({"role": "_meta", **ev})
         self._ledger(step, ev)
         self._append({"role": "user", "content": G4_TEXT})
-        self._print(f"[{step}] -- G4: {self.long_reasoning} long-thinking steps; effort -> low --")
+        self._print(f"[{step}] -- G4: {self.long_reasoning} long-thinking steps; warned --")
 
     def _critic(self, step: int, cause: str) -> None:
         if self.critic_calls >= CRITIC_MAX:
@@ -223,7 +221,7 @@ class Agent:
                         steps = step - 1
                         break
                     try:
-                        resp = self.llm.chat(self.messages, self.schemas, reasoning_effort=self.effort_override)
+                        resp = self.llm.chat(self.messages, self.schemas)
                         if resp.finish_reason == "length" and not resp.tool_calls:
                             # The model spent the whole output budget thinking. Retry once with a
                             # hint and low effort (same max_tokens: 44k threshold + 16k output is the

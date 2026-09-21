@@ -46,7 +46,7 @@ bash scripts/install_ghidra.sh         # --host 로 돌릴 때만 필요 (JDK 21
 
 `--dev`는 레포를 컨테이너에 쓰기 가능으로 마운트한다. 믿을 수 없는 바이너리엔 쓰지 마라.
 
-루프가 막는 것 두 가지. 같은 스크립트를 4번째 고치면 그 호출은 실행 안 되고 `[blocked by G3]`가 돌아온다(프로그램을 돌리거나, `solve_check`에 넘기거나, 노트에 실패를 적으면 풀림). 8천 자 넘게 생각하는 스텝이 5번째 나오면 `[gate]` 경고 한 번 주고 남은 실행은 생각 예산을 낮춘다. 둘 다 과거 transcript 전부에 리플레이해서 푼 실행에선 한 번도 안 울리는 값으로 잡았다: `python scripts/replay_detectors.py 문제폴더/.revagent/transcript.jsonl`.
+루프가 막는 것 두 가지. 같은 스크립트를 4번째 고치면 그 호출은 실행 안 되고 `[blocked by G3]`가 돌아온다(프로그램을 돌리거나, `solve_check`에 넘기거나, 노트에 실패를 적으면 풀림). 8천 자 넘게 생각하는 스텝이 5번째 나오면 `[gate]` 경고를 한 번 준다(effort 하향은 라이브에서 생각을 오히려 늘려서 뺐다). 둘 다 과거 transcript 전부에 리플레이해서 푼 실행에선 한 번도 안 울리는 값으로 잡았다: `python scripts/replay_detectors.py 문제폴더/.revagent/transcript.jsonl`.
 
 `emulate`는 바이너리의 함수 하나를 unicorn으로 돌려 주는 오라클이다. 디컴파일된 변환을 파이썬으로 옮긴 뒤 `emulate`로 실제 함수와 같은 입력에서 비교하고, 맞으면 `solve_check`로 뒤집는다. basic이 두 번 죽은 "forward 모델 검증" 단계가 이걸로 끝난다. import를 부르면 거기서 멈추고 누구를 어떤 인자로 불렀는지 보고한다.
 
