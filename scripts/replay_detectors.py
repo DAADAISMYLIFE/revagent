@@ -4,6 +4,9 @@ and would G4 have warned. Uses the SAME Gate class as the live loop, so the tabl
 agent would have done. A session reported `solved` whose flag differs from `<suite>/ANSWERS.md` (the same
 cross-check bench applies) is shown as `wrong`. Exit 1 when a solved session shows any firing (the
 zero-false-positive rule of docs/superpowers/specs/2026-09-21-transition-rules-design.md §2.3 / §8).
+A session that ran WITH the gates (its transcript carries `gate_*` _meta events) is marked `(gated)`:
+its blocks are interventions, not calibration errors, so it is counted in the columns but exempt from
+the rule, which is for un-gated historical sessions only.
 
 usage: python scripts/replay_detectors.py quiz/*/.revagent/transcript.jsonl bench/mini/*/.revagent/transcript.jsonl
 """
@@ -35,8 +38,10 @@ def replay_session(lines: list[dict]) -> dict:
     gate = Gate()
     step = 0
     blocks, released, long_steps, g4_step = [], [], 0, None
-    status, flag = "incomplete", None
+    status, flag, gated = "incomplete", None, False
     for d in lines:
+        if d.get("role") == "_meta" and str(d.get("event") or "").startswith("gate_"):
+            gated = True
         if d.get("role") == "_reasoning":
             step = d["step"]
             if len(d.get("content") or "") > LONG_REASONING_CHARS:
@@ -55,7 +60,8 @@ def replay_session(lines: list[dict]) -> dict:
             status = d.get("status", "?")
             flag = d.get("flag")
     return {"steps": step, "status": status, "flag": flag, "g3_blocks": blocks, "g3_released": released,
-            "long_reasoning_steps": long_steps, "g4_step": g4_step, "max_streak": gate.max_streak}
+            "long_reasoning_steps": long_steps, "g4_step": g4_step, "max_streak": gate.max_streak,
+            "gated": gated}
 
 
 def _challenge_dir(path) -> Path:
@@ -88,10 +94,12 @@ def main(argv=None) -> int:
     false_positives = 0
     for p in paths:
         for i, r in enumerate(replay_file(p), 1):
-            fp = r["status"] == "solved" and (r["g3_blocks"] or r["g4_step"] is not None)
+            fired = bool(r["g3_blocks"] or r["g4_step"] is not None)
+            fp = r["status"] == "solved" and fired and not r["gated"]
             false_positives += bool(fp)
             name = _challenge_dir(p).name
-            print(f"| {name} | {i} | {r['status']}{' FALSE POSITIVE' if fp else ''} | {r['steps']} | "
+            suffix = " (gated)" if r["gated"] else (" FALSE POSITIVE" if fp else "")
+            print(f"| {name} | {i} | {r['status']}{suffix} | {r['steps']} | "
                   f"{r['g3_blocks'] or '-'} | {r['g3_released'] or '-'} | {r['max_streak']} | "
                   f"{r['long_reasoning_steps']} | {r['g4_step'] or '-'} |")
     if false_positives:

@@ -48,6 +48,8 @@ bash scripts/install_ghidra.sh         # --host 로 돌릴 때만 필요 (JDK 21
 
 루프가 막는 것 두 가지. 같은 스크립트를 4번째 고치면 그 호출은 실행 안 되고 `[blocked by G3]`가 돌아온다(프로그램을 돌리거나, `solve_check`에 넘기거나, 노트에 실패를 적으면 풀림). 8천 자 넘게 생각하는 스텝이 5번째 나오면 `[gate]` 경고 한 번 주고 남은 실행은 생각 예산을 낮춘다. 둘 다 과거 transcript 전부에 리플레이해서 푼 실행에선 한 번도 안 울리는 값으로 잡았다: `python scripts/replay_detectors.py 문제폴더/.revagent/transcript.jsonl`.
 
+`emulate`는 바이너리의 함수 하나를 unicorn으로 돌려 주는 오라클이다. 디컴파일된 변환을 파이썬으로 옮긴 뒤 `emulate`로 실제 함수와 같은 입력에서 비교하고, 맞으면 `solve_check`로 뒤집는다. basic이 두 번 죽은 "forward 모델 검증" 단계가 이걸로 끝난다. import를 부르면 거기서 멈추고 누구를 어떤 인자로 불렀는지 보고한다.
+
 ### 산출물 (`문제폴더/.revagent/`)
 | 파일 | 내용 |
 |---|---|
@@ -79,8 +81,9 @@ bash scripts/install_ghidra.sh         # --host 로 돌릴 때만 필요 (JDK 21
 - 에이전트 코드 고치면 `--dev`로 바로 돌리거나 `bash scripts/sandbox-build.sh`로 마지막 레이어만 재빌드(몇 분). Ghidra 스크립트를 고쳐도 Ghidra 레이어는 안 다시 빌드한다.
 
 ## 동작 원리
-- ReAct 루프 하나, 도구 열 개: `bash`, `decompile`, `run_binary`, `run_gui`, `solve_check`, `notes`, `summarize`, `ask_user`, `submit_flag`, `handoff_runbook`.
+- ReAct 루프 하나, 도구 열한 개: `bash`, `decompile`, `run_binary`, `run_gui`, `solve_check`, `emulate`, `notes`, `summarize`, `ask_user`, `submit_flag`, `handoff_runbook`.
 - `solve_check`: 모델이 forward 변환만 파이썬으로 쓰면 z3가 입력을 찾아 준다. 바이트 단위 체크용.
+- `emulate`: 함수 단위 오라클. PIE ELF는 0x100000, PE는 ImageBase에 로드해서 Ghidra 주소를 그대로 쓴다.
 - 메모리는 `case.md`. 프롬프트가 44k 토큰 넘으면 대화 중간을 요약해 여기 넣고, 시스템 프롬프트 + 작업 + case.md + 최근 도구 교환 4개로 컨텍스트를 다시 만든다.
 - thinking 켜 둠(`medium`). 출력 예산 16k 토큰, 넘치면 힌트 붙여 `low`로 한 번 재시도.
 - 응답은 스트리밍. RunPod 프록시가 100초 안에 응답 안 시작하면 524로 끊기 때문. 일시 장애는 3번 재시도하고 `llm_retries`에 센다.
@@ -106,6 +109,7 @@ bash scripts/install_ghidra.sh         # --host 로 돌릴 때만 필요 (JDK 21
 | quiz/relativity run5 (gates build, case file carried over from run 4) | real | **solved** again in 46 steps, 20.4 min, 0 retries; signals {"gate_blocks": 0, "max_script_streak": 2, "long_reasoning_steps": 3, "first_facts_step": 1} — no gate fired (regression: zero false positives on a solving run). First attempt died at step 4 when the pod went down |
 | quiz/ROVM (Dreamhack, XMAS{...}) | real | run1 unsolved (time limit): only 44 steps in 152 min because 32k truncation retries + a concurrent agent halved throughput; VM structure fully recovered (stack-based threaded VM, flag written by the 2nd syscall) — rerun pending |
 | quiz/basic (Dreamhack Reversing Basic #9, PE32+ console) | real | run1 **unsolved** (15 min, 32 steps): decompiled the check by step 5, then 11 steps fighting pefile offsets and 16 steps of hand-derived inversions ("AMBIG"/TypeError), 0 notes, 1 run_binary. Solved by hand in one inversion loop: `DH{Reverse__your__brain_;)}` (in quiz/ANSWERS.md). run2 under the gates (fresh case file, `--max-minutes 15`): **unsolved**, 32 steps, signals gate_blocks 0 / max_script_streak 3 / long_reasoning_steps 4 — both gates one short of their thresholds; the model wrote 10 z3 scripts of its own (all unsat: its forward model was wrong) and never called `solve_check`. No false positive; no threshold catches this run without a false positive on multipoint (spec §8) |
+| quiz/basic run3 (emulate build, fresh case file, 15 min budget) | real | **solved** `DH{Reverse__your__brain_;)}` in 43 steps, 11.2 min, 0 retries. What changed the outcome: `emulate` was called on the transform (steps 18, 29) and at step 33 the model's Python forward finally matched the oracle byte-for-byte; G3 blocked 4 re-edit loops (steps 22, 23, 28, 37) and each block was followed by a change of approach (notes, emulate, a new file) that moved the run forward; the candidate was verified with `run_binary` (Correct) before submit. `solve_check` was not used (the model inverted by hand once the forward was right). signals: gate_blocks 4, max_script_streak 5, long_reasoning_steps 0, first_facts_step 24 |
 | bench/mini/win_console (mingw PE, console) | plumbing test | **solved** in the sandbox (8 steps, 0.9 min; run_binary under wine) |
 | bench/mini/win_gui (mingw PE, GUI) | plumbing test | **solved** in the sandbox (9 steps, 1.2 min; run_gui screenshot + OCR read the flag) |
 | bench/mini/win_gui_key (mingw PE, GUI, one char per keypress) | generalization test | **solved** in the sandbox (14 steps, 2.1 min; no hint: agent saw one char, chose `actions` with clicks/keys by itself); evidence-ladder build: run 1 **wrong** flag `DH{k3y_driv3n_ui}` (read `1` from pixels, retyped it as `i` — now caught by the bench `ANSWERS.md` check and the assemble-in-code rule), run 2 solved (12 steps, 3.5 min, two readings) |
