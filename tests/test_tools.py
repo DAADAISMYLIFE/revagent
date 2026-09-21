@@ -1014,6 +1014,7 @@ def test_solve_check_inverts_xor(tmp_path):
     target = bytes(c ^ [0x13, 0x37, 0x42, 0x99][i % 4] for i, c in enumerate(plain))
     out = solve_check.run(ctx_for(tmp_path), file="xor_transform.py", target=target.hex(), length=len(plain))
     assert out.startswith("[sat]") and "DH{x0r}" in out and target.hex() in out
+    assert "verified: transform(input) == target" in out
 
 
 def test_solve_check_inverts_a_sequential_block_cipher(tmp_path):
@@ -1039,7 +1040,7 @@ def test_solve_check_names_the_line_that_cannot_be_symbolic(tmp_path):
     from revagent.tools import solve_check
     (tmp_path / "t.py").write_text("def transform(x):\n    y = x[0] + 1\n    n = int(y)\n    return [n]\n")
     out = solve_check.run(ctx_for(tmp_path), file="t.py", target="05", length=1)
-    assert out.startswith("[error]") and "line 3" in out and "int(" in out
+    assert out.startswith("[error]") and "line 3" in out and "int(" in out and "`    n = int(y)`" in out
 
 
 def test_solve_check_rejects_bad_inputs_and_escapes(tmp_path):
@@ -1078,3 +1079,51 @@ def test_solve_check_handles_table_built_inside_transform(tmp_path):
     assert ns["transform"](list(sol)) == [9]
     # 5 is not in the table: a Table built inside transform must be constrained, not a free z3 Array
     assert solve_check.run(ctx_for(tmp_path), file="t.py", target="05", length=1).startswith("[unsat]")
+
+
+def _solution(out):
+    return bytes.fromhex(out.splitlines()[1].split()[1])
+
+
+def test_solve_check_modulo_follows_python_floor_semantics(tmp_path):
+    # Caesar shape: (x - 'a' - 3) % 26; for 'a' the dividend is -3 and Python gives 23 (0x17).
+    # Unsigned remainder on 64 bits would give 13, so the tool must use the signed, divisor-signed %.
+    from revagent.tools import solve_check
+    (tmp_path / "t.py").write_text("def transform(x):\n    return [(x[0] - 97 - 3) % 26]\n")
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target="17", length=1, charset="[a-z]")
+    assert out.startswith("[sat]") and _solution(out) == b"a"
+
+
+def test_solve_check_table_keeps_values_wider_than_a_byte(tmp_path):
+    from revagent.tools import solve_check
+    (tmp_path / "t.py").write_text("T = Table([0x1234, 0xdeadbeef])\n"
+                                   "def transform(x):\n    return [(T[x[0] & 1] >> 8) & 0xff]\n")
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target="12", length=1)
+    assert out.startswith("[sat]") and _solution(out)[0] % 2 == 0
+
+
+def test_solve_check_flags_a_solution_the_concrete_transform_rejects(tmp_path):
+    # (x << 60) >> 60 is the identity on Python ints but x & 0xf on 64-bit vectors: with x >= 0x10 forced,
+    # z3 finds an input whose concrete transform can never equal the target. The model must be told.
+    from revagent.tools import solve_check
+    (tmp_path / "t.py").write_text("def transform(x):\n    return [((x[0] << 60) >> 60) & 0xff]\n")
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target="03", length=1, charset="[\\x10-\\x7f]")
+    assert out.startswith("[sat?]") and "do not trust it" in out and "hex: " in out
+    assert _solution(out)[0] >= 0x10
+
+
+def test_solve_check_symbolic_index_stays_inside_the_table(tmp_path):
+    from revagent.tools import solve_check
+    (tmp_path / "t.py").write_text("T = Table([5, 6, 7, 8])\ndef transform(x):\n    return [T[x[0]]]\n")
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target="07", length=1)
+    assert out.startswith("[sat]") and _solution(out)[0] < 4
+    # an index that cannot be inside the table is not wrapped around into it
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target="07", length=1, charset="[\\x04-\\xff]")
+    assert out.startswith("[unsat]")
+
+
+def test_solve_check_rejects_non_int_outputs(tmp_path):
+    from revagent.tools import solve_check
+    (tmp_path / "t.py").write_text("def transform(x):\n    return [x[0] == 3]\n")
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target="01", length=1)
+    assert out.startswith("[error] transform must return ints, got") and "at position 0" in out

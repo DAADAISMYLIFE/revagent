@@ -84,9 +84,7 @@ class Sym:
     def __rshift__(self, o):
         import z3
         return self._bin(o, lambda a, b: z3.LShR(a, b))       # Python >> on non-negative ints is logical
-    def __mod__(self, o):
-        import z3
-        return self._bin(o, lambda a, b: z3.URem(a, b))
+    def __mod__(self, o): return self._bin(o, lambda a, b: a % b)   # z3 BitVec % is bvsmod: sign of the divisor, like Python
     def __neg__(self): return Sym(-self.v)
     def __invert__(self): return Sym(~self.v)
     def __eq__(self, o): return Sym(self.v == Sym._raw(o))
@@ -101,11 +99,13 @@ class Sym:
 
 class Table:
     """A constant lookup table. Indexed by a plain int it is a list; indexed by a Sym it becomes a z3
-    Array select (the index is reduced mod the table size), so S-boxes and key schedules work symbolically."""
+    Array select with the index constrained to 0..len-1, so S-boxes and key schedules work symbolically.
+    Values keep their full width (a 32-bit round-constant table is not truncated)."""
 
     def __init__(self, values):
-        self.values = [int(v) & 0xff for v in values]
+        self.values = [int(v) for v in values]
         self._arr = None
+        self._cons = []
         _TABLES.append(self)
 
     def __len__(self):
@@ -120,12 +120,12 @@ class Table:
             if self._arr is None:
                 self._arr = z3.Array(f"table_{id(self)}", z3.BitVecSort(WIDTH), z3.BitVecSort(WIDTH))
                 self._cons = [self._arr[z3.BitVecVal(i, WIDTH)] == z3.BitVecVal(v, WIDTH) for i, v in enumerate(self.values)]
-            n = len(self.values)
-            return Sym(self._arr[z3.URem(idx.v, n)])
+            self._cons.append(z3.ULT(idx.v, len(self.values)))   # no wrap-around: an index past the end is no solution
+            return Sym(self._arr[idx.v])
         return self.values[idx]
 
     def constraints(self):
-        return list(getattr(self, "_cons", []) or [])
+        return list(self._cons)
 
 
 def _allowed_bytes(charset: str) -> list[int] | None:
@@ -135,8 +135,30 @@ def _allowed_bytes(charset: str) -> list[int] | None:
     return [c for c in range(256) if rx.match(chr(c))]
 
 
+def _where(source: str, exc: BaseException) -> str:
+    """'line N: `text`' for the innermost frame of exc inside the user's file. The text comes from the
+    source we compiled: linecache knows no "transform.py" (and must not read a stray real one)."""
+    user = [f for f in traceback.extract_tb(exc.__traceback__) if f.filename == "transform.py"]
+    if not user:
+        return "unknown line"
+    lines = source.splitlines()
+    n = user[-1].lineno
+    text = lines[n - 1] if 1 <= n <= len(lines) else ""
+    return f"line {n}: `{text}`"
+
+
+def _concrete_matches(fn, sol: bytes, target: bytes) -> bool:
+    """Re-run the user's transform on plain ints: z3 answered about our symbolic semantics (64-bit wrap,
+    floor-mod, table width), and only the real Python run says whether the input actually works."""
+    try:
+        out = list(fn(list(sol)))
+    except Exception:
+        return False
+    return len(out) == len(target) and all((int(v) & 0xff) == t for v, t in zip(out, target))
+
+
 def symbolic_solve(source: str, target: bytes, length: int, charset: str, timeout_s: int):
-    """Returns ("sat", bytes) | ("unsat", None) | ("timeout", None) | ("error: <text>", None)."""
+    """Returns ("sat", bytes) | ("unverified", bytes) | ("unsat", None) | ("timeout", None) | ("error: <text>", None)."""
     import z3
     ns = {"Table": Table, "__name__": "transform_module"}
     _TABLES.clear()
@@ -152,15 +174,9 @@ def symbolic_solve(source: str, target: bytes, length: int, charset: str, timeou
         out = fn([Sym(v) for v in xs])
         out = list(out)
     except NotSymbolic as e:
-        tb = traceback.extract_tb(e.__traceback__)
-        user = [f for f in tb if f.filename == "transform.py"]
-        where = f"line {user[-1].lineno}: `{user[-1].line}`" if user else "unknown line"
-        return f"error: not symbolic at {where} — {e}. Rewrite that line with arithmetic (masks, Table lookups) only.", None
+        return f"error: not symbolic at {_where(source, e)} — {e}. Rewrite that line with arithmetic (masks, Table lookups) only.", None
     except Exception as e:
-        tb = traceback.extract_tb(e.__traceback__)
-        user = [f for f in tb if f.filename == "transform.py"]
-        where = f"line {user[-1].lineno}: `{user[-1].line}`" if user else "unknown line"
-        return f"error: transform raised {type(e).__name__}: {e} at {where}", None
+        return f"error: transform raised {type(e).__name__}: {e} at {_where(source, e)}", None
     if len(out) != len(target):
         return f"error: transform returned {len(out)} values but target has {len(target)} bytes", None
     s = z3.Solver()
@@ -176,17 +192,22 @@ def symbolic_solve(source: str, target: bytes, length: int, charset: str, timeou
     for t in _TABLES:
         for c in t.constraints():
             s.add(c)
-    for o, tb_ in zip(out, target):
+    for i, (o, tb_) in enumerate(zip(out, target)):
         ov = Sym._raw(o)
+        if isinstance(ov, bool):
+            ov = int(ov)
         if isinstance(ov, int):
             if (ov & 0xff) != tb_:
                 return "unsat", None
             continue
+        if not isinstance(ov, z3.BitVecRef):
+            return f"error: transform must return ints, got {type(ov).__name__} at position {i}", None
         s.add((ov & 0xff) == tb_)
     r = s.check()
     if r == z3.sat:
         m = s.model()
-        return "sat", bytes(m.eval(x, model_completion=True).as_long() & 0xff for x in xs)
+        sol = bytes(m.eval(x, model_completion=True).as_long() & 0xff for x in xs)
+        return ("sat" if _concrete_matches(fn, sol, target) else "unverified"), sol
     if r == z3.unsat:
         return "unsat", None
     return "timeout", None
@@ -212,10 +233,14 @@ def run(ctx, file: str, target: str, length: int, charset: str = "", timeout: in
     timeout_s = ctx.clamp_timeout(max(1, min(int(timeout), 900)))
     source = p.read_text(encoding="utf-8", errors="replace")
     status, sol = symbolic_solve(source, tgt, int(length), charset, timeout_s)
-    if status == "sat":
+    if status in ("sat", "unverified"):
         printable = "".join(chr(c) if 32 <= c < 127 else "." for c in sol)
-        return (f"[sat] input ({len(sol)} bytes)\nhex: {sol.hex()}\ntext: {printable}\ntarget: {tgt.hex()}\n"
-                f"Verify it on the real program before submit_flag (run_binary / run_gui).")
+        body = f"hex: {sol.hex()}\ntext: {printable}\ntarget: {tgt.hex()}\n"
+        if status == "sat":
+            return (f"[sat] input ({len(sol)} bytes)\n{body}verified: transform(input) == target\n"
+                    f"Verify it on the real program before submit_flag (run_binary / run_gui).")
+        return (f"[sat?] z3 found an input but transform(input) != target when run concretely — the symbolic "
+                f"semantics diverged (%, //, table width, index range); do not trust it\n{body}")
     if status == "unsat":
         return ("[unsat] no input of that length maps to the target under this transform. Either the transform is "
                 "not faithful (compare it against the real program on a known input) or the length/charset is wrong.")
