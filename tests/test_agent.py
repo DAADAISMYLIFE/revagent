@@ -36,8 +36,10 @@ class ScriptedLLM:
             raise item
         self.max_tokens_seen.append(self.max_tokens)
         finish_reason = "stop"
+        reasoning = "thinking..."
         if isinstance(item, dict):
             finish_reason = item.get("finish_reason", "stop")
+            reasoning = item.get("reasoning", "thinking...")
             item = item["calls"]
         calls = item
         tcs = [ToolCall(f"id{i}", n, a, json.dumps(a)) for i, (n, a) in enumerate(calls)]
@@ -51,7 +53,7 @@ class ScriptedLLM:
         self.total_completion_tokens += 10
         if finish_reason == "length":
             msg["content"] = ""
-        return ChatResponse(msg["content"], "thinking...", tcs, msg, pt, 10, finish_reason)
+        return ChatResponse(msg["content"], reasoning, tcs, msg, pt, 10, finish_reason)
 
     def complete(self, prompt, system=None, **kw):
         self.completes.append(prompt)
@@ -991,3 +993,75 @@ def test_results_jsonl_keeps_every_run(tmp_path):
     assert [r["flag"] for r in rows] == ["DH{a}", "DH{b}"]
     assert all("time" in r and r["status"] == "solved" for r in rows)
     assert "llm_retries" in latest and latest["llm_retries"] == 0
+
+
+def _pefile_variant(i: int) -> tuple:
+    body = "import pefile\npe = pefile.PE('chal')\nbase = pe.OPTIONAL_HEADER.ImageBase\n" + "x = 1\n" * 40 + f"print({i})"
+    return ("bash", {"cmd": f"python3 - <<'EOF'\n{body}\nEOF"})
+
+
+def test_g3_blocks_fourth_similar_script_and_lifts_on_a_run(tmp_path):
+    d = make_problem(tmp_path)
+    llm = ScriptedLLM([
+        [_pefile_variant(0)], [_pefile_variant(1)], [_pefile_variant(2)],
+        [_pefile_variant(3)],                                    # step 4: blocked
+        [("run_binary", {"path": "chal", "stdin": "abc\n"})],     # step 5: lifts
+        [("submit_flag", {"flag": "DH{abc}", "how_verified": "printed Correct"})],
+    ])
+    r = Agent(d, "", llm, max_steps=10, interactive=False).run()
+    assert r["status"] == "solved"
+    lines = [json.loads(l) for l in (d / ".revagent" / "transcript.jsonl").read_text().splitlines()]
+    tools = [m for m in lines if m.get("role") == "tool"]
+    assert tools[3]["content"].startswith("[blocked by G3]")          # the 4th script was not run
+    events = [m for m in lines if m.get("role") == "_meta" and str(m.get("event", "")).startswith("gate_")]
+    assert [(e["event"], e["step"]) for e in events] == [("gate_block", 4), ("gate_open", 5)]
+    case = (d / ".revagent" / "case.md").read_text()
+    assert "- [gate step 4] G3 blocked" in case and "- [gate step 5] G3 opened" in case
+    assert r["signals"]["gate_blocks"] == 1 and r["signals"]["max_script_streak"] == 4
+
+
+def test_g3_blocked_step_counts_as_no_progress_for_the_critic(tmp_path, monkeypatch):
+    # a blocked call produces no [obs] line and no Facts, so idle keeps growing
+    d = make_problem(tmp_path)
+    llm = ScriptedLLM([[_pefile_variant(i)] for i in range(4)] + [[("bash", {"cmd": "ls"})]])
+    a = Agent(d, "", llm, max_steps=5, interactive=False)
+    r = a.run()
+    assert r["signals"]["gate_blocks"] == 1
+    assert r["status"] == "unsolved" and r["reason"] == "step limit"
+
+
+def test_g4_warns_once_on_fifth_long_reasoning_step_and_lowers_effort(tmp_path):
+    d = make_problem(tmp_path)
+    long = "x" * 8001
+    llm = ScriptedLLM([
+        {"calls": [("bash", {"cmd": f"echo {i}"})], "reasoning": long} for i in range(5)
+    ] + [
+        {"calls": [("bash", {"cmd": "echo 5"})], "reasoning": "short"},
+        [("submit_flag", {"flag": "DH{abc}", "how_verified": "v"})],
+    ])
+    r = Agent(d, "", llm, max_steps=10, interactive=False).run()
+    assert r["status"] == "solved"
+    # steps 1-5 medium (None = client default); the 5th long step sets the override, so steps 6, 7 are low
+    assert llm.efforts_seen == [None, None, None, None, None, "low", "low"]
+    warns = [m for m in llm.seen[-1] if m["role"] == "user" and m["content"].startswith("[gate]")]
+    assert len(warns) == 1 and "5" in warns[0]["content"]
+    lines = [json.loads(l) for l in (d / ".revagent" / "transcript.jsonl").read_text().splitlines()]
+    assert [m["step"] for m in lines if m.get("event") == "gate_warn"] == [5]
+    assert r["signals"]["long_reasoning_steps"] == 5
+    assert "- [gate step 5] G4" in (d / ".revagent" / "case.md").read_text()
+
+
+def test_signals_record_first_facts_step(tmp_path):
+    d = make_problem(tmp_path)
+    llm = ScriptedLLM([
+        [("bash", {"cmd": "ls"})],
+        [("notes", {"action": "add", "section": "facts", "text": "chal is a script"})],
+        [("submit_flag", {"flag": "DH{abc}", "how_verified": "v"})],
+    ])
+    r = Agent(d, "", llm, max_steps=5, interactive=False).run()
+    assert r["signals"] == {"gate_blocks": 0, "max_script_streak": 0, "long_reasoning_steps": 0,
+                            "first_facts_step": 2}
+    llm2 = ScriptedLLM([[("submit_flag", {"flag": "DH{abc}", "how_verified": "v"})]])
+    (tmp_path / "b").mkdir()
+    r2 = Agent(make_problem(tmp_path / "b"), "", llm2, max_steps=5, interactive=False).run()
+    assert r2["signals"]["first_facts_step"] is None
