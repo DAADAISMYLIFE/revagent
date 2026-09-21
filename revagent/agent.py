@@ -100,6 +100,7 @@ class Agent:
         elif call.parse_error:
             result = f"[tool error] arguments were not valid JSON: {call.raw_args[:300]}"
         else:
+            self.ctx.tools_used[call.name] = self.ctx.tools_used.get(call.name, 0) + 1
             try:
                 result = str(handler(self.ctx, **call.args))
             except TypeError as e:
