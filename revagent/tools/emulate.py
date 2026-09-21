@@ -55,6 +55,7 @@ def parse_function(text: str) -> int:
 def parse_args(items: list[str]) -> list[tuple[str, object]]:
     out = []
     for s in items:
+        s = str(s)   # the model sends JSON; an int or a number-like token still gets a named error below
         if ":" not in s:
             raise ValueError(f"argument {s!r} must be hex:<bytes>, int:<n> or addr:0x<address>")
         kind, _, val = s.partition(":")
@@ -92,8 +93,15 @@ def run(ctx, binary: str, function: str, args: list[str], out_lens: list[int] | 
         parsed = parse_args(list(args or []))
     except ValueError as e:
         return f"[tool error] args: {e}"
-    if int(max_insns) <= 0:
-        return "[tool error] max_insns must be positive"
+    if out_lens is not None and not (isinstance(out_lens, list)
+                                     and all(isinstance(n, int) and not isinstance(n, bool) for n in out_lens)):
+        return "[tool error] out_lens must be a list of integers"
+    try:
+        max_insns = int(max_insns)
+    except (TypeError, ValueError):
+        return "[tool error] max_insns must be a positive integer"
+    if max_insns <= 0:
+        return "[tool error] max_insns must be a positive integer"
     key = str(p)
     image = ctx.emulate_images.get(key)
     if image is None:
@@ -104,7 +112,7 @@ def run(ctx, binary: str, function: str, args: list[str], out_lens: list[int] | 
         ctx.emulate_images[key] = image
     timeout_s = ctx.clamp_timeout(DEFAULT_TIMEOUT)
     try:
-        r = emulate_call(image, func, parsed, out_lens=out_lens, max_insns=int(max_insns), timeout_s=timeout_s)
+        r = emulate_call(image, func, parsed, out_lens=out_lens, max_insns=max_insns, timeout_s=timeout_s)
     except EmulateError as e:
         return f"[tool error] {e}"
     except Exception as e:
@@ -122,7 +130,12 @@ def run(ctx, binary: str, function: str, args: list[str], out_lens: list[int] | 
             lines.append("Imports are not emulated: target the inner function that does the arithmetic (the FUN_ the "
                          "decompiler shows around this call), or treat this call and its registers as the observation.")
         elif r.stopped["reason"] == "limit":
-            lines.append(f"[emulation stopped] {r.stopped['detail']}; raise max_insns only if the function really loops that much")
+            lines.append(f"[emulation stopped] {r.stopped['detail']}; raise max_insns only if the function really loops "
+                         f"that much; arg registers: {regtxt}")
+        elif r.stopped["reason"] == "invalid":
+            lines.append(f"[emulation stopped] {r.stopped['detail']}; arg registers: {regtxt}")
+            lines.append("The function executed an instruction the emulator cannot run (syscall, int, privileged, unusual "
+                         "SIMD): target the function below that point, or observe through run_binary instead.")
         else:
             lines.append(f"[emulation stopped] {r.stopped['detail']}; arg registers: {regtxt}")
             lines.append("The function touched memory this oracle did not set up (a global, heap, or a second buffer): "

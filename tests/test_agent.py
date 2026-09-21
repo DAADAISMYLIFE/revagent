@@ -939,6 +939,16 @@ def test_playbook_explains_gates_and_solve_check():
         assert f"\n{n}. **" in p
 
 
+def test_playbook_puts_emulate_before_solve_check_in_the_constraint_class():
+    p = load_system_prompt()
+    assert "`emulate`" in p
+    sec3 = p.index("## 3.")
+    assert p.index("emulate", sec3) < p.index("solve_check", sec3)
+    assert "Observation (program output" in p and "emulate" in p[p.index("11. **Evidence ladder."):p.index("# Environment")]
+    for n in range(1, 11):
+        assert f"\n{n}. **" in p
+
+
 def test_unreadable_case_file_mid_run_does_not_end_the_run(tmp_path):
     # I3: the per-step progress_marker read is the only case-file read on the step path. The model
     # has an unrestricted bash and .revagent is inside its cwd, so `rm -rf .revagent` is reachable;

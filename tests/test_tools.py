@@ -1303,8 +1303,8 @@ def test_emulate_tool_errors(tmp_path, monkeypatch):
     assert "[tool error] args" in em.run(ctx, binary="chal", function="0x1", args=["str:x"])
     assert "[tool error] args" in em.run(ctx, binary="chal", function="0x1", args=["hex:zz"])
     assert "[tool error] args" in em.run(ctx, binary="chal", function="0x1", args=["int:x"])
-    assert em.run(ctx, binary="chal", function="0x1", args=[], max_insns=0) == "[tool error] max_insns must be positive"
-    assert em.run(ctx, binary="chal", function="0x1", args=[], max_insns=-5) == "[tool error] max_insns must be positive"
+    assert em.run(ctx, binary="chal", function="0x1", args=[], max_insns=0) == "[tool error] max_insns must be a positive integer"
+    assert em.run(ctx, binary="chal", function="0x1", args=[], max_insns=-5) == "[tool error] max_insns must be a positive integer"
     monkeypatch.setattr(em, "load_image", lambda p: (_ for _ in ()).throw(EmulateError("unsupported architecture ARM")))
     out = em.run(ctx, binary="chal", function="0x1", args=[])
     assert out.startswith("[cannot emulate]") and "ARM" in out
@@ -1335,3 +1335,54 @@ def test_emulate_tool_timeout_clamped(tmp_path, monkeypatch):
     ctx.deadline = 50.0 + 12
     em.run(ctx, binary="chal", function="0x100000", args=[])
     assert seen["timeout_s"] == 12
+
+
+def test_emulate_tool_stopped_invalid_names_the_instruction_not_memory(tmp_path, monkeypatch):
+    # a syscall/int/privileged instruction is not a missing buffer: the memory hint would send the model
+    # off to pass addr: arguments that cannot help
+    from revagent.emulate import Result
+    from revagent.tools import emulate as em
+    (tmp_path / "chal").write_bytes(b"\x7fELF")
+    monkeypatch.setattr(em, "load_image", lambda p: _fake_image())
+    monkeypatch.setattr(em, "emulate_call", lambda *a, **k: Result(
+        rax=0, buffers=[], stopped={"reason": "invalid", "rip": 0x100010, "symbol": None,
+                                    "detail": "Invalid instruction (UC_ERR_INSN_INVALID) at rip 0x100010",
+                                    "arg_regs": [1, 2, 3, 4, 5, 6]}))
+    out = em.run(ctx_for(tmp_path), binary="chal", function="0x100000", args=[])
+    assert "[emulation stopped] Invalid instruction (UC_ERR_INSN_INVALID) at rip 0x100010; arg registers: rdi=0x1" in out
+    assert "instruction the emulator cannot run" in out and "run_binary" in out
+    assert "touched memory" not in out
+
+
+def test_emulate_tool_stopped_limit_shows_arg_registers(tmp_path, monkeypatch):
+    from revagent.emulate import Result
+    from revagent.tools import emulate as em
+    (tmp_path / "chal").write_bytes(b"\x7fELF")
+    monkeypatch.setattr(em, "load_image", lambda p: _fake_image())
+    monkeypatch.setattr(em, "emulate_call", lambda *a, **k: Result(
+        rax=0, buffers=[], stopped={"reason": "limit", "rip": 0x100008, "symbol": None,
+                                    "detail": "stopped after 10 instructions or 30s at 0x100008",
+                                    "arg_regs": [0x10000000, 0x20, 0, 0, 0, 0]}))
+    out = em.run(ctx_for(tmp_path), binary="chal", function="0x100000", args=[], max_insns=10)
+    assert "[emulation stopped] stopped after 10 instructions or 30s at 0x100008; raise max_insns" in out
+    assert "arg registers: rdi=0x10000000, rsi=0x20" in out
+
+
+def test_emulate_tool_coerces_and_validates_loosely_typed_arguments(tmp_path, monkeypatch):
+    # the model sends JSON: an int where a string was meant, a string for max_insns, a bare int for out_lens
+    from revagent.emulate import Result
+    from revagent.tools import emulate as em
+    with pytest.raises(ValueError, match="7"):
+        em.parse_args([7])                                            # str(7) has no ':' -> named in the error
+    assert em.parse_args(["int:7", "hex:41"]) == [("int", 7), ("hex", b"A")]
+    (tmp_path / "chal").write_bytes(b"\x7fELF")
+    monkeypatch.setattr(em, "load_image", lambda p: _fake_image())
+    seen = {}
+    monkeypatch.setattr(em, "emulate_call", lambda *a, **k: seen.update(k) or Result(0, [], None))
+    ctx = ctx_for(tmp_path)
+    assert em.run(ctx, binary="chal", function="0x100000", args=[], out_lens=4) == "[tool error] out_lens must be a list of integers"
+    assert em.run(ctx, binary="chal", function="0x100000", args=[], out_lens=["4"]) == "[tool error] out_lens must be a list of integers"
+    assert em.run(ctx, binary="chal", function="0x100000", args=[], max_insns="lots") == "[tool error] max_insns must be a positive integer"
+    assert em.run(ctx, binary="chal", function="0x100000", args=[], max_insns=None) == "[tool error] max_insns must be a positive integer"
+    assert em.run(ctx, binary="chal", function="0x100000", args=[], max_insns="100", out_lens=[3]).startswith("rax=")
+    assert seen["max_insns"] == 100 and seen["out_lens"] == [3]
