@@ -47,7 +47,7 @@ class ToolContext:
     flag_attempts: dict = field(default_factory=dict)
     deadline: float | None = None      # time.monotonic() at which the run's wall-clock budget ends
     emulate_images: dict = field(default_factory=dict)   # (path, mtime_ns, size) -> revagent.emulate.Image (cle+unicorn image cache per run)
-    tools_used: dict = field(default_factory=dict)       # tool name -> calls that reached its handler (submit_flag checks readings against it)
+    tools_used: dict = field(default_factory=dict)       # tool name -> calls whose handler actually ran (not unknown tools, bad JSON, bad arguments or G3-blocked calls); submit_flag checks readings against it
 
     def clamp_timeout(self, seconds: int) -> int:
         """Cap a tool timeout to the time left in the run. agent.py checks max_minutes only between
