@@ -11,9 +11,10 @@ from .detectors import COOLDOWN_STEPS, RELEASE_AFTER, STREAK_LIMIT, script_body,
 
 G3_TEXT = (
     f"[blocked by G3] This is the {STREAK_LIMIT}th consecutive edit of the same script and it was not run. "
-    "Change the approach instead of patching it again: (1) run the real program on your current candidate "
-    "(run_binary / run_gui) and compare its output with your model's; (2) write the forward transform as a "
-    "plain Python transform(x) and let solve_check invert it; or (3) write to notes why this approach fails "
+    "Change the approach instead of patching it again: (1) emulate the function you are modelling on a few "
+    "inputs (emulate) and compare with your re-implementation; (2) run the real program on your current "
+    "candidate (run_binary / run_gui) and compare its output with your model's; (3) write the forward transform "
+    "as a plain Python transform(x) and let solve_check invert it; or (4) write to notes why this approach fails "
     "and pick a different hypothesis. A step that does not re-edit this script — a different script, another tool, or notes — lifts the block."
 )
 
