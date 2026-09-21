@@ -3,6 +3,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from revagent.detectors import LONG_REASONING_CHARS, LONG_REASONING_LIMIT
 from scripts.replay_detectors import replay_file, replay_session
 
 FIX = Path(__file__).parent / "fixtures" / "transcripts"
@@ -38,3 +39,25 @@ def test_cli_exits_nonzero_when_a_solved_session_would_have_fired(tmp_path):
                           cwd=Path(__file__).resolve().parents[1])
     assert proc.returncode == 1
     assert "solved" in proc.stdout and "FALSE POSITIVE" in proc.stdout
+
+
+def test_solved_with_wrong_flag_counts_as_wrong_not_false_positive(tmp_path):
+    # the same cross-check bench applies: <challenge_dir>/../ANSWERS.md says DH{y}, the run reported DH{x}
+    suite = tmp_path / "suite"
+    work = suite / "chal" / ".revagent"
+    work.mkdir(parents=True)
+    (suite / "ANSWERS.md").write_text("| challenge | flag |\n|---|---|\n| chal | DH{y} |\n", encoding="utf-8")
+    lines = [{"role": "_meta", "event": "session_start"}]
+    for step in range(1, LONG_REASONING_LIMIT + 1):  # G4 fires on the LIMIT-th long-thinking step
+        lines.append({"role": "_reasoning", "step": step, "content": "t" * (LONG_REASONING_CHARS + 1)})
+        lines.append({"role": "assistant", "content": "", "tool_calls": [{"id": f"c{step}", "type": "function",
+                      "function": {"name": "bash", "arguments": json.dumps({"cmd": f"echo {step}"})}}]})
+    lines.append({"role": "_meta", "event": "end", "status": "solved", "flag": "DH{x}"})
+    p = work / "transcript.jsonl"
+    p.write_text("\n".join(json.dumps(l) for l in lines) + "\n")
+    rows = replay_file(p)
+    assert rows[0]["status"] == "wrong" and rows[0]["g4_step"] == LONG_REASONING_LIMIT
+    proc = subprocess.run([sys.executable, "scripts/replay_detectors.py", str(p)], capture_output=True, text=True,
+                          cwd=Path(__file__).resolve().parents[1])
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "| chal | 1 | wrong |" in proc.stdout and "FALSE POSITIVE" not in proc.stdout

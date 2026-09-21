@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Replay the gates over past transcripts: for every session, at which steps would G3 have blocked
 and would G4 have warned. Uses the SAME Gate class as the live loop, so the table is exactly what the
-agent would have done. Exit 1 when a solved session shows any firing (the zero-false-positive rule of
-docs/superpowers/specs/2026-09-21-transition-rules-design.md §2.3 / §8).
+agent would have done. A session reported `solved` whose flag differs from `<suite>/ANSWERS.md` (the same
+cross-check bench applies) is shown as `wrong`. Exit 1 when a solved session shows any firing (the
+zero-false-positive rule of docs/superpowers/specs/2026-09-21-transition-rules-design.md §2.3 / §8).
 
 usage: python scripts/replay_detectors.py quiz/*/.revagent/transcript.jsonl bench/mini/*/.revagent/transcript.jsonl
 """
@@ -11,6 +12,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from revagent.__main__ import check_answer  # noqa: E402
 from revagent.detectors import LONG_REASONING_CHARS, LONG_REASONING_LIMIT  # noqa: E402
 from revagent.gate import Gate  # noqa: E402
 
@@ -33,7 +35,7 @@ def replay_session(lines: list[dict]) -> dict:
     gate = Gate()
     step = 0
     blocks, released, long_steps, g4_step = [], [], 0, None
-    status = "incomplete"
+    status, flag = "incomplete", None
     for d in lines:
         if d.get("role") == "_reasoning":
             step = d["step"]
@@ -51,19 +53,29 @@ def replay_session(lines: list[dict]) -> dict:
                     released.append(step)
         elif d.get("event") == "end":
             status = d.get("status", "?")
-    return {"steps": step, "status": status, "g3_blocks": blocks, "g3_released": released,
+            flag = d.get("flag")
+    return {"steps": step, "status": status, "flag": flag, "g3_blocks": blocks, "g3_released": released,
             "long_reasoning_steps": long_steps, "g4_step": g4_step, "max_streak": gate.max_streak}
 
 
-def replay_file(path) -> list[dict]:
-    lines = [json.loads(l) for l in Path(path).read_text(encoding="utf-8").splitlines() if l.strip()]
-    return [replay_session(s) for s in _sessions(lines)]
-
-
-def _transcript_name(path) -> str:
-    """The challenge directory: `<name>/.revagent/transcript.jsonl` or `<name>/transcript.jsonl`."""
+def _challenge_dir(path) -> Path:
+    """The challenge directory of a transcript: `<dir>/.revagent/transcript.jsonl` or an archived
+    `<dir>/transcript.jsonl`. Its name is the ANSWERS.md row, its parent holds ANSWERS.md."""
     parent = Path(path).resolve().parent
-    return parent.parent.name if parent.name == ".revagent" else parent.name
+    return parent.parent if parent.name == ".revagent" else parent
+
+
+def replay_file(path) -> list[dict]:
+    """One row per session. A `solved` session whose flag contradicts `<challenge_dir>/../ANSWERS.md`
+    gets status `wrong` (and `note`), exactly as bench reports it."""
+    lines = [json.loads(l) for l in Path(path).read_text(encoding="utf-8").splitlines() if l.strip()]
+    challenge_dir = _challenge_dir(path)
+    rows = []
+    for s in _sessions(lines):
+        r = replay_session(s)
+        r["status"], r["note"] = check_answer(challenge_dir, r["status"], r["flag"])
+        rows.append(r)
+    return rows
 
 
 def main(argv=None) -> int:
@@ -78,7 +90,7 @@ def main(argv=None) -> int:
         for i, r in enumerate(replay_file(p), 1):
             fp = r["status"] == "solved" and (r["g3_blocks"] or r["g4_step"] is not None)
             false_positives += bool(fp)
-            name = _transcript_name(p)
+            name = _challenge_dir(p).name
             print(f"| {name} | {i} | {r['status']}{' FALSE POSITIVE' if fp else ''} | {r['steps']} | "
                   f"{r['g3_blocks'] or '-'} | {r['g3_released'] or '-'} | {r['max_streak']} | "
                   f"{r['long_reasoning_steps']} | {r['g4_step'] or '-'} |")

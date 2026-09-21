@@ -107,7 +107,7 @@
 
 ### 구현 후 리플레이 (실제 Gate 코드)
 
-`scripts/replay_detectors.py`가 루프와 같은 `Gate`(revagent/gate.py)와 `LONG_REASONING_*`(revagent/detectors.py)를 import해 계산한 결과. 실행:
+`scripts/replay_detectors.py`가 루프와 같은 `Gate`(revagent/gate.py)와 `LONG_REASONING_*`(revagent/detectors.py)를 import해 계산한 결과. 세션 상태는 bench와 같은 `check_answer`(revagent/__main__.py)로 교차 검증한다: `end.status`가 `solved`인데 flag가 `<챌린지 디렉터리>/../ANSWERS.md`의 행과 다르면 `wrong`. 실행:
 
 ```bash
 ~/.revagent-venv/bin/python scripts/replay_detectors.py /mnt/c/Users/강순우/Documents/vs/rev/quiz/*/.revagent/transcript.jsonl /mnt/c/Users/강순우/Documents/vs/rev/quiz/captain-hook.archive-pre-ladder/transcript.jsonl bench/mini/*/.revagent/transcript.jsonl
@@ -116,7 +116,7 @@
 | transcript | session | status | steps | G3 blocks at | released at | max streak | long-thinking steps | G4 at |
 |---|---|---|---|---|---|---|---|---|
 | basic | 1 | unsolved | 32 | [9, 10, 11, 32] | [11] | 6 | 5 | 30 |
-| captain-hook | 1 | solved FALSE POSITIVE | 191 | - | - | 3 | 16 | 99 |
+| captain-hook | 1 | wrong | 191 | - | - | 3 | 16 | 99 |
 | damnida | 1 | incomplete | 237 | [49, 107, 108, 145, 146, 203] | - | 5 | 14 | 118 |
 | multipoint | 1 | solved | 48 | - | - | 3 | 4 | - |
 | relativity | 1 | unsolved | 0 | - | - | 0 | 0 | - |
@@ -137,13 +137,13 @@
 | captain-hook.archive-pre-ladder | 7 | incomplete | 103 | - | - | 2 | 9 | 88 |
 | captain-hook.archive-pre-ladder | 8 | incomplete | 75 | - | - | 2 | 6 | 70 |
 | captain-hook.archive-pre-ladder | 9 | incomplete | 25 | - | - | 1 | 2 | - |
-| captain-hook.archive-pre-ladder | 10 | solved FALSE POSITIVE | 89 | - | - | 2 | 9 | 54 |
+| captain-hook.archive-pre-ladder | 10 | wrong | 89 | - | - | 2 | 9 | 54 |
 | win_console | 1 | solved | 8 | - | - | 1 | 0 | - |
 | win_gui | 1 | solved | 9 | - | - | 1 | 0 | - |
 | win_gui_32 | 1 | solved | 17 | - | - | 1 | 0 | - |
 | win_gui_key | 1 | solved | 12 | - | - | 1 | 0 | - |
 
-- 종료 코드 **1** (`2 solved session(s) would have fired: raise a threshold before shipping.`). `FALSE POSITIVE` 두 행은 transcript의 `end.status`가 `solved`인 captain-hook 현재 1세션과 archive 10세션으로, 위 측정 표에서 이미 오답 제출로 미해결에 분류한 두 세션이다. 리플레이 스크립트는 정답표를 갖지 않으므로(내용 무관 원칙) `end.status`를 그대로 쓴다. 둘 다 G3가 아니라 G4(긴 생각 5회째, 99·54스텝)만 울렸다.
-- 진짜 해결 7세션(multipoint, relativity 7회차, revlogin 2회차, mini 4개)은 G3·G4 모두 0회 — 측정 표와 일치. 상수는 바꾸지 않았다.
+- 종료 코드 **0**. 해결 7세션(multipoint, relativity 7회차, revlogin 2회차, mini 4개)은 G3·G4 모두 0회 — 측정 표와 일치. 상수는 바꾸지 않았다.
+- `wrong` 두 행(captain-hook 현재 1세션, archive 10세션)은 transcript의 `end.status`가 `solved`이지만 ANSWERS.md와 flag가 다른 오답 제출로, 위 측정 표에서 미해결에 분류한 그 두 세션이다. 둘 다 G3가 아니라 G4(긴 생각 5회째, 99·54스텝)만 울렸다.
 - 미해결 검출: G3는 basic(9·10·11 차단 → 11에서 해제, 냉각 21까지, 32에서 재차단), damnida, archive 1·2세션; G4는 basic 30, damnida 118, relativity 3·6회차, archive 다수.
-- 오답 "solved" 세션을 리플레이가 미해결로 다루려면 정답표 없이 표시할 방법(예: `end` 이벤트의 검증 필드 또는 CLI 제외 옵션)이 필요하다 — 미결.
+- 회귀 고정: `tests/fixtures/transcripts/pefile_loop.jsonl`(basic 1~16스텝: 9·10·11 차단, 11 해제)과 `extractor_variants.jsonl`(multipoint 28~36스텝: 차단 0, G4 없음), `tests/test_replay.py`.
