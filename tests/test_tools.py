@@ -1064,3 +1064,17 @@ def test_solve_check_timeout_is_clamped_to_run_deadline(tmp_path, monkeypatch):
     ctx.deadline = 50.0 + 20
     solve_check.run(ctx, file="t.py", target="00", length=1, timeout=600)
     assert seen["t"] == 20
+
+
+def test_solve_check_handles_table_built_inside_transform(tmp_path):
+    from revagent.tools import solve_check
+    src = "def transform(x):\n    t = Table([7, 9, 3, 1])\n    return [t[x[0] & 3]]\n"
+    (tmp_path / "t.py").write_text(src)
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target="09", length=1)
+    assert out.startswith("[sat]")
+    sol = bytes.fromhex(out.splitlines()[1].split()[1])
+    ns = {"Table": list}
+    exec(src, ns)
+    assert ns["transform"](list(sol)) == [9]
+    # 5 is not in the table: a Table built inside transform must be constrained, not a free z3 Array
+    assert solve_check.run(ctx_for(tmp_path), file="t.py", target="05", length=1).startswith("[unsat]")

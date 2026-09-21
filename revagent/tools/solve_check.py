@@ -45,6 +45,9 @@ class NotSymbolic(Exception):
     pass
 
 
+_TABLES: list = []   # every Table built since the current symbolic_solve started (import time or inside transform)
+
+
 class Sym:
     """A z3 bit-vector with Python-int semantics for the operators a byte-wise check uses."""
     __slots__ = ("v",)
@@ -103,6 +106,7 @@ class Table:
     def __init__(self, values):
         self.values = [int(v) & 0xff for v in values]
         self._arr = None
+        _TABLES.append(self)
 
     def __len__(self):
         return len(self.values)
@@ -135,6 +139,7 @@ def symbolic_solve(source: str, target: bytes, length: int, charset: str, timeou
     """Returns ("sat", bytes) | ("unsat", None) | ("timeout", None) | ("error: <text>", None)."""
     import z3
     ns = {"Table": Table, "__name__": "transform_module"}
+    _TABLES.clear()
     try:
         exec(compile(source, "transform.py", "exec"), ns)
     except Exception as e:
@@ -166,8 +171,9 @@ def symbolic_solve(source: str, target: bytes, length: int, charset: str, timeou
     if allowed is not None:
         for x in xs:
             s.add(z3.Or([x == c for c in allowed]))
-    tables = [v for v in ns.values() if isinstance(v, Table)]
-    for t in tables:
+    # Tables built inside transform() are not in ns; an unconstrained Array would let z3 invent table
+    # contents and answer [sat] for an impossible target, so every Table registers itself instead.
+    for t in _TABLES:
         for c in t.constraints():
             s.add(c)
     for o, tb_ in zip(out, target):
