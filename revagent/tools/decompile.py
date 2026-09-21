@@ -53,12 +53,27 @@ def _get_db(ctx, binary: str, p) -> FunctionDB:
                 raise
             ctx.function_dbs[key] = FunctionDB.load(json_path)
         ctx.current_binary = key
+        ctx.current_binary_rel = binary
     if not ctx.current_binary:
         raise GhidraError("no binary analyzed yet; call decompile with binary=<path> first")
     db = ctx.function_dbs[ctx.current_binary]
     if isinstance(db, GhidraError):
         raise GhidraError(f"previous analysis failed; not retrying: {db}")
     return db
+
+
+def _emulate_hint(ctx, f: dict) -> str:
+    """Prepended (truncate() cuts the tail) to the C of a function whose callees are all inside the
+    image: the model can run it under emulate as the oracle for its re-implementation."""
+    callees = ", ".join(sorted(f["callees"])) or "none"
+    binary = ctx.current_binary_rel or "<the binary you analyzed>"
+    try:   # emulate accepts FUN_<hex> / thunk_FUN_<hex> / 0x<hex>, not a name like `check`
+        function = f"0x{int(f['entry'], 16):x}"
+    except ValueError:
+        function = f["name"]
+    return (f"[hint] this function calls no imports (callees: {callees}), so emulate can run it directly: "
+            f"emulate(binary={binary}, function={function}, args=[\"hex:<input bytes>\"]) — compare its output "
+            "with your re-implementation before inverting anything.\n")
 
 
 def run(ctx, action: str, target: str = "", binary: str = "", limit: int = 200, filter: str = "") -> str:
@@ -76,7 +91,11 @@ def run(ctx, action: str, target: str = "", binary: str = "", limit: int = 200, 
     if action == "list":
         return db.list_text(limit=limit, name_filter=filter)
     if action == "get":
-        return db.get_text(target)
+        text = db.get_text(target)
+        f = db.find(target)
+        if f and f["decompiled_c"] and db.calls_no_imports(target):
+            text = _emulate_hint(ctx, f) + text
+        return text
     if action == "xrefs":
         return db.xrefs_text(target)
     return f"[tool error] unknown action {action!r}; use list, get or xrefs"

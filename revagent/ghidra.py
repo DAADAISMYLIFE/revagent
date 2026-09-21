@@ -2,12 +2,14 @@
 import hashlib
 import json
 import os
+import re
 import signal
 import subprocess
 import tempfile
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent / "ghidra_scripts"
+INTERNAL_NAME_RE = re.compile(r"^(thunk_)?FUN_[0-9a-fA-F]+$")   # Ghidra's auto-name for code inside the image
 
 
 class GhidraError(Exception):
@@ -119,6 +121,22 @@ class FunctionDB:
             lines.append(f'{f["name"]} @{f["entry"]} {f["size"]} strs={len(f["string_refs"])} '
                          f'calls={len(f["callees"])}' + ("  [thunk]" if f.get("is_thunk") else ""))
         return "\n".join(lines)
+
+    def calls_no_imports(self, target: str) -> bool | None:
+        """True when every callee is code inside the image (a FUN_/thunk_FUN_ name, or a non-thunk
+        function of this DB), so `emulate` can run the function without hitting an import stop;
+        False when some callee is an import (a thunk, or a name Ghidra did not define, e.g. strlen);
+        None when the function is not found."""
+        f = self.find(target)
+        if not f:
+            return None
+        for callee in f["callees"]:
+            if INTERNAL_NAME_RE.match(callee):
+                continue
+            g = self.by_name.get(callee)
+            if g is None or g.get("is_thunk"):
+                return False
+        return True
 
     def get_text(self, target: str) -> str:
         f = self.find(target)

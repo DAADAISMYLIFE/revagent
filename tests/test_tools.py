@@ -209,6 +209,72 @@ def test_summarize_caps_and_calls_llm(tmp_path):
     assert summarize.run(c, file="nope.txt", question="q").startswith("[tool error]")
 
 
+_EMU_FUNCS = [
+    {"name": "FUN_140001000", "entry": "0x140001000", "size": 10, "is_thunk": False,
+     "callers": [], "callees": [], "string_refs": [], "decompiled_c": "void FUN_140001000(char *s)\n{\n  s[0] ^= 0x5a;\n}\n"},
+    {"name": "FUN_140001100", "entry": "0x140001100", "size": 10, "is_thunk": False,
+     "callers": [], "callees": ["FUN_140001000"], "string_refs": [], "decompiled_c": "void FUN_140001100(char *s)\n{\n  FUN_140001000(s);\n}\n"},
+    {"name": "FUN_140001200", "entry": "0x140001200", "size": 10, "is_thunk": False,
+     "callers": [], "callees": ["FUN_140001000", "strlen"], "string_refs": [], "decompiled_c": "int FUN_140001200(char *s)\n{\n  return strlen(s);\n}\n"},
+]
+
+
+def test_decompile_get_hints_emulate_for_import_free_functions(tmp_path, monkeypatch):
+    import json
+    fix = tmp_path / "funcs.json"
+    fix.write_text(json.dumps(_EMU_FUNCS), encoding="utf-8")
+    (tmp_path / "chal.exe").write_bytes(b"MZ")
+    monkeypatch.setattr(decompile_mod, "analyze", lambda binary, cache_dir, timeout=None: fix)
+    c = ctx_for(tmp_path)
+    assert decompile.run(c, action="list", binary="chal.exe").startswith("3 functions")
+    assert c.current_binary_rel == "chal.exe"
+    out = decompile.run(c, action="get", target="FUN_140001100")
+    hint = ('[hint] this function calls no imports (callees: FUN_140001000), so emulate can run it directly: '
+            'emulate(binary=chal.exe, function=0x140001100, args=["hex:<input bytes>"]) — compare its output '
+            'with your re-implementation before inverting anything.\n')
+    assert out == hint + _EMU_FUNCS[1]["decompiled_c"]
+    out = decompile.run(c, action="get", target="0x140001000")
+    assert out == ('[hint] this function calls no imports (callees: none), so emulate can run it directly: '
+                   'emulate(binary=chal.exe, function=0x140001000, args=["hex:<input bytes>"]) — compare its output '
+                   'with your re-implementation before inverting anything.\n') + _EMU_FUNCS[0]["decompiled_c"]
+    assert decompile.run(c, action="get", target="FUN_140001200") == _EMU_FUNCS[2]["decompiled_c"]
+    assert decompile.run(c, action="get", target="nope").startswith("[not found]")
+    # list / xrefs outputs carry no hint
+    assert "[hint]" not in decompile.run(c, action="list")
+    xr = decompile.run(c, action="xrefs", target="FUN_140001100")
+    assert "[hint]" not in xr and xr.startswith("FUN_140001100 @0x140001100 size=10\ncallers: -\ncallees: FUN_140001000")
+
+
+def test_decompile_hint_without_a_known_relative_binary(tmp_path, monkeypatch):
+    import json
+    fix = tmp_path / "funcs.json"
+    fix.write_text(json.dumps(_EMU_FUNCS), encoding="utf-8")
+    (tmp_path / "chal.exe").write_bytes(b"MZ")
+    monkeypatch.setattr(decompile_mod, "analyze", lambda binary, cache_dir, timeout=None: fix)
+    c = ctx_for(tmp_path)
+    decompile.run(c, action="list", binary="chal.exe")
+    c.current_binary_rel = None
+    out = decompile.run(c, action="get", target="FUN_140001000")
+    assert out.startswith("[hint] this function calls no imports (callees: none), so emulate can run it directly: "
+                          "emulate(binary=<the binary you analyzed>, function=0x140001000, args=[\"hex:<input bytes>\"])")
+
+
+def test_decompile_hint_quotes_the_entry_address_for_named_functions(tmp_path, monkeypatch):
+    # emulate.parse_function only accepts FUN_<hex> / thunk_FUN_<hex> / 0x<hex>, so a named function
+    # (check) must be quoted by its entry address, zero-padding dropped.
+    fix = Path(__file__).parent / "fixtures" / "functions.json"
+    (tmp_path / "prog").write_bytes(b"\x7fELF")
+    monkeypatch.setattr(decompile_mod, "analyze", lambda binary, cache_dir, timeout=None: fix)
+    c = ctx_for(tmp_path)
+    decompile.run(c, action="list", binary="prog")
+    out = decompile.run(c, action="get", target="check")
+    assert out.startswith("[hint] this function calls no imports (callees: none), so emulate can run it directly: "
+                          "emulate(binary=prog, function=0x4011a0, args=[\"hex:<input bytes>\"])")
+    from revagent.tools.emulate import parse_function
+    assert parse_function("0x4011a0") == 0x4011a0
+    assert "s[i]^0x5a" in out and "[hint]" not in decompile.run(c, action="get", target="main")
+
+
 def test_decompile_negative_caches_analysis_failure(tmp_path, monkeypatch):
     (tmp_path / "prog").write_bytes(b"\x7fELF")
     calls = []
@@ -764,13 +830,133 @@ def test_run_gui_no_window_twice_sets_env_blocked(tmp_path, monkeypatch):
 def test_submit_flag_two_readings_requires_two_methods(tmp_path):
     from revagent.tools import submit_flag
     c = ctx_for(tmp_path)
+    c.tools_used = {"run_gui": 1, "bash": 3}
     out = submit_flag.run(c, flag="DH{abc}", how_verified="read it from the screenshot with pillow",
                           evidence="two_independent_readings")
     assert out.startswith("[rejected] second independent reading required") and c.flag is None
     out = submit_flag.run(c, flag="DH{abc}", evidence="two_independent_readings",
-                          how_verified="① rasterised the click-diff PNGs and read 16 glyphs\n"
-                                       "② gate constants form a 0..15 permutation, so the alphabet is hex; log coordinates rebuilt the same string")
+                          how_verified="① run_gui: rasterised the click-diff PNGs and read 16 glyphs\n"
+                                       "② bash: gate constants form a 0..15 permutation, so the alphabet is hex; log coordinates rebuilt the same string")
     assert out.startswith("[accepted]") and c.flag == "DH{abc}"
+
+
+def test_submit_flag_two_readings_must_name_a_tool_per_reading(tmp_path):
+    from revagent.tools import submit_flag
+    c = ctx_for(tmp_path)
+    c.tools_used = {"run_gui": 1, "bash": 3}
+    out = submit_flag.run(c, flag="DH{abc}", evidence="two_independent_readings",
+                          how_verified="① read the screenshot\n② rebuilt from the hook log")
+    assert out == ("[rejected] each reading must say which tool produced it (run_gui / run_binary / emulate / decompile "
+                   "/ bash / summarize): ① <tool>: ... ② <tool>: ... (the first tool named in a reading is the one that counts)")
+    assert c.flag is None and c.flag_attempts == {"DH{abc}": 1}
+    # one reading names a tool, the other does not: still rejected
+    out = submit_flag.run(c, flag="DH{abc}", evidence="two_independent_readings",
+                          how_verified="① run_gui: read the screenshot\n② rebuilt from the hook log")
+    assert out.startswith("[rejected] each reading must say which tool produced it") and c.flag is None
+
+
+def test_submit_flag_two_readings_rejects_same_tool_twice(tmp_path):
+    from revagent.tools import submit_flag
+    c = ctx_for(tmp_path)
+    c.tools_used = {"run_gui": 2}
+    out = submit_flag.run(c, flag="DH{abc}", evidence="two_independent_readings",
+                          how_verified="① run_gui: screenshot after real clicks\n② run_gui: hook log of the same capture")
+    assert out == ("[rejected] both readings come from the same tool (run_gui); a second reading must come from a "
+                   "DIFFERENT source — e.g. a run_gui capture AND bytes decoded from the file with bash, or emulate "
+                   "on the draw routine. (the first tool named in a reading is the one that counts)")
+    assert c.flag is None and c.flag_attempts == {"DH{abc}": 1}
+
+
+def test_submit_flag_two_readings_rejects_tool_never_called(tmp_path):
+    from revagent.tools import submit_flag
+    c = ctx_for(tmp_path)
+    c.tools_used = {"run_gui": 1}
+    out = submit_flag.run(c, flag="DH{abc}", evidence="two_independent_readings",
+                          how_verified="① run_gui: screenshot after real clicks\n② bash: decoded the bytes from the file")
+    assert out == "[rejected] reading ② names bash but this run never called it; read it for real first."
+    assert c.flag is None and c.flag_attempts == {"DH{abc}": 1}
+    c.tools_used["bash"] = 1
+    out = submit_flag.run(c, flag="DH{abc}", evidence="two_independent_readings",
+                          how_verified="① run_gui: screenshot after real clicks\n② bash: decoded the bytes from the file")
+    assert out.startswith("[accepted]") and c.flag == "DH{abc}"
+
+
+def test_submit_flag_two_readings_survive_a_parenthesised_digit(tmp_path):
+    # "(0) " matches the "N) " step separator, so the first reading splits in two; the fragment that
+    # names no tool is dropped and the two tool-named parts are what count.
+    from revagent.tools import submit_flag
+    c = ctx_for(tmp_path)
+    c.tools_used = {"run_gui": 1, "bash": 1}
+    out = submit_flag.run(c, flag="DH{abc}", evidence="two_independent_readings",
+                          how_verified="① run_gui: pixel (0) is black\n② bash: xxd shows 0x61 0x62 0x63")
+    assert out.startswith("[accepted]") and c.flag == "DH{abc}"
+
+
+def test_submit_flag_tool_names_and_hatch_are_case_insensitive(tmp_path):
+    from revagent.tools import submit_flag
+    c = ctx_for(tmp_path)
+    c.tools_used = {"run_gui": 1, "bash": 1}
+    out = submit_flag.run(c, flag="DH{abc}", evidence="two_independent_readings",
+                          how_verified="① Run_GUI: screenshot\n② BASH: decoded bytes")
+    assert out.startswith("[accepted]")
+    c2 = ctx_for(tmp_path)
+    c2.tools_used = {"run_gui": 1, "bash": 1}
+    out = submit_flag.run(c2, flag="DH{0}", evidence="two_independent_readings",
+                          how_verified="Description States the flag is one digit\n① run_gui: glyph\n② bash: byte")
+    assert out.startswith("[accepted]") and c2.flag == "DH{0}"
+
+
+def test_submit_flag_short_body_needs_description_states(tmp_path):
+    from revagent.tools import submit_flag
+    c = ctx_for(tmp_path)
+    c.tools_used = {"run_gui": 1, "bash": 1}
+    short = ("[rejected] a flag body of 1-2 characters is almost never the whole flag: keep reading (the "
+             "stream/screen usually continues). If the description really states the flag is that short, "
+             "write 'description states ...' in how_verified.")
+    out = submit_flag.run(c, flag="DH{0}", evidence="two_independent_readings",
+                          how_verified="① run_gui: one glyph\n② bash: decoded one byte")
+    assert out == short and c.flag is None and c.flag_attempts == {"DH{0}": 1}
+    out = submit_flag.run(c, flag="DH{ab}", evidence="two_independent_readings",
+                          how_verified="① run_gui: two glyphs\n② bash: decoded two bytes")
+    assert out == short
+    # the rule is only for displayed flags: other evidence kinds accept short bodies
+    for evidence, hv in (("program_accepted", "run_gui showed Correct"),
+                         ("reimplementation_matches", "my model accepts it")):
+        c2 = ctx_for(tmp_path)
+        assert submit_flag.run(c2, flag="DH{0}", how_verified=hv, evidence=evidence).startswith("[accepted]"), evidence
+    out = submit_flag.run(c, flag="DH{0}", evidence="two_independent_readings",
+                          how_verified="description states the flag is one digit\n① run_gui: glyph\n② bash: byte")
+    assert out.startswith("[accepted]") and c.flag == "DH{0}"
+
+
+def test_submit_flag_short_body_rejections_hit_the_spam_guard(tmp_path):
+    from revagent.tools import submit_flag
+    c = ctx_for(tmp_path)
+    c.tools_used = {"run_gui": 1, "bash": 1}
+    for _ in range(3):
+        out = submit_flag.run(c, flag="DH{0}", evidence="two_independent_readings",
+                              how_verified="① run_gui: one glyph\n② bash: one byte")
+        assert out.startswith("[rejected] a flag body of 1-2 characters")
+    out = submit_flag.run(c, flag="DH{0}", evidence="two_independent_readings",
+                          how_verified="① run_gui: one glyph\n② bash: one byte")
+    assert out == "[rejected] same flag 3× — change approach" and c.flag is None
+
+
+def test_submit_flag_program_accepted_needs_no_tool_naming(tmp_path):
+    from revagent.tools import submit_flag
+    c = ctx_for(tmp_path)
+    assert c.tools_used == {}
+    out = submit_flag.run(c, flag="DH{abc}", how_verified="the program printed Correct", evidence="program_accepted")
+    assert out.startswith("[accepted]") and c.flag == "DH{abc}"
+
+
+def test_submit_flag_schema_names_reading_tools():
+    from revagent.tools import submit_flag
+    desc = submit_flag.SCHEMA["function"]["parameters"]["properties"]["how_verified"]["description"]
+    assert desc.startswith("what you ran and what it showed; for two_independent_readings: method ① on one line, method ② on the next")
+    assert "name the tool of each reading (① run_gui: ... ② bash: ...)" in desc
+    assert "the first tool named in a reading is the one that counts" in desc
+    assert submit_flag.READING_TOOLS == ("run_gui", "run_binary", "emulate", "decompile", "bash", "summarize")
 
 
 def test_submit_flag_evidence_enum_and_default(tmp_path):
@@ -790,8 +976,9 @@ def test_submit_flag_same_flag_spam_guard_then_two_methods_accepted(tmp_path):
         assert out.startswith("[rejected] second independent reading required")
     out = submit_flag.run(c, flag="DH{zzz}", how_verified="one method only", evidence="two_independent_readings")
     assert out == "[rejected] same flag 3× — change approach"
+    c.tools_used = {"run_gui": 1, "bash": 3}
     out = submit_flag.run(c, flag="DH{zzz}",
-                          how_verified="① read captures after real clicks\n② rebuilt from decoded bytes",
+                          how_verified="① run_gui: read captures after real clicks\n② bash: rebuilt from decoded bytes",
                           evidence="two_independent_readings")
     assert out.startswith("[accepted]") and c.flag == "DH{zzz}"
 
@@ -802,6 +989,7 @@ def test_count_methods():
     assert count_methods("① a\n② b") == 2
     assert count_methods("1) screen diff read 2) log rebuild") == 2
     assert count_methods("first line\nsecond line") == 2
+    assert count_methods("⑥ a ⑦ b ⑧ c ⑨ d") == 4
     assert count_methods("") == 0
 
 

@@ -1085,3 +1085,19 @@ def test_signals_record_first_facts_step(tmp_path):
     (tmp_path / "b").mkdir()
     r2 = Agent(make_problem(tmp_path / "b"), "", llm2, max_steps=5, interactive=False).run()
     assert r2["signals"]["first_facts_step"] is None
+
+
+def test_agent_counts_tool_calls_that_reach_a_handler(tmp_path):
+    d = make_problem(tmp_path)
+    llm = ScriptedLLM([
+        [("nope", {})],
+        [("bash", {"cmd": "echo one"}), ("bash", {"cmd": "echo two"})],
+        [("notes", {"action": "add", "text": "x"})],
+        [("notes", {"zzz": 1})],   # bad arguments: the handler never ran, so it is not counted
+        [("submit_flag", {"flag": "DH{x}", "how_verified": "v"})],
+    ])
+    agent = Agent(d, "", llm, max_steps=10, interactive=False)
+    agent.run()
+    assert agent.ctx.tools_used == {"bash": 2, "notes": 1, "submit_flag": 1}
+    tools = [m["content"] for m in llm.seen[4] if m["role"] == "tool"]
+    assert tools[-1].startswith("[tool error] bad arguments for notes")

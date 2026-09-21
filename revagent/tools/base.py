@@ -38,6 +38,7 @@ class ToolContext:
     how_verified: str = ""
     function_dbs: dict = field(default_factory=dict)
     current_binary: str | None = None
+    current_binary_rel: str | None = None   # the binary= path as the model wrote it (quoted back in decompile's emulate hint)
     step: int = 0                      # current loop step; the agent updates it before each tool call
     env_blocked: bool = False          # set by tools only: the sandbox cannot execute the target
     start_failures: int = 0
@@ -46,6 +47,7 @@ class ToolContext:
     flag_attempts: dict = field(default_factory=dict)
     deadline: float | None = None      # time.monotonic() at which the run's wall-clock budget ends
     emulate_images: dict = field(default_factory=dict)   # (path, mtime_ns, size) -> revagent.emulate.Image (cle+unicorn image cache per run)
+    tools_used: dict = field(default_factory=dict)       # tool name -> calls whose handler actually ran (not unknown tools, bad JSON, bad arguments or G3-blocked calls); submit_flag checks readings against it
 
     def clamp_timeout(self, seconds: int) -> int:
         """Cap a tool timeout to the time left in the run. agent.py checks max_minutes only between
