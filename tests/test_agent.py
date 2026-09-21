@@ -1050,7 +1050,7 @@ def test_g3_blocked_step_counts_as_no_progress_for_the_critic(tmp_path, monkeypa
     assert r["status"] == "unsolved" and r["reason"] == "step limit"
 
 
-def test_g4_warns_once_on_fifth_long_reasoning_step_and_lowers_effort(tmp_path):
+def test_g4_warns_once_on_fifth_long_reasoning_step_and_does_not_change_effort(tmp_path):
     d = make_problem(tmp_path)
     long = "x" * 8001
     llm = ScriptedLLM([
@@ -1061,8 +1061,8 @@ def test_g4_warns_once_on_fifth_long_reasoning_step_and_lowers_effort(tmp_path):
     ])
     r = Agent(d, "", llm, max_steps=10, interactive=False).run()
     assert r["status"] == "solved"
-    # steps 1-5 medium (None = client default); the 5th long step sets the override, so steps 6, 7 are low
-    assert llm.efforts_seen == [None, None, None, None, None, "low", "low"]
+    # G4 only warns: every step keeps the client default effort (None = medium), before and after the gate
+    assert llm.efforts_seen == [None] * 7
     warns = [m for m in llm.seen[-1] if m["role"] == "user" and m["content"].startswith("[gate]")]
     assert len(warns) == 1 and "5" in warns[0]["content"]
     lines = [json.loads(l) for l in (d / ".revagent" / "transcript.jsonl").read_text().splitlines()]
