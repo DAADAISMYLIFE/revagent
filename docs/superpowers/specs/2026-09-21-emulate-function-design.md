@@ -43,6 +43,10 @@ spike(2026-09-21 밤, 호스트 venv, cle 9.3.3 + unicorn 2.1.0): chall9.exe의 
 - bench/mini/xor_check(ELF)와 bench/mini/win_console(PE)의 체크 함수를 대상으로 `emulate`가 `run_binary`와 일치하는 결과를 내는 테스트. quiz/basic의 chall9.exe는 레포 밖이라 라이브 검증에서만 쓴다.
 - 단위 테스트는 unicorn으로 직접 조립한 작은 코드(`add rdi, rsi; mov rax, rdi; ret`)와 cle 없이 매핑한 버퍼로 `emulate_call`의 규약(인자 레지스터, shadow space, sentinel 정지, import 보고)을 고정한다.
 
+### 3.5 라이브 검증 결과 (2026-09-21 밤)
+
+basic 3회차(케이스 파일 새로, 15분): **solved**, 43스텝 11.2분. `emulate`를 18, 29스텝에 세 번 불러 forward 모델을 오라클과 비교했고 33스텝에 바이트 단위로 일치했다. 그 뒤 손으로 뒤집어 42스텝에 `run_binary`로 Correct 확인, 43스텝 제출. 1·2회차가 죽은 "forward 검증" 단계가 정확히 이 도구로 넘어갔다. `solve_check`는 안 썼다(forward가 맞자 손 역산이 됐다). G3가 4번 막았고(22, 23, 28, 37) 매번 다음 스텝에서 접근이 바뀌었다(notes, emulate, 새 파일). 전환 규칙 스펙 §8에도 기록.
+
 ## 4. 데이터 흐름
 
 ```
