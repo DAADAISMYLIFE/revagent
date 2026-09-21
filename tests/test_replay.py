@@ -61,3 +61,25 @@ def test_solved_with_wrong_flag_counts_as_wrong_not_false_positive(tmp_path):
                           cwd=Path(__file__).resolve().parents[1])
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "| chal | 1 | wrong |" in proc.stdout and "FALSE POSITIVE" not in proc.stdout
+
+
+def test_gated_solved_session_is_exempt_from_the_false_positive_rule(tmp_path):
+    # a live run WITH the gates: its blocks are interventions, not calibration errors
+    lines = [{"role": "_meta", "event": "session_start"}]
+    body = "import pefile\npe = pefile.PE('c')\n" + "y = 2\n" * 50
+    for step in range(1, 6):
+        lines.append({"role": "_reasoning", "step": step, "content": "t"})
+        lines.append({"role": "assistant", "content": "", "tool_calls": [{"id": f"c{step}", "type": "function",
+                      "function": {"name": "bash", "arguments": json.dumps({"cmd": f"python3 - <<'EOF'\n{body}print({step})\nEOF"})}}]})
+        if step == 4:
+            lines.append({"role": "_meta", "event": "gate_block", "gate": "G3", "step": step, "streak": 4})
+    lines.append({"role": "_meta", "event": "end", "status": "solved"})
+    p = tmp_path / "t.jsonl"
+    p.write_text("\n".join(json.dumps(l) for l in lines) + "\n")
+    rows = replay_file(p)
+    assert rows[0]["gated"] and rows[0]["g3_blocks"]           # the G3 columns are still counted
+    proc = subprocess.run([sys.executable, "scripts/replay_detectors.py", str(p)], capture_output=True, text=True,
+                          cwd=Path(__file__).resolve().parents[1])
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "| solved (gated) |" in proc.stdout and "FALSE POSITIVE" not in proc.stdout
+    assert f"| {rows[0]['g3_blocks']} |" in proc.stdout
