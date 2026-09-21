@@ -46,6 +46,8 @@ bash scripts/install_ghidra.sh         # --host 로 돌릴 때만 필요 (JDK 21
 
 `--dev`는 레포를 컨테이너에 쓰기 가능으로 마운트한다. 믿을 수 없는 바이너리엔 쓰지 마라.
 
+루프가 막는 것 두 가지. 같은 스크립트를 4번째 고치면 그 호출은 실행 안 되고 `[blocked by G3]`가 돌아온다(프로그램을 돌리거나, `solve_check`에 넘기거나, 노트에 실패를 적으면 풀림). 8천 자 넘게 생각하는 스텝이 5번째 나오면 `[gate]` 경고 한 번 주고 남은 실행은 생각 예산을 낮춘다. 둘 다 과거 transcript 전부에 리플레이해서 푼 실행에선 한 번도 안 울리는 값으로 잡았다: `python scripts/replay_detectors.py 문제폴더/.revagent/transcript.jsonl`.
+
 ### 산출물 (`문제폴더/.revagent/`)
 | 파일 | 내용 |
 |---|---|
@@ -57,7 +59,7 @@ bash scripts/install_ghidra.sh         # --host 로 돌릴 때만 필요 (JDK 21
 | `screens/` | `run_gui` 캡처와 입력별 diff PNG |
 | `runbook.md` | 샌드박스가 실행 못 하는 대상일 때 사람용 절차 |
 | `case.md.bak` | 케이스 파일 강제 축소 직전 백업 |
-| `result.json` | 마지막 실행 결과 |
+| `result.json` | 마지막 실행 결과 (+ `signals`: 게이트 발동, 긴 생각 횟수, 첫 Facts 스텝) |
 | `results.jsonl` | 실행마다 한 줄 누적 |
 
 `문제폴더/../ANSWERS.md`에 `| 폴더이름 | 플래그 |` 행이 있으면 대조해서 틀리면 `result.json`을 `wrong`으로 고친다.
@@ -77,7 +79,8 @@ bash scripts/install_ghidra.sh         # --host 로 돌릴 때만 필요 (JDK 21
 - 에이전트 코드 고치면 `--dev`로 바로 돌리거나 `bash scripts/sandbox-build.sh`로 마지막 레이어만 재빌드(몇 분). Ghidra 스크립트를 고쳐도 Ghidra 레이어는 안 다시 빌드한다.
 
 ## 동작 원리
-- ReAct 루프 하나, 도구 아홉 개: `bash`, `decompile`, `run_binary`, `run_gui`, `notes`, `summarize`, `ask_user`, `submit_flag`, `handoff_runbook`.
+- ReAct 루프 하나, 도구 열 개: `bash`, `decompile`, `run_binary`, `run_gui`, `solve_check`, `notes`, `summarize`, `ask_user`, `submit_flag`, `handoff_runbook`.
+- `solve_check`: 모델이 forward 변환만 파이썬으로 쓰면 z3가 입력을 찾아 준다. 바이트 단위 체크용.
 - 메모리는 `case.md`. 프롬프트가 44k 토큰 넘으면 대화 중간을 요약해 여기 넣고, 시스템 프롬프트 + 작업 + case.md + 최근 도구 교환 4개로 컨텍스트를 다시 만든다.
 - thinking 켜 둠(`medium`). 출력 예산 16k 토큰, 넘치면 힌트 붙여 `low`로 한 번 재시도.
 - 응답은 스트리밍. RunPod 프록시가 100초 안에 응답 안 시작하면 524로 끊기 때문. 일시 장애는 3번 재시도하고 `llm_retries`에 센다.

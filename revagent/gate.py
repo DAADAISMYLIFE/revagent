@@ -14,7 +14,7 @@ G3_TEXT = (
     "Change the approach instead of patching it again: (1) run the real program on your current candidate "
     "(run_binary / run_gui) and compare its output with your model's; (2) write the forward transform as a "
     "plain Python transform(x) and let solve_check invert it; or (3) write to notes why this approach fails "
-    "and pick a different hypothesis. A script that differs from this one, any other tool, or notes lifts the block."
+    "and pick a different hypothesis. A step that does not re-edit this script — a different script, another tool, or notes — lifts the block."
 )
 
 

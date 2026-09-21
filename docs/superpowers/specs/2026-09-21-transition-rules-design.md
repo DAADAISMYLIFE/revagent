@@ -107,7 +107,7 @@
 
 ### 구현 후 리플레이 (실제 Gate 코드)
 
-`scripts/replay_detectors.py`가 루프와 같은 `Gate`(revagent/gate.py)와 `LONG_REASONING_*`(revagent/detectors.py)를 import해 계산한 결과. 세션 상태는 bench와 같은 `check_answer`(revagent/__main__.py)로 교차 검증한다: `end.status`가 `solved`인데 flag가 `<챌린지 디렉터리>/../ANSWERS.md`의 행과 다르면 `wrong`. 실행:
+`scripts/replay_detectors.py`가 루프와 같은 `Gate`(revagent/gate.py)와 `LONG_REASONING_*`(revagent/detectors.py)를 import해 계산한 결과. 세션 상태는 bench와 같은 `check_answer`(revagent/__main__.py)로 교차 검증한다: `end.status`가 `solved`인데 flag가 `<챌린지 디렉터리>/../ANSWERS.md`의 행과 다르면 `wrong`. 리플레이는 답 대조를 챌린지 디렉터리 이름으로 찾기 때문에, 아래 표는 `quiz/ANSWERS.md`에 `| captain-hook.archive-pre-ladder | DH{H0000KER} |` 행(2026-09-21 추가)이 있어야 그대로 재현된다. 실행:
 
 ```bash
 ~/.revagent-venv/bin/python scripts/replay_detectors.py /mnt/c/Users/강순우/Documents/vs/rev/quiz/*/.revagent/transcript.jsonl /mnt/c/Users/강순우/Documents/vs/rev/quiz/captain-hook.archive-pre-ladder/transcript.jsonl bench/mini/*/.revagent/transcript.jsonl

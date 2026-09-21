@@ -930,6 +930,14 @@ def test_playbook_covers_constructor_rewritten_data_and_gdb_dump_parsing():
     assert p.index("**Data rewritten before main") < p.index("**Compiler-emitted constant division")
 
 
+def test_playbook_explains_gates_and_solve_check():
+    p = load_system_prompt()
+    assert "[blocked by G3]" in p and "[gate]" in p and "solve_check" in p
+    assert p.index("solve_check") < p.index("**Compiler-emitted constant division")   # first choice in §3, not an afterthought
+    for n in range(1, 11):
+        assert f"\n{n}. **" in p
+
+
 def test_unreadable_case_file_mid_run_does_not_end_the_run(tmp_path):
     # I3: the per-step progress_marker read is the only case-file read on the step path. The model
     # has an unrestricted bash and .revagent is inside its cwd, so `rm -rf .revagent` is reachable;
