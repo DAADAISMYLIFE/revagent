@@ -16,7 +16,7 @@ def test_registry_has_all_tools():
     schemas, handlers = load_tools()
     names = {s["function"]["name"] for s in schemas}
     assert names == {"bash", "run_binary", "run_gui", "notes", "decompile", "summarize", "ask_user", "submit_flag",
-                     "handoff_runbook"}
+                     "handoff_runbook", "solve_check"}
     assert set(handlers) == names
     for s in schemas:
         assert s["type"] == "function" and "parameters" in s["function"]
@@ -997,3 +997,70 @@ def test_run_gui_wait_clamped_to_run_deadline(tmp_path, monkeypatch):
     # sleeps[0] is _reset_display's 1 s after killing the leftover fake window; the first capture wait
     # asked for 60 s and must be cut to the 8 s left in the run
     assert sleeps[-1] == 8 and 60 not in sleeps
+
+
+from pathlib import Path as _P
+FIX = _P(__file__).parent / "fixtures" / "transforms"
+
+
+def _copy_fixture(tmp_path, name):
+    (tmp_path / name).write_text((FIX / name).read_text(encoding="utf-8"), encoding="utf-8")
+
+
+def test_solve_check_inverts_xor(tmp_path):
+    from revagent.tools import solve_check
+    _copy_fixture(tmp_path, "xor_transform.py")
+    plain = b"DH{x0r}"
+    target = bytes(c ^ [0x13, 0x37, 0x42, 0x99][i % 4] for i, c in enumerate(plain))
+    out = solve_check.run(ctx_for(tmp_path), file="xor_transform.py", target=target.hex(), length=len(plain))
+    assert out.startswith("[sat]") and "DH{x0r}" in out and target.hex() in out
+
+
+def test_solve_check_inverts_a_sequential_block_cipher(tmp_path):
+    from revagent.tools import solve_check
+    _copy_fixture(tmp_path, "block_cipher_transform.py")
+    ns = {"Table": solve_check.Table}
+    exec((FIX / "block_cipher_transform.py").read_text(encoding="utf-8"), ns)
+    plain = list(b"Reverse__your__brain_;)\x00")
+    target = bytes(ns["transform"](plain))
+    out = solve_check.run(ctx_for(tmp_path), file="block_cipher_transform.py", target=target.hex(), length=24,
+                          charset="[ -~\\x00]")
+    assert out.startswith("[sat]") and "Reverse__your__brain_;)" in out
+
+
+def test_solve_check_reports_unsat(tmp_path):
+    from revagent.tools import solve_check
+    (tmp_path / "t.py").write_text("def transform(x):\n    return [x[0] & 0, x[1]]\n")
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target="0102", length=2)
+    assert out.startswith("[unsat]")
+
+
+def test_solve_check_names_the_line_that_cannot_be_symbolic(tmp_path):
+    from revagent.tools import solve_check
+    (tmp_path / "t.py").write_text("def transform(x):\n    y = x[0] + 1\n    n = int(y)\n    return [n]\n")
+    out = solve_check.run(ctx_for(tmp_path), file="t.py", target="05", length=1)
+    assert out.startswith("[error]") and "line 3" in out and "int(" in out
+
+
+def test_solve_check_rejects_bad_inputs_and_escapes(tmp_path):
+    from revagent.tools import solve_check
+    (tmp_path / "t.py").write_text("def transform(x):\n    return x\n")
+    assert solve_check.run(ctx_for(tmp_path), file="../t.py", target="00", length=1).startswith("[tool error] path escapes")
+    assert solve_check.run(ctx_for(tmp_path), file="nope.py", target="00", length=1).startswith("[tool error] no such file")
+    assert solve_check.run(ctx_for(tmp_path), file="t.py", target="zz", length=1).startswith("[tool error] target")
+    assert solve_check.run(ctx_for(tmp_path), file="t.py", target="0000", length=1).startswith("[tool error] length")
+    (tmp_path / "u.py").write_text("x = 1\n")
+    assert "transform" in solve_check.run(ctx_for(tmp_path), file="u.py", target="00", length=1)
+
+
+def test_solve_check_timeout_is_clamped_to_run_deadline(tmp_path, monkeypatch):
+    from revagent.tools import solve_check
+    (tmp_path / "t.py").write_text("def transform(x):\n    return x\n")
+    seen = {}
+    monkeypatch.setattr(solve_check, "symbolic_solve",
+                        lambda src, target, length, charset, timeout_s: seen.update(t=timeout_s) or ("sat", b"\x00"))
+    monkeypatch.setattr("revagent.tools.base.time.monotonic", lambda: 50.0)
+    ctx = ctx_for(tmp_path)
+    ctx.deadline = 50.0 + 20
+    solve_check.run(ctx, file="t.py", target="00", length=1, timeout=600)
+    assert seen["t"] == 20
