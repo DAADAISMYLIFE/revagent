@@ -10,8 +10,8 @@ import struct
 import subprocess
 import time
 
-from ..trace import (TraceError, analyze, compress, from_ghidra, full_listing, locate_image, parse_elf_header,
-                     parse_qemu_log, render)
+from ..trace import (TraceError, analyze, compress, from_ghidra, full_listing, is_ghidra_image_addr, locate_image,
+                     parse_elf_header, parse_qemu_log, render)
 from .base import PathError, resolve_inside
 from .bash import MAX_TIMEOUT, scrubbed_env
 
@@ -209,19 +209,21 @@ def _run(ctx, binary: str, stdin: str, args: list[str] | None, range_text: str |
     if range_ is not None:
         # -dfilter needs guest addresses; a Ghidra address inside a PIE image can be converted only once
         # a previous trace of this binary told us the base — otherwise qemu logs everything and the range is
-        # applied here (correct, just a bigger log)
+        # applied here (correct, just a bigger log). A PIE is never filtered before its base is known, even
+        # for a guest-address range: with -dfilter the entry TB is not logged and the base would be a guess.
         lo, hi = range_
-        lo_in_image = elf.is_pie and 0x100000 <= lo < 0x100000 + elf.size
-        hi_in_image = elf.is_pie and 0x100000 <= hi - 1 < 0x100000 + elf.size
+        lo_in_image = is_ghidra_image_addr(lo, elf.size, elf.is_pie)
+        hi_in_image = is_ghidra_image_addr(hi - 1, elf.size, elf.is_pie)
         # a range straddling the image end has bounds in two address spaces: no single guest -dfilter
         # expresses it, so qemu logs everything and only the Python filter applies
         same_space = lo_in_image == hi_in_image
-        if same_space and (not lo_in_image or known_base is not None):
+        if same_space and (not elf.is_pie or known_base is not None):
             base = known_base if known_base is not None else 0
             glo = from_ghidra(lo, base + elf.vaddr_lo, elf.size, elf.is_pie)
             ghi = from_ghidra(hi - 1, base + elf.vaddr_lo, elf.size, elf.is_pie) + 1
             cmd += ["-dfilter", f"{glo:#x}+{ghi - glo:#x}"]
     cmd += [str(p), *args]
+    filtered = "-dfilter" in cmd
 
     r = run_qemu(cmd, p.parent, stdin, log_path, timeout)
     try:   # the cap is polled while qemu runs; a fast exit past it is only visible in the final size
@@ -247,7 +249,12 @@ def _run(ctx, binary: str, stdin: str, args: list[str] | None, range_text: str |
     image = locate_image(elf, trace, known_base=known_base)
     if elf.is_pie and not image.guessed:
         ctx.trace_bases[cache_key] = image.lo - elf.vaddr_lo
-    a = analyze(trace, image, range_, top)
+    # a -dfilter log lacks the entry TB, so region tags (library vs later mmap) come from the unfiltered
+    # trace of this same file; an unfiltered trace with a firm base refreshes them
+    tags = ctx.trace_regions.get(cache_key) if filtered else None
+    a = analyze(trace, image, range_, top, filtered=filtered, tags=tags)
+    if not filtered and not image.guessed:
+        ctx.trace_regions[cache_key] = {(r.start, r.end): r.kind for r in a.regions if r.kind != "image"}
     items = compress(a.seq)
     txt_path.write_text(full_listing(items))
     lines = [header, render(a, items, image, top=top)]

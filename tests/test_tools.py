@@ -1713,12 +1713,15 @@ def test_trace_run_range_is_translated_to_dfilter_once_the_base_is_known(tmp_pat
     trace_run.run(ctx, binary="chall", range="0x100180..0x1001c0")
     argv = (bindir / "argv.txt").read_text().split()
     assert argv[argv.index("-dfilter") + 1] == "0x4000000180+0x40"
-    # a range outside the image is already a guest address: -dfilter even without a cached base
+    # a range outside the image is already a guest address, but for a PIE the first call still runs
+    # unfiltered: with -dfilter the entry TB is never logged and the base would have to be guessed
     ctx2 = _trace_ctx(tmp_path)
     out = trace_run.run(ctx2, binary="chall", range="0x4001100000..0x4001101000")
+    assert "-dfilter" not in (bindir / "argv.txt").read_text()
+    assert "(0x4001100000)×3" in out
+    trace_run.run(ctx2, binary="chall", range="0x4001100000..0x4001101000")
     argv = (bindir / "argv.txt").read_text().split()
     assert argv[argv.index("-dfilter") + 1] == "0x4001100000+0x1000"
-    assert "(0x4001100000)×3" in out
     assert "trace_run chall range 0x4001100000..0x4001101000: 14 TBs, 3 in range, hot [anon rwx] 0x4001100000 ×3" in ctx2.casefile.read()
 
 
@@ -1736,7 +1739,7 @@ def test_trace_run_args_stdin_cwd_and_files_numbering(tmp_path, monkeypatch):
     argv = (bindir / "argv.txt").read_text().split()
     assert argv[-3:] == [str(sub / "prog"), "-x", "1"]
     assert "trace-5.txt" in out and (tmp_path / ".revagent/out/trace-5.log").exists()
-    assert "hot (Ghidra addr × count, top 1):" in out and "0x1001a0 ×3" not in out
+    assert "hot (addr, Ghidra inside the image, × count, top 1):" in out and "0x1001a0 ×3" not in out
 
 
 def test_trace_run_cannot_trace_paths_do_not_open_the_runbook_gate(tmp_path, monkeypatch):
@@ -1908,4 +1911,75 @@ def test_trace_run_base_cache_is_dropped_when_the_binary_changes(tmp_path, monke
     argv = (bindir / "argv.txt").read_text().split()
     assert argv[argv.index("-dfilter") + 1] == "0x4000000180+0x40"
     st = (tmp_path / "chall").stat()
-    assert set(ctx.trace_bases) == {(str(tmp_path / "chall"), st.st_mtime_ns, st.st_size)} or len(ctx.trace_bases) == 2
+    assert ctx.trace_bases[(str(tmp_path / "chall"), st.st_mtime_ns, st.st_size)] == 0x4000000000
+    assert len(ctx.trace_bases) == 2                                  # the old file's entry stays; it is never looked up again
+
+
+def _fake_qemu_honours_dfilter(bindir, filtered_log):
+    """Make the fake qemu copy `filtered_log` instead of the fixture when -dfilter is in its argv, the
+    way real qemu leaves every TB outside the filter (the entry included) out of the log."""
+    (bindir / "filtered.log").write_text(filtered_log)
+    script = bindir / "qemu-x86_64-static"
+    script.write_text(script.read_text().replace(
+        f'cat "{bindir}/trace.log" > "$LOG"',
+        f'if grep -q -- "-dfilter" "{bindir}/argv.txt"; then cat "{bindir}/filtered.log" > "$LOG"; '
+        f'else cat "{bindir}/trace.log" > "$LOG"; fi'))
+
+
+def test_trace_run_dfilter_call_reuses_the_unfiltered_calls_region_tags(tmp_path, monkeypatch):
+    # with -dfilter only the anon-region TBs are logged; the page-layout block that adds the anon mapping
+    # then precedes the first logged TB and, read alone, would tag that mapping [lib?]
+    from revagent.tools import trace_run
+    from tests.test_trace import QEMU_LOG
+    bindir = _fake_qemu(tmp_path, monkeypatch, QEMU_LOG)
+    filtered = "\n".join(l for l in QEMU_LOG.splitlines()
+                         if not l.startswith("Trace") or "0000004001100000" in l) + "\n"
+    _fake_qemu_honours_dfilter(bindir, filtered)
+    ctx = _trace_ctx(tmp_path)
+    out1 = trace_run.run(ctx, binary="chall")
+    assert "[anon rwx]   0x4001100000..0x4001101000  3  <- mmap'd after start; not a library" in out1
+    assert "regions: tags from the unfiltered call" not in out1
+    out2 = trace_run.run(ctx, binary="chall", range="0x4001100000..0x4001101000")
+    argv = (bindir / "argv.txt").read_text().split()
+    assert argv[argv.index("-dfilter") + 1] == "0x4001100000+0x1000"
+    assert "[anon rwx]   0x4001100000..0x4001101000  3  <- mmap'd after start; not a library" in out2
+    assert "[lib?]" not in out2                                      # 0 TBs logged there; and never retagged
+    assert "regions: tags from the unfiltered call; counts cover only the range" in out2
+    assert "(0x4001100000)×3" in out2
+    st = (tmp_path / "chall").stat()
+    key = (str(tmp_path / "chall"), st.st_mtime_ns, st.st_size)
+    assert ctx.trace_regions[key][(0x4001100000, 0x4001101000)] == "anon rwx"
+    assert ctx.trace_regions[key][(0x4001000000, 0x4001040000)] == "lib?"
+
+
+def test_trace_run_dfilter_call_without_a_cached_unfiltered_call_marks_tags_guessed(tmp_path, monkeypatch):
+    # non-PIE: no base is needed, so the very first call with a range already runs with -dfilter
+    from revagent.tools import trace_run
+    from tests.test_trace import QEMU_LOG, make_elf64
+    bindir = _fake_qemu(tmp_path, monkeypatch, QEMU_LOG)
+    filtered = "\n".join(l for l in QEMU_LOG.splitlines()
+                         if not l.startswith("Trace") or "0000004001100000" in l) + "\n"
+    _fake_qemu_honours_dfilter(bindir, filtered)
+    elf = make_elf64(e_type=2, entry=0x4000000100, loads=((0x4000000000, 0x1000), (0x4000200000, 0x3000)))
+    ctx = _trace_ctx(tmp_path, elf_bytes=elf)
+    out = trace_run.run(ctx, binary="chall", range="0x4001100000..0x4001101000")
+    assert "-dfilter" in (bindir / "argv.txt").read_text()
+    assert "image: 0x4000000000..0x4000203000 (non-PIE, addresses as in Ghidra)" in out
+    assert "(tags guessed: entry not logged)" in out
+    assert "regions: tags from the unfiltered call" not in out
+    assert "(0x4001100000)×3" in out
+    assert ctx.trace_regions == {}                                   # a filtered call never seeds the cache
+
+
+def test_trace_run_pie_out_of_image_range_waits_for_the_base_before_dfilter(tmp_path, monkeypatch):
+    from revagent.tools import trace_run
+    from tests.test_trace import QEMU_LOG
+    bindir = _fake_qemu(tmp_path, monkeypatch, QEMU_LOG)
+    ctx = _trace_ctx(tmp_path)
+    out = trace_run.run(ctx, binary="chall", range="0x1000..0x2000")      # below the image, guest space
+    assert "-dfilter" not in (bindir / "argv.txt").read_text()
+    assert "image: 0x4000000000..0x4000203000 (PIE, Ghidra base 0x100000)" in out
+    assert "sequence (range 0x1000..0x2000, 0 TBs, repeats folded):" in out
+    trace_run.run(ctx, binary="chall", range="0x1000..0x2000")
+    argv = (bindir / "argv.txt").read_text().split()
+    assert argv[argv.index("-dfilter") + 1] == "0x1000+0x1000"

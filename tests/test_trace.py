@@ -6,8 +6,8 @@ import pytest
 
 from revagent.trace import (GHIDRA_PIE_BASE, Analysis, ImageInfo, Mapping, Region, TraceError, analyze,
                             classify_regions, compress, count_regions, find_image_base, from_ghidra, full_listing,
-                            initial_layout, item_text, layout_before_trace, locate_image, parse_elf_header,
-                            parse_qemu_log, render, summarize, to_ghidra)
+                            initial_layout, is_ghidra_image_addr, item_text, layout_before_trace, locate_image,
+                            parse_elf_header, parse_qemu_log, render, summarize, to_ghidra)
 
 QEMU_LOG = """host mmap_min_addr=0x10000
 Locating guest address space @ 0x0
@@ -268,7 +268,7 @@ def test_summarize_format():
     assert f"[lib?]       {LIB:#x}..{LIB + 0x40000:#x}  4  (skipped in sequence; pass range= to include)" in out
     assert f"[anon rwx]   {ANON:#x}..{ANON + 0x1000:#x}  3  <- mmap'd after start; not a library" in out
     assert "0xffffffffff600000" not in out               # a lib mapping with 0 TBs is not listed
-    assert "hot (Ghidra addr × count, top 40):" in out
+    assert "hot (addr, Ghidra inside the image, × count, top 40):" in out
     assert f"{ANON:#x} ×3" in out and "0x1001a0 ×3" in out
     assert "sequence (image + anon, 10 TBs, repeats folded):" in out
     assert f"0x100100 0x100140 0x100180 ({ANON:#x} 0x1001a0)×3 0x1001c0" in out
@@ -305,3 +305,32 @@ def test_render_tail_zero_shows_the_head_once():
     assert lines[i + 1] == "  0x100100 0x100140 ..."
     assert lines[i + 2] == "  ... [head 2 / tail 0 of 5 items shown]"
     assert out.count("0x1001c0") == 1                       # only in the hot list, not in the sequence
+
+
+def test_is_ghidra_image_addr_window():
+    assert is_ghidra_image_addr(0x100000, 0x203000, True) and is_ghidra_image_addr(0x302fff, 0x203000, True)
+    assert not is_ghidra_image_addr(0x303000, 0x203000, True) and not is_ghidra_image_addr(0xfffff, 0x203000, True)
+    assert not is_ghidra_image_addr(0x100000, 0x203000, False)     # non-PIE: nothing is rebased
+
+
+def test_analyze_filtered_trace_reuses_cached_tags_or_marks_them_guessed():
+    # a -dfilter log: the entry TB is missing and the anon mapping's layout block precedes every logged TB
+    filtered = "\n".join(l for l in QEMU_LOG.splitlines() if not l.startswith("Trace") or "0000004001100000" in l) + "\n"
+    t = parse_qemu_log(filtered)
+    tags = {(LIB, LIB + 0x40000): "lib?", (ANON, ANON + 0x1000): "anon rwx"}
+    a = analyze(t, _image(), range_=(ANON, ANON + 0x1000), filtered=True, tags=tags)
+    assert {r.start: r.kind for r in a.regions}[ANON] == "anon rwx" and a.tag_source == "cached"
+    out = render(a, compress(a.seq), _image())
+    assert "regions: tags from the unfiltered call; counts cover only the range" in out
+    assert "(tags guessed" not in out
+    # a mapping the unfiltered call never saw is mmap'd after start, tagged by its protection
+    a2 = analyze(t, _image(), range_=(ANON, ANON + 0x1000), filtered=True, tags={})
+    assert {r.start: r.kind for r in a2.regions}[ANON] == "anon rwx"
+    # no cache at all: the entry-layout heuristic runs (and mis-tags here), flagged as guessed
+    a3 = analyze(t, _image(), range_=(ANON, ANON + 0x1000), filtered=True)
+    assert {r.start: r.kind for r in a3.regions}[ANON] == "lib?" and a3.tag_source == "guessed"
+    out3 = render(a3, compress(a3.seq), _image())
+    assert "(tags guessed: entry not logged)" in out3 and "tags from the unfiltered call" not in out3
+    # an unfiltered analysis is untouched
+    assert analyze(parse_qemu_log(QEMU_LOG), _image()).tag_source == "entry"
+    assert "tags" not in render(analyze(parse_qemu_log(QEMU_LOG), _image()), [], _image())

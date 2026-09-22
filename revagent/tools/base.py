@@ -48,6 +48,7 @@ class ToolContext:
     deadline: float | None = None      # time.monotonic() at which the run's wall-clock budget ends
     emulate_images: dict = field(default_factory=dict)   # (path, mtime_ns, size) -> revagent.emulate.Image (cle+unicorn image cache per run)
     trace_bases: dict = field(default_factory=dict)     # (path, mtime_ns, size) -> qemu guest base of its PIE image (from a previous trace_run; lets range= become -dfilter)
+    trace_regions: dict = field(default_factory=dict)   # same key -> {(start, end): kind} of the unfiltered trace (a -dfilter trace lacks the entry TB and cannot tell libraries from later mmaps)
     tools_used: dict = field(default_factory=dict)       # tool name -> calls whose handler actually ran (not unknown tools, bad JSON, bad arguments or G3-blocked calls); submit_flag checks readings against it
 
     def clamp_timeout(self, seconds: int) -> int:

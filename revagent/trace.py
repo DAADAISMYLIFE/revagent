@@ -211,10 +211,16 @@ def display_addr(pc: int, image: ImageInfo) -> int:
     return pc if g is None else g
 
 
+def is_ghidra_image_addr(addr: int, image_size: int, is_pie: bool) -> bool:
+    """True for a Ghidra address inside a PIE image: the window display_addr rebases into, and the
+    only addresses from_ghidra translates."""
+    return is_pie and GHIDRA_PIE_BASE <= addr < GHIDRA_PIE_BASE + image_size
+
+
 def from_ghidra(addr: int, image_lo: int, image_size: int, is_pie: bool) -> int:
     """Inverse of display_addr for a range bound: a Ghidra address inside the PIE image goes back
     to the guest address; anything else is already a guest address."""
-    if is_pie and GHIDRA_PIE_BASE <= addr < GHIDRA_PIE_BASE + image_size:
+    if is_ghidra_image_addr(addr, image_size, is_pie):
         return addr - GHIDRA_PIE_BASE + image_lo
     return addr
 
@@ -231,10 +237,14 @@ class Region:
         return self.start <= pc < self.end
 
 
-def classify_regions(mappings: list[Mapping], initial_mappings: list[Mapping], image: ImageInfo) -> list[Region]:
+def classify_regions(mappings: list[Mapping], initial_mappings: list[Mapping], image: ImageInfo,
+                     tags: dict[tuple[int, int], str] | None = None) -> list[Region]:
     """One region per executable mapping outside the image, plus the image itself. A mapping that
     already existed in `initial_mappings` is a library ('lib?'); one created later is 'anon rwx'
-    when writable and executable, else 'anon'."""
+    when writable and executable, else 'anon'. `tags` ({(start, end): kind} from an unfiltered
+    trace of the same binary) take precedence: a -dfilter trace lacks the entry TB, so its initial
+    layout is unreliable; a mapping absent from `tags` appeared after that run and is tagged by its
+    protection."""
     regions = [Region("image", image.lo, image.hi, "")]
     initial = {(m.start, m.end) for m in initial_mappings}
     for m in mappings:
@@ -242,7 +252,10 @@ def classify_regions(mappings: list[Mapping], initial_mappings: list[Mapping], i
             continue
         if m.start >= image.lo and m.end <= image.hi:
             continue
-        if (m.start, m.end) in initial:
+        known = tags.get((m.start, m.end)) if tags is not None else None
+        if known is not None:
+            kind = known
+        elif (m.start, m.end) in initial:
             kind = "lib?"
         elif "w" in m.prot:
             kind = "anon rwx"
@@ -326,10 +339,20 @@ class Analysis:
     hot: list[tuple[int, int]]     # (display address, count), most frequent first
     range_: tuple[int, int] | None
     skipped_lib: bool              # library TBs were left out of seq (no range given)
+    tag_source: str = "entry"      # how region kinds were decided: 'entry' (layout at the entry TB),
+                                   # 'cached' (tags of an unfiltered trace), 'guessed' (filtered trace, no cache)
 
 
-def analyze(trace: Trace, image: ImageInfo, range_: tuple[int, int] | None = None, top: int = 40) -> Analysis:
-    regions = classify_regions(trace.mappings, initial_layout(trace, image), image)
+def analyze(trace: Trace, image: ImageInfo, range_: tuple[int, int] | None = None, top: int = 40,
+            filtered: bool = False, tags: dict[tuple[int, int], str] | None = None) -> Analysis:
+    """`filtered`: the log came from qemu -dfilter, so the entry TB and the layout in force at it are
+    missing; `tags` are the region kinds an unfiltered trace of the same binary found, to reuse."""
+    if filtered and tags is not None:
+        regions = classify_regions(trace.mappings, [], image, tags)
+        tag_source = "cached"
+    else:
+        regions = classify_regions(trace.mappings, initial_layout(trace, image), image)
+        tag_source = "guessed" if filtered else "entry"
     other = count_regions(regions, trace.pcs)
     seq: list[int] = []
     disp: dict[int, int] = {}
@@ -350,7 +373,7 @@ def analyze(trace: Trace, image: ImageInfo, range_: tuple[int, int] | None = Non
             seq.append(d)
     hot = Counter(seq).most_common(max(1, top))
     return Analysis(regions=regions, other=other, total=len(trace.pcs), seq=seq, hot=hot, range_=range_,
-                    skipped_lib=range_ is None)
+                    skipped_lib=range_ is None, tag_source=tag_source)
 
 
 def _wrap(tokens: list[str], width: int = 100, indent: str = "  ") -> list[str]:
@@ -391,7 +414,11 @@ def render(a: Analysis, items: list[Item], image: ImageInfo, top: int = 40, head
         lines.append(f"  {label}  {lo:#x}..{hi:#x}  {r.count}{note}")
     if a.other:
         lines.append(f"  {'[other]'.ljust(11)}  (no mapping)  {a.other}")
-    lines.append(f"hot (Ghidra addr × count, top {top}):")
+    if a.tag_source == "cached":
+        lines.append("regions: tags from the unfiltered call; counts cover only the range")
+    elif a.tag_source == "guessed":
+        lines.append("  (tags guessed: entry not logged)")
+    lines.append(f"hot (addr, Ghidra inside the image, × count, top {top}):")
     lines.extend(_wrap([f"{addr:#x} ×{n}" for addr, n in a.hot]) or ["  (none)"])
     if a.range_ is not None:
         scope = f"range {a.range_[0]:#x}..{a.range_[1]:#x}"
