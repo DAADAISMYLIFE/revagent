@@ -1694,7 +1694,8 @@ def test_trace_run_summary_files_and_ledger(tmp_path, monkeypatch):
     assert "-dfilter" not in argv and argv[-1] == str(tmp_path / "chall")
     assert ("- [obs step 9] trace_run chall: 14 TBs, hot [anon rwx] 0x4001100000 ×3, image top 0x1001a0 ×3"
             in ctx.casefile.read())
-    assert not ctx.env_blocked and ctx.trace_bases[str(tmp_path / "chall")] == 0x4000000000
+    st = (tmp_path / "chall").stat()
+    assert not ctx.env_blocked and ctx.trace_bases[(str(tmp_path / "chall"), st.st_mtime_ns, st.st_size)] == 0x4000000000
 
 
 def test_trace_run_range_is_translated_to_dfilter_once_the_base_is_known(tmp_path, monkeypatch):
@@ -1800,7 +1801,7 @@ def test_trace_run_guessed_base_when_entry_never_ran(tmp_path, monkeypatch):
     # the marker sits on the image line itself, after the base and kind
     assert out.splitlines()[1] == ("image: 0x4000000000..0x4000203000 (PIE, Ghidra base 0x100000) "
                                    "(base guessed: the entry point never executed)")
-    assert str(tmp_path / "chall") not in ctx.trace_bases
+    assert ctx.trace_bases == {}                      # a guessed base is never cached
 
 
 def test_trace_run_timeout_and_log_cap(tmp_path, monkeypatch):
@@ -1859,3 +1860,52 @@ def test_trace_run_reads_program_headers_beyond_the_first_64_kb(tmp_path, monkey
     out = trace_run.run(ctx, binary="chall")
     assert "[cannot trace]" not in out
     assert out.splitlines()[1] == "image: 0x4000000000..0x4000203000 (PIE, Ghidra base 0x100000)"
+
+
+def test_trace_run_range_straddling_the_image_end_gets_no_dfilter(tmp_path, monkeypatch):
+    # lo inside the image, hi-1 outside it: the two bounds live in different address spaces, so no
+    # guest -dfilter can express the range; qemu logs everything and the Python filter still applies
+    from revagent.tools import trace_run
+    from tests.test_trace import QEMU_LOG
+    bindir = _fake_qemu(tmp_path, monkeypatch, QEMU_LOG)
+    ctx = _trace_ctx(tmp_path)
+    trace_run.run(ctx, binary="chall")                            # learn the base (0x4000000000)
+    out = trace_run.run(ctx, binary="chall", range="0x100000..0x400000")
+    argv = (bindir / "argv.txt").read_text().split()
+    assert "-dfilter" not in argv
+    assert "sequence (range 0x100000..0x400000, 7 TBs, repeats folded):" in out
+    assert "0x100100 0x100140 0x100180 (0x1001a0)×3 0x1001c0" in out
+    assert "trace_run chall range 0x100000..0x400000: 14 TBs, 7 in range, image top 0x1001a0 ×3" in ctx.casefile.read()
+
+
+def test_trace_run_log_over_the_cap_from_a_fast_exit_is_marked_truncated(tmp_path, monkeypatch):
+    # the program writes cap+1 bytes and exits within one poll: the size check between polls never
+    # fires, so the final log size must be checked after the process is gone
+    from revagent.tools import trace_run
+    from tests.test_trace import QEMU_LOG
+    _fake_qemu(tmp_path, monkeypatch, QEMU_LOG)
+    monkeypatch.setattr(trace_run, "MAX_LOG_BYTES", len(QEMU_LOG.encode()) - 1)
+    ctx = _trace_ctx(tmp_path)
+    out = trace_run.run(ctx, binary="chall")
+    assert "[trace truncated at 0 MB]" in out
+    assert "trace_run chall: 14 TBs, hot [anon rwx] 0x4001100000 ×3, image top 0x1001a0 ×3 [truncated]" in ctx.casefile.read()
+
+
+def test_trace_run_base_cache_is_dropped_when_the_binary_changes(tmp_path, monkeypatch):
+    from revagent.tools import trace_run
+    from tests.test_trace import QEMU_LOG, make_elf64
+    bindir = _fake_qemu(tmp_path, monkeypatch, QEMU_LOG)
+    ctx = _trace_ctx(tmp_path)
+    trace_run.run(ctx, binary="chall", range="0x100180..0x1001c0")
+    trace_run.run(ctx, binary="chall", range="0x100180..0x1001c0")
+    assert "-dfilter" in (bindir / "argv.txt").read_text()          # base known for this file
+    # a rebuilt binary at the same path (different size and mtime): the cached base no longer applies
+    (tmp_path / "chall").write_bytes(make_elf64() + b"\0" * 64)
+    trace_run.run(ctx, binary="chall", range="0x100180..0x1001c0")
+    assert "-dfilter" not in (bindir / "argv.txt").read_text()
+    # ...and is learned again for the new file
+    trace_run.run(ctx, binary="chall", range="0x100180..0x1001c0")
+    argv = (bindir / "argv.txt").read_text().split()
+    assert argv[argv.index("-dfilter") + 1] == "0x4000000180+0x40"
+    st = (tmp_path / "chall").stat()
+    assert set(ctx.trace_bases) == {(str(tmp_path / "chall"), st.st_mtime_ns, st.st_size)} or len(ctx.trace_bases) == 2

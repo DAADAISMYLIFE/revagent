@@ -202,15 +202,21 @@ def _run(ctx, binary: str, stdin: str, args: list[str] | None, range_text: str |
     ctx.out_dir.mkdir(parents=True, exist_ok=True)
     log_path = ctx.out_dir / f"trace-{n}.log"
     txt_path = ctx.out_dir / f"trace-{n}.txt"
-    known_base = ctx.trace_bases.get(str(p))
+    st = p.stat()
+    cache_key = (str(p), st.st_mtime_ns, st.st_size)   # a rebuilt binary at the same path gets no stale base
+    known_base = ctx.trace_bases.get(cache_key)
     cmd = [qemu, "-d", "exec,nochain,page", "-D", str(log_path)]
     if range_ is not None:
         # -dfilter needs guest addresses; a Ghidra address inside a PIE image can be converted only once
         # a previous trace of this binary told us the base — otherwise qemu logs everything and the range is
         # applied here (correct, just a bigger log)
         lo, hi = range_
-        in_image = elf.is_pie and (0x100000 <= lo < 0x100000 + elf.size or 0x100000 <= hi - 1 < 0x100000 + elf.size)
-        if not in_image or known_base is not None:
+        lo_in_image = elf.is_pie and 0x100000 <= lo < 0x100000 + elf.size
+        hi_in_image = elf.is_pie and 0x100000 <= hi - 1 < 0x100000 + elf.size
+        # a range straddling the image end has bounds in two address spaces: no single guest -dfilter
+        # expresses it, so qemu logs everything and only the Python filter applies
+        same_space = lo_in_image == hi_in_image
+        if same_space and (not lo_in_image or known_base is not None):
             base = known_base if known_base is not None else 0
             glo = from_ghidra(lo, base + elf.vaddr_lo, elf.size, elf.is_pie)
             ghi = from_ghidra(hi - 1, base + elf.vaddr_lo, elf.size, elf.is_pie) + 1
@@ -218,6 +224,10 @@ def _run(ctx, binary: str, stdin: str, args: list[str] | None, range_text: str |
     cmd += [str(p), *args]
 
     r = run_qemu(cmd, p.parent, stdin, log_path, timeout)
+    try:   # the cap is polled while qemu runs; a fast exit past it is only visible in the final size
+        r["truncated"] = r["truncated"] or log_path.stat().st_size > MAX_LOG_BYTES
+    except OSError:
+        pass
     try:
         with log_path.open("rb") as f:
             log_text = f.read(MAX_LOG_BYTES).decode("utf-8", "replace")
@@ -236,7 +246,7 @@ def _run(ctx, binary: str, stdin: str, args: list[str] | None, range_text: str |
 
     image = locate_image(elf, trace, known_base=known_base)
     if elf.is_pie and not image.guessed:
-        ctx.trace_bases[str(p)] = image.lo - elf.vaddr_lo
+        ctx.trace_bases[cache_key] = image.lo - elf.vaddr_lo
     a = analyze(trace, image, range_, top)
     items = compress(a.seq)
     txt_path.write_text(full_listing(items))
