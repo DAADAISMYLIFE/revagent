@@ -241,7 +241,7 @@ def main(argv=None) -> int:
         return 2
 
     solve = args.cmd == "solve"
-    d = Path(args.dir) if solve else None
+    d = Path(args.dir).resolve() if solve else None   # absolute before anything can change the cwd (DrvFs stale-cwd errors)
     if solve and not d.is_dir():
         print(f"error: {d} is not a directory", file=sys.stderr)
         return 2
@@ -258,7 +258,7 @@ def main(argv=None) -> int:
         return rc
 
     rows = []
-    for d in map(Path, args.dirs):
+    for d in (Path(x).resolve() for x in args.dirs):   # resolved up front: a relative path fails with [Errno 2] once the cwd goes stale on DrvFs
         try:
             r, _ = _run_one(d, args, None, False, rt)
             rows.append(_row(d, r))
