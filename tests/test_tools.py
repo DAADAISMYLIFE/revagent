@@ -2014,3 +2014,13 @@ def test_trace_run_filtered_call_has_no_next_line(tmp_path, monkeypatch):
     trace_run.run(ctx, binary, stdin="A")                       # learns the base and the region tags
     out = trace_run.run(ctx, binary, stdin="A", range="0x100100..0x100200")
     assert "next: " not in out
+
+
+def test_trace_run_empty_stdin_note_is_skipped_when_args_carry_the_input(tmp_path, monkeypatch):
+    from revagent.tools import trace_run
+    from tests.test_trace import QEMU_LOG
+    _fake_qemu(tmp_path, monkeypatch, QEMU_LOG)
+    ctx = _trace_ctx(tmp_path)
+    out = trace_run.run(ctx, "chall", args=["AAAA"])
+    assert trace_run.EMPTY_STDIN_NOTE not in out
+    assert "next: " in out

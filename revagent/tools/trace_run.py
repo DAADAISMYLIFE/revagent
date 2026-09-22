@@ -262,7 +262,7 @@ def _run(ctx, binary: str, stdin: str, args: list[str] | None, range_text: str |
     items = compress(a.seq)
     txt_path.write_text(full_listing(items))
     lines = [header]
-    if not stdin:
+    if not stdin and not args:      # an argv-driven program read its input; the note is about programs that read nothing
         lines.append(EMPTY_STDIN_NOTE)
     lines.append(render(a, items, image, top=top))
     lines.append(f"  [full sequence: {_rel(ctx, txt_path)}, raw qemu log: {_rel(ctx, log_path)}]")
