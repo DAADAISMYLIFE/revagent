@@ -4,7 +4,7 @@ Dreamhack 리버싱 문제를 혼자 푸는 에이전트. 모델은 직접 띄�
 
 문제 폴더(바이너리 + `desc.txt`)를 주면 트리아지 → Ghidra 디컴파일 → 체크 분류 → 풀이(z3 / angr / gdb / 재구현) → 바이너리로 검증 → `DH{...}` 제출까지 알아서 한다. 못 풀면 어디까지 갔는지 남긴다.
 
-**현황:** multipoint, revlogin, relativity 풀었음. captain-hook, damnida, ROVM, basic 미해결. 기록은 아래 벤치 표.
+**현황:** multipoint, revlogin, relativity, basic 풀었음. captain-hook, damnida, ROVM 미해결. 기록은 아래 벤치 표.
 
 ## 설치 (WSL, sudo 없이)
 ```bash
