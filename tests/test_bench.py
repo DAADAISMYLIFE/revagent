@@ -1,3 +1,4 @@
+import os
 """Tests for the bench answer-checking helper (revagent.__main__.check_answer).
 
 A bench run can "solve" a challenge with a wrong flag (e.g. misreading a glyph).
@@ -67,6 +68,8 @@ def test_bench_resolves_relative_dirs_before_running(tmp_path, monkeypatch):
     monkeypatch.setattr(m, "_preflight", lambda *a, **k: object())
     def fake_run_one(d, args, desc, ask, rt):
         seen.append(d)
+        if len(seen) == 1:
+            os.chdir("/")          # the first run leaves the cwd behind, as a stale DrvFs cwd does
         return {"status": "unsolved", "steps": 0, "minutes": 0}, 1
     monkeypatch.setattr(m, "_run_one", fake_run_one)
     monkeypatch.setattr(m, "_row", lambda d, r: (d.name, r["status"], "", 0, 0))

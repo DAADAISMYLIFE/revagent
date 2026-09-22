@@ -258,7 +258,8 @@ def main(argv=None) -> int:
         return rc
 
     rows = []
-    for d in (Path(x).resolve() for x in args.dirs):   # resolved up front: a relative path fails with [Errno 2] once the cwd goes stale on DrvFs
+    dirs = [Path(x).resolve() for x in args.dirs]   # ALL resolved before the first run: a generator would resolve lazily, after the cwd went stale (DrvFs)
+    for d in dirs:
         try:
             r, _ = _run_one(d, args, None, False, rt)
             rows.append(_row(d, r))
