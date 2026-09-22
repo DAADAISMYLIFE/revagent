@@ -50,6 +50,8 @@ bash scripts/install_ghidra.sh         # --host 로 돌릴 때만 필요 (JDK 21
 
 `emulate`는 바이너리의 함수 하나를 unicorn으로 돌려 주는 오라클이다. 디컴파일된 변환을 파이썬으로 옮긴 뒤 `emulate`로 실제 함수와 같은 입력에서 비교하고, 맞으면 `solve_check`로 뒤집는다. basic이 두 번 죽은 "forward 모델 검증" 단계가 이걸로 끝난다. import를 부르면 거기서 멈추고 누구를 어떤 인자로 불렀는지 보고한다.
 
+`trace_run`은 프로그램을 qemu-user로 한 번 돌려 실행된 코드 주소의 시퀀스를 준다. 핸들러를 하나하나 읽는 대신 인터프리터가 어떤 핸들러를 몇 번 어떤 순서로 돌렸는지를 관찰하고, 서로 다른 핸들러 주소 N개만 디컴파일해서 시퀀스를 프로그램으로 읽는다. 전체 시퀀스와 원본 로그는 `.revagent/out/trace-N.txt`, `trace-N.log`에 남는다.
+
 ### 산출물 (`문제폴더/.revagent/`)
 | 파일 | 내용 |
 |---|---|
@@ -57,6 +59,7 @@ bash scripts/install_ghidra.sh         # --host 로 돌릴 때만 필요 (JDK 21
 | `case.md` | 에이전트 노트. Facts / Hypotheses / Todo / Log. 컨텍스트가 리셋돼도 남는 유일한 메모리 |
 | `transcript.jsonl` | 메시지, 도구 호출, 생각, 메타 이벤트 전부 |
 | `out/NNN.txt` | 12,000자 넘어 잘린 도구 출력 원본 |
+| `out/trace-N.log`, `out/trace-N.txt` | `trace_run`의 qemu 원본 로그와 접은 전체 시퀀스 |
 | `ghidra/` | 디컴파일 캐시 |
 | `screens/` | `run_gui` 캡처와 입력별 diff PNG |
 | `runbook.md` | 샌드박스가 실행 못 하는 대상일 때 사람용 절차 |
@@ -81,9 +84,10 @@ bash scripts/install_ghidra.sh         # --host 로 돌릴 때만 필요 (JDK 21
 - 에이전트 코드 고치면 `--dev`로 바로 돌리거나 `bash scripts/sandbox-build.sh`로 마지막 레이어만 재빌드(몇 분). Ghidra 스크립트를 고쳐도 Ghidra 레이어는 안 다시 빌드한다.
 
 ## 동작 원리
-- ReAct 루프 하나, 도구 열한 개: `bash`, `decompile`, `run_binary`, `run_gui`, `solve_check`, `emulate`, `notes`, `summarize`, `ask_user`, `submit_flag`, `handoff_runbook`.
+- ReAct 루프 하나, 도구 열두 개: `bash`, `decompile`, `run_binary`, `run_gui`, `solve_check`, `emulate`, `trace_run`, `notes`, `summarize`, `ask_user`, `submit_flag`, `handoff_runbook`.
 - `solve_check`: 모델이 forward 변환만 파이썬으로 쓰면 z3가 입력을 찾아 준다. 바이트 단위 체크용.
 - `emulate`: 함수 단위 오라클. PIE ELF는 0x100000, PE는 ImageBase에 로드해서 Ghidra 주소를 그대로 쓴다.
+- `trace_run`: qemu-user(`-d exec,nochain,page`)로 한 번 실행해 영역별·주소별 실행 횟수와 실행 주소 시퀀스(연속 반복 접음)를 준다. 이미지 안 주소는 Ghidra 기준(PIE 0x100000), 밖은 원본. 인터프리터/VM이 실제로 무엇을 어떤 순서로 돌렸는지 관찰하는 용도. x86-64 ELF만.
 - 메모리는 `case.md`. 프롬프트가 44k 토큰 넘으면 대화 중간을 요약해 여기 넣고, 시스템 프롬프트 + 작업 + case.md + 최근 도구 교환 4개로 컨텍스트를 다시 만든다.
 - thinking 켜 둠(`medium`). 출력 예산 16k 토큰, 넘치면 힌트 붙여 `low`로 한 번 재시도.
 - 응답은 스트리밍. RunPod 프록시가 100초 안에 응답 안 시작하면 524로 끊기 때문. 일시 장애는 3번 재시도하고 `llm_retries`에 센다.
