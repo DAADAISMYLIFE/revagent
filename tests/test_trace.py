@@ -334,3 +334,31 @@ def test_analyze_filtered_trace_reuses_cached_tags_or_marks_them_guessed():
     # an unfiltered analysis is untouched
     assert analyze(parse_qemu_log(QEMU_LOG), _image()).tag_source == "entry"
     assert "tags" not in render(analyze(parse_qemu_log(QEMU_LOG), _image()), [], _image())
+
+
+def test_suggest_next_prefers_the_busiest_later_mapped_region():
+    from revagent.trace import Analysis, ImageInfo, Region, suggest_next
+    img = ImageInfo(lo=0x4000000000, hi=0x4000002000, is_pie=True, guessed=False, entry=0x4000000100)
+    regs = [Region("image", 0x4000000000, 0x4000002000, "r-x", 55),
+            Region("anon", 0x1224000, 0x1225000, "rw-", 28),
+            Region("anon rwx", 0x1225000, 0x1228000, "rwx", 0),
+            Region("lib?", 0x4002a04000, 0x4002a2a000, "r-x", 20725)]
+    a = Analysis(regions=regs, other=0, total=100, seq=[], hot=[(0x1224005, 5)], range_=None, skipped_lib=True)
+    line = suggest_next(a, img)
+    assert line.startswith("next: 28 TBs ran in [anon] 0x1224000..0x1225000")
+    assert 'range="0x1224000..0x1225000"' in line
+
+
+def test_suggest_next_falls_back_to_the_hot_image_window_and_is_silent_when_filtered():
+    from revagent.trace import Analysis, ImageInfo, Region, suggest_next
+    img = ImageInfo(lo=0x4000000000, hi=0x4000005000, is_pie=True, guessed=False, entry=0x4000000100)
+    regs = [Region("image", 0x4000000000, 0x4000005000, "r-x", 727),
+            Region("lib?", 0x4002807000, 0x400282d000, "r-x", 20272)]
+    hot = [(0x1013e1, 156), (0x1013e5, 155), (0x101399, 155), (0x1012ff, 51), (0x101362, 48), (0x1011e5, 34)]
+    a = Analysis(regions=regs, other=0, total=21000, seq=[], hot=hot, range_=None, skipped_lib=True)
+    line = suggest_next(a, img)
+    assert 'range="0x101200..0x101400"' in line
+    assert suggest_next(Analysis(regions=regs, other=0, total=1, seq=[], hot=hot, range_=(0x101000, 0x102000),
+                                 skipped_lib=False), img) is None
+    assert suggest_next(Analysis(regions=regs[1:], other=0, total=1, seq=[], hot=[], range_=None,
+                                 skipped_lib=True), img) is None

@@ -1802,7 +1802,8 @@ def test_trace_run_guessed_base_when_entry_never_ran(tmp_path, monkeypatch):
     out = trace_run.run(ctx, binary="chall")
     assert "(base guessed: the entry point never executed)" in out
     # the marker sits on the image line itself, after the base and kind
-    assert out.splitlines()[1] == ("image: 0x4000000000..0x4000203000 (PIE, Ghidra base 0x100000) "
+    image_line = next(l for l in out.splitlines() if l.startswith("image:"))
+    assert image_line == ("image: 0x4000000000..0x4000203000 (PIE, Ghidra base 0x100000) "
                                    "(base guessed: the entry point never executed)")
     assert ctx.trace_bases == {}                      # a guessed base is never cached
 
@@ -1862,7 +1863,8 @@ def test_trace_run_reads_program_headers_beyond_the_first_64_kb(tmp_path, monkey
     ctx = _trace_ctx(tmp_path, elf_bytes=make_elf64(phoff=trace_run.ELF_HEADER_BYTES + 0x100))
     out = trace_run.run(ctx, binary="chall")
     assert "[cannot trace]" not in out
-    assert out.splitlines()[1] == "image: 0x4000000000..0x4000203000 (PIE, Ghidra base 0x100000)"
+    image_line = next(l for l in out.splitlines() if l.startswith("image:"))
+    assert image_line == "image: 0x4000000000..0x4000203000 (PIE, Ghidra base 0x100000)"
 
 
 def test_trace_run_range_straddling_the_image_end_gets_no_dfilter(tmp_path, monkeypatch):
@@ -1983,3 +1985,32 @@ def test_trace_run_pie_out_of_image_range_waits_for_the_base_before_dfilter(tmp_
     trace_run.run(ctx, binary="chall", range="0x1000..0x2000")
     argv = (bindir / "argv.txt").read_text().split()
     assert argv[argv.index("-dfilter") + 1] == "0x1000+0x1000"
+
+
+def test_trace_run_empty_stdin_gets_a_note_and_a_next_call_proposal(tmp_path, monkeypatch):
+    """ROVM run 6: the one trace_run call had empty stdin (83-TB trace of the early-failure path) and the
+    model never made the range call. Both facts now stand in the output it reads."""
+    from revagent.tools import trace_run
+    from tests.test_trace import QEMU_LOG
+    _fake_qemu(tmp_path, monkeypatch, QEMU_LOG)
+    ctx = _trace_ctx(tmp_path)
+    binary = "chall"
+    out = trace_run.run(ctx, binary)
+    assert trace_run.EMPTY_STDIN_NOTE in out
+    assert 'range="0x4001100000..0x4001101000"' in out      # the busiest later-mapped region wins
+    assert out.splitlines()[0].startswith("trace_run ")
+    assert "next: " in out and 'range="' in out
+    out2 = trace_run.run(ctx, binary, stdin="A" * 8)
+    assert trace_run.EMPTY_STDIN_NOTE not in out2
+    assert "next: " in out2
+
+
+def test_trace_run_filtered_call_has_no_next_line(tmp_path, monkeypatch):
+    from revagent.tools import trace_run
+    from tests.test_trace import QEMU_LOG
+    _fake_qemu(tmp_path, monkeypatch, QEMU_LOG)
+    ctx = _trace_ctx(tmp_path)
+    binary = "chall"
+    trace_run.run(ctx, binary, stdin="A")                       # learns the base and the region tags
+    out = trace_run.run(ctx, binary, stdin="A", range="0x100100..0x100200")
+    assert "next: " not in out

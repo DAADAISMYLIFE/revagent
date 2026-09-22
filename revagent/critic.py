@@ -14,8 +14,9 @@ RECENT_RESULT_CHARS = 300
 CRITIC_PROMPT = (
     "You are reviewing an autonomous reverse-engineering session that may be stuck. Below is its case file "
     "(notes) and its most recent tool calls. Answer these four questions, one short line each, no preamble:\n"
-    "1. Which observation ([obs ...] lines, run outputs, screenshots) contradicts the current plan (first Todo item)? "
-    "Quote it, or say 'none'.\n"
+    "1. Which observation ([obs ...] lines, run outputs, screenshots) contradicts a Fact or the current plan "
+    "(first Todo item)? Quote both sides; an observation beats a Fact, so name the Fact that must be retracted. "
+    "Or say 'none'.\n"
     "2. Is the same approach being repeated? Name it and how many times.\n"
     "3. The single cheapest, most decisive next experiment, written as a concrete tool call "
     "(e.g. run_gui with actions [...], run_binary with stdin ..., bash ...).\n"

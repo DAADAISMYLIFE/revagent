@@ -11,12 +11,16 @@ import subprocess
 import time
 
 from ..trace import (TraceError, analyze, compress, from_ghidra, full_listing, is_ghidra_image_addr, locate_image,
-                     parse_elf_header, parse_qemu_log, render)
+                     parse_elf_header, parse_qemu_log, render, suggest_next,
+)
 from .base import PathError, resolve_inside
 from .bash import MAX_TIMEOUT, scrubbed_env
 
 DEFAULT_TIMEOUT = 60
 MAX_LOG_BYTES = 200 * 1024 * 1024
+EMPTY_STDIN_NOTE = ("[note] stdin was empty: the program read no input, so this trace shows only the input-independent "
+                    "path (an early failure, not the check). Run again with stdin of the length the program reads "
+                    "before concluding anything about the check")
 POLL_SECONDS = 0.5
 OUTPUT_CHARS = 400
 QEMU_NAMES = ("qemu-x86_64-static", "qemu-x86_64")
@@ -257,8 +261,14 @@ def _run(ctx, binary: str, stdin: str, args: list[str] | None, range_text: str |
         ctx.trace_regions[cache_key] = {(r.start, r.end): r.kind for r in a.regions if r.kind != "image"}
     items = compress(a.seq)
     txt_path.write_text(full_listing(items))
-    lines = [header, render(a, items, image, top=top)]
+    lines = [header]
+    if not stdin:
+        lines.append(EMPTY_STDIN_NOTE)
+    lines.append(render(a, items, image, top=top))
     lines.append(f"  [full sequence: {_rel(ctx, txt_path)}, raw qemu log: {_rel(ctx, log_path)}]")
+    nxt = suggest_next(a, image)
+    if nxt:
+        lines.append(nxt)
     if r["truncated"]:
         lines.append(f"[trace truncated at {MAX_LOG_BYTES // (1024 * 1024)} MB] the program ran past the log cap; "
                      "the summary covers the log written until then — narrow it with range= or a shorter input")

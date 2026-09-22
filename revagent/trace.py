@@ -448,3 +448,25 @@ def summarize(trace: Trace, image: ImageInfo, range_: tuple[int, int] | None = N
 def full_listing(items: list[Item]) -> str:
     """The whole folded sequence, one item per line, for the trace-N.txt file."""
     return "\n".join(item_text(it) for it in items) + ("\n" if items else "")
+
+
+def suggest_next(a: Analysis, image: ImageInfo) -> str | None:
+    """One model-visible line proposing the follow-up call, computed from this trace alone (no range given).
+    Live runs showed a model reading the regions block correctly and then never making the range call;
+    the proposal has to sit in the output it is reading. Filtered traces get nothing (the follow-up is done)."""
+    if a.range_ is not None:
+        return None
+    later = [r for r in a.regions if r.kind in ("anon rwx", "anon") and r.count > 0]
+    if later:
+        r = max(later, key=lambda r: r.count)
+        return (f"next: {r.count} TBs ran in [{r.kind}] {r.start:#x}..{r.end:#x}, a region mapped after start; "
+                f"call trace_run again with the same stdin and range=\"{r.start:#x}..{r.end:#x}\" to get that "
+                f"region's block sequence with repeats folded (the interpreted program, if it is an interpreter)")
+    hot_image = [addr for addr, _ in a.hot if image.ghidra_lo <= addr < image.ghidra_hi][:5]
+    if hot_image:
+        lo = min(hot_image) & ~0xff
+        hi = ((max(hot_image) + 1 + 0xff) & ~0xff)
+        return (f"next: the hottest code is inside the image around {lo:#x}..{hi:#x}; call trace_run again with "
+                f"the same stdin and range=\"{lo:#x}..{hi:#x}\" for its folded sequence, or decompile the "
+                f"function containing those addresses")
+    return None
