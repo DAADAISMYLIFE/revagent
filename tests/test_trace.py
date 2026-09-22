@@ -53,13 +53,14 @@ E_ENTRY = 0x100
 
 
 def make_elf64(e_type: int = 3, machine: int = 62, entry: int = E_ENTRY,
-               loads=((0, 0x1000), (0x200000, 0x3000)), ei_class: int = 2) -> bytes:
-    """A minimal ELF64 header + PT_LOAD program headers (no sections, no code)."""
+               loads=((0, 0x1000), (0x200000, 0x3000)), ei_class: int = 2, phoff: int = 64) -> bytes:
+    """A minimal ELF64 header + PT_LOAD program headers (no sections, no code). `phoff` places the
+    program headers past the 64-byte header (zero padding in between)."""
     phnum = len(loads)
     ident = b"\x7fELF" + bytes([ei_class, 1, 1, 0]) + b"\0" * 8
-    ehdr = ident + struct.pack("<HHIQQQIHHHHHH", e_type, machine, 1, entry, 64, 0, 0, 64, 56, phnum, 64, 0, 0)
+    ehdr = ident + struct.pack("<HHIQQQIHHHHHH", e_type, machine, 1, entry, phoff, 0, 0, 64, 56, phnum, 64, 0, 0)
     phdrs = b"".join(struct.pack("<IIQQQQQQ", 1, 5, vaddr, vaddr, vaddr, size, size, 0x1000) for vaddr, size in loads)
-    return ehdr + phdrs
+    return ehdr + b"\0" * (phoff - 64) + phdrs
 
 
 def _image() -> ImageInfo:
@@ -293,3 +294,14 @@ def test_render_non_pie_and_other_bucket():
     assert out.splitlines()[0] == "image: 0x400000..0x402000 (non-PIE, addresses as in Ghidra)"
     assert "[image]      0x400000..0x402000  5" in out and "[other]      (no mapping)  2" in out
     assert "(0x401000)×5" in out
+
+
+def test_render_tail_zero_shows_the_head_once():
+    # items[-0:] is the whole list: with tail=0 the head must be shown exactly once, followed by the cut marker
+    t = parse_qemu_log(QEMU_LOG)
+    out = summarize(t, _image(), head=2, tail=0)
+    lines = out.splitlines()
+    i = next(i for i, l in enumerate(lines) if l.startswith("sequence ("))
+    assert lines[i + 1] == "  0x100100 0x100140 ..."
+    assert lines[i + 2] == "  ... [head 2 / tail 0 of 5 items shown]"
+    assert out.count("0x1001c0") == 1                       # only in the hot list, not in the sequence

@@ -399,7 +399,8 @@ def render(a: Analysis, items: list[Item], image: ImageInfo, top: int = 40, head
         scope = "image + anon"
     lines.append(f"sequence ({scope}, {len(a.seq)} TBs, repeats folded):")
     if len(items) > head + tail:
-        shown = items[:head] + [None] + items[-tail:]
+        tail_items = items[len(items) - tail:] if tail else []   # items[-0:] would be the whole list
+        shown = items[:head] + [None] + tail_items
         cut = f"  ... [head {head} / tail {tail} of {len(items)} items shown]"
     else:
         shown = list(items)

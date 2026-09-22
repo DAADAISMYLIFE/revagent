@@ -1,6 +1,7 @@
 import os
 import stat
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,7 @@ def test_registry_has_all_tools():
     schemas, handlers = load_tools()
     names = {s["function"]["name"] for s in schemas}
     assert names == {"bash", "run_binary", "run_gui", "notes", "decompile", "summarize", "ask_user", "submit_flag",
-                     "handoff_runbook", "solve_check", "emulate"}
+                     "handoff_runbook", "solve_check", "emulate", "trace_run"}
     assert set(handlers) == names
     for s in schemas:
         assert s["type"] == "function" and "parameters" in s["function"]
@@ -1638,3 +1639,223 @@ def test_emulate_schema_says_hex_buffers_are_output_buffers():
     from revagent.tools import emulate as em
     d = em.SCHEMA["function"]["description"]
     assert "zero-filled for at least one page past your bytes" in d and "out_lens reads back that many bytes" in d
+
+
+# --- trace_run -------------------------------------------------------------------------------------
+
+def _fake_qemu(tmp_path, monkeypatch, log_text, exit_code=3, stdout="Fail!"):
+    """A shell script named qemu-x86_64-static on PATH: records its argv, writes `log_text` to the -D
+    path, echoes stdin to its stdout and exits `exit_code`. Tests never need real qemu."""
+    from tests.test_trace import QEMU_LOG  # noqa: F401  (documents where the fixture shape comes from)
+    bindir = tmp_path / "fakebin"
+    bindir.mkdir(exist_ok=True)
+    (bindir / "trace.log").write_text(log_text)
+    script = bindir / "qemu-x86_64-static"
+    script.write_text(
+        "#!/bin/sh\n"
+        f'echo "$@" > "{bindir}/argv.txt"\n'
+        'LOG=""\n'
+        'while [ $# -gt 0 ]; do case "$1" in -D) shift; LOG="$1";; esac; shift; done\n'
+        f'cat "{bindir}/trace.log" > "$LOG"\n'
+        "cat\n"
+        f"printf '{stdout}'\n"
+        f"exit {exit_code}\n")
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}:{os.environ.get('PATH', '')}")
+    return bindir
+
+
+def _trace_ctx(tmp_path, elf_bytes=None):
+    from tests.test_trace import make_elf64
+    (tmp_path / "chall").write_bytes(make_elf64() if elf_bytes is None else elf_bytes)
+    return ctx_for(tmp_path)
+
+
+def test_trace_run_summary_files_and_ledger(tmp_path, monkeypatch):
+    from revagent.tools import trace_run
+    from tests.test_trace import QEMU_LOG
+    bindir = _fake_qemu(tmp_path, monkeypatch, QEMU_LOG)
+    ctx = _trace_ctx(tmp_path)
+    ctx.step = 9
+    out = trace_run.run(ctx, binary="chall", stdin="aaaa\n")
+    lines = out.splitlines()
+    assert lines[0] == "trace_run chall (stdin 5 bytes): exit 3, stdout 'aaaa\\nFail!'"
+    assert lines[1] == "image: 0x4000000000..0x4000203000 (PIE, Ghidra base 0x100000)"
+    assert "[image]      0x100000..0x303000  7" in out
+    assert "[lib?]       0x4001000000..0x4001040000  4  (skipped in sequence; pass range= to include)" in out
+    assert "[anon rwx]   0x4001100000..0x4001101000  3  <- mmap'd after start; not a library" in out
+    assert "0x100100 0x100140 0x100180 (0x4001100000 0x1001a0)×3 0x1001c0" in out
+    assert "[full sequence: .revagent/out/trace-1.txt, raw qemu log: .revagent/out/trace-1.log]" in out
+    assert (tmp_path / ".revagent/out/trace-1.log").read_text() == QEMU_LOG
+    assert (tmp_path / ".revagent/out/trace-1.txt").read_text() == (
+        "0x100100\n0x100140\n0x100180\n(0x4001100000 0x1001a0)×3\n0x1001c0\n")
+    argv = (bindir / "argv.txt").read_text().split()
+    assert argv[:4] == ["-d", "exec,nochain,page", "-D", str(tmp_path / ".revagent/out/trace-1.log")]
+    assert "-dfilter" not in argv and argv[-1] == str(tmp_path / "chall")
+    assert ("- [obs step 9] trace_run chall: 14 TBs, hot [anon rwx] 0x4001100000 ×3, image top 0x1001a0 ×3"
+            in ctx.casefile.read())
+    assert not ctx.env_blocked and ctx.trace_bases[str(tmp_path / "chall")] == 0x4000000000
+
+
+def test_trace_run_range_is_translated_to_dfilter_once_the_base_is_known(tmp_path, monkeypatch):
+    from revagent.tools import trace_run
+    from tests.test_trace import QEMU_LOG
+    bindir = _fake_qemu(tmp_path, monkeypatch, QEMU_LOG)
+    ctx = _trace_ctx(tmp_path)
+    # first call with an image range and no known base: no -dfilter (qemu logs all; filtered here)
+    out = trace_run.run(ctx, binary="chall", range="0x100180..0x1001c0")
+    assert "-dfilter" not in (bindir / "argv.txt").read_text()
+    assert "sequence (range 0x100180..0x1001c0, 4 TBs, repeats folded):" in out
+    assert "0x100180 (0x1001a0)×3" in out
+    assert "[lib?]       0x4001000000..0x4001040000  4\n" in out + "\n"   # no 'skipped' note with a range
+    # second call: the base is cached, so the Ghidra range becomes a guest -dfilter (half-open, start+size)
+    trace_run.run(ctx, binary="chall", range="0x100180..0x1001c0")
+    argv = (bindir / "argv.txt").read_text().split()
+    assert argv[argv.index("-dfilter") + 1] == "0x4000000180+0x40"
+    # a range outside the image is already a guest address: -dfilter even without a cached base
+    ctx2 = _trace_ctx(tmp_path)
+    out = trace_run.run(ctx2, binary="chall", range="0x4001100000..0x4001101000")
+    argv = (bindir / "argv.txt").read_text().split()
+    assert argv[argv.index("-dfilter") + 1] == "0x4001100000+0x1000"
+    assert "(0x4001100000)×3" in out
+    assert "trace_run chall range 0x4001100000..0x4001101000: 14 TBs, 3 in range, hot [anon rwx] 0x4001100000 ×3" in ctx2.casefile.read()
+
+
+def test_trace_run_args_stdin_cwd_and_files_numbering(tmp_path, monkeypatch):
+    from revagent.tools import trace_run
+    from tests.test_trace import QEMU_LOG
+    bindir = _fake_qemu(tmp_path, monkeypatch, QEMU_LOG)
+    sub = tmp_path / "dir"
+    sub.mkdir()
+    from tests.test_trace import make_elf64
+    (sub / "prog").write_bytes(make_elf64())
+    ctx = ctx_for(tmp_path)
+    ctx.out_counter = 4
+    out = trace_run.run(ctx, binary="dir/prog", args=["-x", "1"], top=1)
+    argv = (bindir / "argv.txt").read_text().split()
+    assert argv[-3:] == [str(sub / "prog"), "-x", "1"]
+    assert "trace-5.txt" in out and (tmp_path / ".revagent/out/trace-5.log").exists()
+    assert "hot (Ghidra addr × count, top 1):" in out and "0x1001a0 ×3" not in out
+
+
+def test_trace_run_cannot_trace_paths_do_not_open_the_runbook_gate(tmp_path, monkeypatch):
+    from revagent.tools import trace_run
+    from tests.test_trace import make_elf64
+    _fake_qemu(tmp_path, monkeypatch, "")
+    ctx = ctx_for(tmp_path)
+    (tmp_path / "w.exe").write_bytes(b"MZ" + b"\0" * 200)
+    out = trace_run.run(ctx, binary="w.exe")
+    assert out.startswith("[cannot trace] PE")
+    (tmp_path / "s.sh").write_text("#!/bin/sh\necho hi\n")
+    assert trace_run.run(ctx, binary="s.sh").startswith("[cannot trace] script")
+    (tmp_path / "arm").write_bytes(make_elf64(machine=183))
+    assert "not x86-64" in trace_run.run(ctx, binary="arm")
+    (tmp_path / "txt").write_bytes(b"hello")
+    assert trace_run.run(ctx, binary="txt").startswith("[cannot trace] not an ELF")
+    ledger = ctx.casefile.read()
+    assert "trace_run w.exe: [cannot trace] PE" in ledger and "trace_run arm: [cannot trace]" in ledger
+    assert not ctx.env_blocked and ctx.env_blocked_paths == [] and ctx.start_failures == 0
+
+
+def test_trace_run_tool_errors(tmp_path, monkeypatch):
+    from revagent.tools import trace_run
+    _fake_qemu(tmp_path, monkeypatch, "")
+    ctx = _trace_ctx(tmp_path)
+    assert trace_run.run(ctx, binary="../x").startswith("[tool error] path escapes")
+    assert trace_run.run(ctx, binary="nope").startswith("[tool error] no such file")
+    assert trace_run.run(ctx, binary="chall", range="abc") == "[tool error] range must look like 0x101000..0x102000 (got 'abc')"
+    assert trace_run.run(ctx, binary="chall", range="0x2000..0x1000").startswith("[tool error] range end must be above")
+    assert trace_run.run(ctx, binary="chall", top=0) == "[tool error] top must be a positive integer"
+    assert trace_run.run(ctx, binary="chall", args="-x") == "[tool error] args must be a list of strings"
+    assert trace_run.parse_range("0x10-0x20") == (0x10, 0x20)
+    with pytest.raises(ValueError):
+        trace_run.parse_range("0x10")
+
+
+def test_trace_run_without_qemu(tmp_path, monkeypatch):
+    from revagent.tools import trace_run
+    monkeypatch.setattr(trace_run, "find_qemu", lambda: None)
+    out = trace_run.run(_trace_ctx(tmp_path), binary="chall")
+    assert out.startswith("[tool error] qemu-x86_64-static not found")
+
+
+def test_trace_run_no_trace_lines(tmp_path, monkeypatch):
+    from revagent.tools import trace_run
+    _fake_qemu(tmp_path, monkeypatch, "host mmap_min_addr=0x10000\n", exit_code=127, stdout="")
+    ctx = _trace_ctx(tmp_path)
+    out = trace_run.run(ctx, binary="chall")
+    assert out.startswith("[no trace] program did not execute (exit 127)")
+    assert "raw qemu log: .revagent/out/trace-1.log" in out
+    assert "trace_run chall: [no trace] exit 127" in ctx.casefile.read()
+
+
+def test_trace_run_guessed_base_when_entry_never_ran(tmp_path, monkeypatch):
+    from revagent.tools import trace_run
+    from tests.test_trace import QEMU_LOG
+    log = "\n".join(l for l in QEMU_LOG.splitlines() if "0000004000000100" not in l) + "\n"
+    _fake_qemu(tmp_path, monkeypatch, log)
+    ctx = _trace_ctx(tmp_path)
+    out = trace_run.run(ctx, binary="chall")
+    assert "(base guessed: the entry point never executed)" in out
+    # the marker sits on the image line itself, after the base and kind
+    assert out.splitlines()[1] == ("image: 0x4000000000..0x4000203000 (PIE, Ghidra base 0x100000) "
+                                   "(base guessed: the entry point never executed)")
+    assert str(tmp_path / "chall") not in ctx.trace_bases
+
+
+def test_trace_run_timeout_and_log_cap(tmp_path, monkeypatch):
+    from revagent.tools import trace_run
+    from tests.test_trace import QEMU_LOG
+    bindir = _fake_qemu(tmp_path, monkeypatch, QEMU_LOG)
+    script = bindir / "qemu-x86_64-static"
+    script.write_text(script.read_text().replace("cat\n", "cat\nsleep 30\n"))
+    monkeypatch.setattr(trace_run, "POLL_SECONDS", 0.1)
+    ctx = _trace_ctx(tmp_path)
+    t0 = time.monotonic()
+    out = trace_run.run(ctx, binary="chall", timeout=1)
+    assert time.monotonic() - t0 < 10
+    assert "[trace stopped: timeout after 1 s]" in out and "(0x4001100000 0x1001a0)×3" in out
+    assert "[timeout]" in ctx.casefile.read()
+    monkeypatch.setattr(trace_run, "MAX_LOG_BYTES", 1500)     # the fixture log is ~2.6 KB: over the cap
+    out = trace_run.run(ctx, binary="chall", timeout=5)
+    assert "[trace truncated at 0 MB]" in out and "[truncated]" in ctx.casefile.read()
+    assert "sequence (image + anon" in out                       # the first 1500 bytes still summarize
+
+
+def test_trace_run_timeout_is_clamped_to_the_deadline(tmp_path, monkeypatch):
+    from revagent.tools import trace_run
+    from tests.test_trace import QEMU_LOG
+    _fake_qemu(tmp_path, monkeypatch, QEMU_LOG)
+    seen = {}
+
+    def fake_run_qemu(cmd, cwd, stdin_text, log_path, timeout):
+        seen["timeout"] = timeout
+        log_path.write_text(QEMU_LOG)
+        return {"returncode": 0, "stdout": "", "stderr": "", "truncated": False, "timed_out": False}
+
+    monkeypatch.setattr(trace_run, "run_qemu", fake_run_qemu)
+    monkeypatch.setattr("revagent.tools.base.time.monotonic", lambda: 50.0)
+    ctx = _trace_ctx(tmp_path)
+    ctx.deadline = 50.0 + 12
+    trace_run.run(ctx, binary="chall", timeout=600)
+    assert seen["timeout"] == 12
+
+
+def test_trace_run_never_raises(tmp_path, monkeypatch):
+    from revagent.tools import trace_run
+    _fake_qemu(tmp_path, monkeypatch, "")
+    monkeypatch.setattr(trace_run, "run_qemu", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    out = trace_run.run(_trace_ctx(tmp_path), binary="chall")
+    assert out == "[tool error] trace_run failed: RuntimeError: boom"
+
+
+def test_trace_run_reads_program_headers_beyond_the_first_64_kb(tmp_path, monkeypatch):
+    # an ELF whose program headers sit past ELF_HEADER_BYTES must still be recognised: the tool has to
+    # read at least e_phoff + e_phnum * 56 bytes, not just the first chunk
+    from revagent.tools import trace_run
+    from tests.test_trace import QEMU_LOG, make_elf64
+    _fake_qemu(tmp_path, monkeypatch, QEMU_LOG)
+    ctx = _trace_ctx(tmp_path, elf_bytes=make_elf64(phoff=trace_run.ELF_HEADER_BYTES + 0x100))
+    out = trace_run.run(ctx, binary="chall")
+    assert "[cannot trace]" not in out
+    assert out.splitlines()[1] == "image: 0x4000000000..0x4000203000 (PIE, Ghidra base 0x100000)"
