@@ -77,3 +77,13 @@ def test_bench_resolves_relative_dirs_before_running(tmp_path, monkeypatch):
     m.main(["bench", "a", "b"])
     assert seen and all(d.is_absolute() for d in seen)
     assert [d.name for d in seen] == ["a", "b"]
+
+
+def test_stale_cwd_gives_one_clear_message(tmp_path, monkeypatch, capsys):
+    import revagent.__main__ as m
+    monkeypatch.setattr(m, "_preflight", lambda *a, **k: object())
+    def boom(self, *a, **k):
+        raise FileNotFoundError(2, "No such file or directory")
+    monkeypatch.setattr(m.Path, "resolve", boom)
+    assert m.main(["bench", "x"]) == 2
+    assert "current directory no longer exists" in capsys.readouterr().err
