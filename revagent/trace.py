@@ -10,6 +10,7 @@ Pure module: no agent, no tool context, no subprocess. Nothing here knows any ch
 qemu log format and the ELF header."""
 import re
 import struct
+from collections import Counter
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -285,3 +286,137 @@ def initial_layout(trace: Trace, image: ImageInfo) -> list[Mapping]:
     except ValueError:
         idx = 0
     return layout_before_trace(trace, idx)
+
+
+def compress(seq: list[int], max_k: int = DEFAULT_MAX_K) -> list[Item]:
+    """Fold consecutive repeats: at each position take the period k (1..max_k) whose repeats cover
+    the most elements (ties: the shortest period), emit (unit, reps) and skip past them. No
+    nesting: a folded unit is never itself folded again."""
+    out: list[Item] = []
+    n = len(seq)
+    i = 0
+    while i < n:
+        best_k, best_reps = 1, 1
+        for k in range(1, min(max_k, (n - i) // 2) + 1):
+            unit = seq[i:i + k]
+            reps = 1
+            j = i + k
+            while j + k <= n and seq[j:j + k] == unit:
+                reps += 1
+                j += k
+            if reps >= 2 and k * reps > best_k * best_reps:
+                best_k, best_reps = k, reps
+        out.append((tuple(seq[i:i + best_k]), best_reps))
+        i += best_k * best_reps
+    return out
+
+
+def item_text(item: Item) -> str:
+    addrs, reps = item
+    body = " ".join(f"{a:#x}" for a in addrs)
+    return f"({body})×{reps}" if reps > 1 else body
+
+
+@dataclass
+class Analysis:
+    regions: list[Region]
+    other: int                     # TBs in no known region
+    total: int                     # all TBs in the trace
+    seq: list[int]                 # display addresses of the selected TBs, in order
+    hot: list[tuple[int, int]]     # (display address, count), most frequent first
+    range_: tuple[int, int] | None
+    skipped_lib: bool              # library TBs were left out of seq (no range given)
+
+
+def analyze(trace: Trace, image: ImageInfo, range_: tuple[int, int] | None = None, top: int = 40) -> Analysis:
+    regions = classify_regions(trace.mappings, initial_layout(trace, image), image)
+    other = count_regions(regions, trace.pcs)
+    seq: list[int] = []
+    disp: dict[int, int] = {}
+    lib: dict[int, bool] = {}
+    for pc in trace.pcs:
+        d = disp.get(pc)
+        if d is None:
+            d = disp[pc] = display_addr(pc, image)
+        if range_ is not None:
+            if range_[0] <= d < range_[1]:
+                seq.append(d)
+            continue
+        is_lib = lib.get(pc)
+        if is_lib is None:
+            r = region_of(regions, pc)
+            is_lib = lib[pc] = r is not None and r.kind == "lib?"
+        if not is_lib:
+            seq.append(d)
+    hot = Counter(seq).most_common(max(1, top))
+    return Analysis(regions=regions, other=other, total=len(trace.pcs), seq=seq, hot=hot, range_=range_,
+                    skipped_lib=range_ is None)
+
+
+def _wrap(tokens: list[str], width: int = 100, indent: str = "  ") -> list[str]:
+    lines: list[str] = []
+    cur = indent
+    for t in tokens:
+        if len(cur) + len(t) + 1 > width and cur.strip():
+            lines.append(cur.rstrip())
+            cur = indent
+        cur += t + " "
+    if cur.strip():
+        lines.append(cur.rstrip())
+    return lines
+
+
+def region_display(r: Region, image: ImageInfo) -> tuple[int, int]:
+    if r.kind == "image":
+        return image.ghidra_lo, image.ghidra_hi
+    return r.start, r.end
+
+
+def render(a: Analysis, items: list[Item], image: ImageInfo, top: int = 40, head: int = 200, tail: int = 50) -> str:
+    lines: list[str] = []
+    kind = "PIE, Ghidra base 0x100000" if image.is_pie else "non-PIE, addresses as in Ghidra"
+    guessed = " (base guessed: the entry point never executed)" if image.guessed else ""
+    lines.append(f"image: {image.lo:#x}..{image.hi:#x} ({kind}){guessed}")
+    lines.append("regions (executed TBs):")
+    for r in a.regions:
+        if r.count == 0 and r.kind != "anon rwx":
+            continue
+        lo, hi = region_display(r, image)
+        note = ""
+        if r.kind == "lib?" and a.skipped_lib:
+            note = "  (skipped in sequence; pass range= to include)"
+        elif r.kind in ("anon", "anon rwx"):
+            note = "  <- mmap'd after start; not a library"
+        label = f"[{r.kind}]".ljust(11)
+        lines.append(f"  {label}  {lo:#x}..{hi:#x}  {r.count}{note}")
+    if a.other:
+        lines.append(f"  {'[other]'.ljust(11)}  (no mapping)  {a.other}")
+    lines.append(f"hot (Ghidra addr × count, top {top}):")
+    lines.extend(_wrap([f"{addr:#x} ×{n}" for addr, n in a.hot]) or ["  (none)"])
+    if a.range_ is not None:
+        scope = f"range {a.range_[0]:#x}..{a.range_[1]:#x}"
+    else:
+        scope = "image + anon"
+    lines.append(f"sequence ({scope}, {len(a.seq)} TBs, repeats folded):")
+    if len(items) > head + tail:
+        shown = items[:head] + [None] + items[-tail:]
+        cut = f"  ... [head {head} / tail {tail} of {len(items)} items shown]"
+    else:
+        shown = list(items)
+        cut = ""
+    tokens = ["..." if it is None else item_text(it) for it in shown]
+    lines.extend(_wrap(tokens) or ["  (none)"])
+    if cut:
+        lines.append(cut)
+    return "\n".join(lines)
+
+
+def summarize(trace: Trace, image: ImageInfo, range_: tuple[int, int] | None = None, top: int = 40,
+              head: int = 200, tail: int = 50) -> str:
+    a = analyze(trace, image, range_, top)
+    return render(a, compress(a.seq), image, top, head, tail)
+
+
+def full_listing(items: list[Item]) -> str:
+    """The whole folded sequence, one item per line, for the trace-N.txt file."""
+    return "\n".join(item_text(it) for it in items) + ("\n" if items else "")

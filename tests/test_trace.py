@@ -4,9 +4,10 @@ import struct
 
 import pytest
 
-from revagent.trace import (GHIDRA_PIE_BASE, ImageInfo, Mapping, TraceError, classify_regions, count_regions,
-                            find_image_base, from_ghidra, initial_layout, layout_before_trace, locate_image,
-                            parse_elf_header, parse_qemu_log, to_ghidra)
+from revagent.trace import (GHIDRA_PIE_BASE, Analysis, ImageInfo, Mapping, Region, TraceError, analyze,
+                            classify_regions, compress, count_regions, find_image_base, from_ghidra, full_listing,
+                            initial_layout, item_text, layout_before_trace, locate_image, parse_elf_header,
+                            parse_qemu_log, render, summarize, to_ghidra)
 
 QEMU_LOG = """host mmap_min_addr=0x10000
 Locating guest address space @ 0x0
@@ -208,3 +209,87 @@ def test_initial_layout_is_the_one_before_the_entry_ran():
     assert Mapping(0x4004000000, 0x4004001000, "rwx") not in initial
     kinds = {r.start: r.kind for r in classify_regions(t.mappings, initial, img)}
     assert kinds[0x4002000000] == "lib?" and kinds[0x4003000000] == "lib?" and kinds[0x4004000000] == "anon rwx"
+
+
+def test_compress_simple_repeat():
+    assert compress([1, 2, 3, 1, 2, 3, 1, 2, 3, 4]) == [((1, 2, 3), 3), ((4,), 1)]
+
+
+def test_compress_length_one_and_empty():
+    assert compress([5, 5, 5, 5]) == [((5,), 4)]
+    assert compress([]) == []
+    assert compress([9]) == [((9,), 1)]
+
+
+def test_compress_prefers_the_period_that_covers_most_without_nesting():
+    assert compress([1, 1, 2, 1, 1, 2]) == [((1, 1, 2), 2)]
+    assert compress([1, 2, 1, 2, 3]) == [((1, 2), 2), ((3,), 1)]
+
+
+def test_compress_does_not_fold_a_period_longer_than_max_k():
+    seq = list(range(17)) * 2
+    assert compress(seq) == [((x,), 1) for x in seq]
+    assert compress(seq, max_k=17) == [(tuple(range(17)), 2)]
+
+
+def test_item_text_and_full_listing():
+    assert item_text(((0x1224000, 0x1013A4), 512)) == "(0x1224000 0x1013a4)×512"
+    assert item_text(((0x101040,), 1)) == "0x101040"
+    assert full_listing([((1,), 1), ((2, 3), 2)]) == "0x1\n(0x2 0x3)×2\n"
+    assert full_listing([]) == ""
+
+
+def test_analyze_default_skips_libraries_and_translates():
+    t = parse_qemu_log(QEMU_LOG)
+    a = analyze(t, _image())
+    assert a.total == 14 and a.other == 0 and a.skipped_lib and a.range_ is None
+    assert a.seq == [0x100100, 0x100140, 0x100180, ANON, 0x1001A0, ANON, 0x1001A0, ANON, 0x1001A0, 0x1001C0]
+    assert a.hot[0] == (ANON, 3) and (0x1001A0, 3) in a.hot
+    assert compress(a.seq) == [((0x100100,), 1), ((0x100140,), 1), ((0x100180,), 1),
+                               ((ANON, 0x1001A0), 3), ((0x1001C0,), 1)]
+
+
+def test_analyze_range_filters_on_display_addresses():
+    t = parse_qemu_log(QEMU_LOG)
+    a = analyze(t, _image(), range_=(0x100180, 0x1001C0))
+    assert a.seq == [0x100180, 0x1001A0, 0x1001A0, 0x1001A0] and not a.skipped_lib
+    b = analyze(t, _image(), range_=(LIB, LIB + 0x40000))
+    assert b.seq == [LIB + 0xA00, LIB + 0xA20, LIB + 0xA20, LIB + 0xB00]
+
+
+def test_summarize_format():
+    t = parse_qemu_log(QEMU_LOG)
+    out = summarize(t, _image())
+    lines = out.splitlines()
+    assert lines[0] == "image: 0x4000000000..0x4000203000 (PIE, Ghidra base 0x100000)"
+    assert lines[1] == "regions (executed TBs):"
+    assert "[image]      0x100000..0x303000  7" in out
+    assert f"[lib?]       {LIB:#x}..{LIB + 0x40000:#x}  4  (skipped in sequence; pass range= to include)" in out
+    assert f"[anon rwx]   {ANON:#x}..{ANON + 0x1000:#x}  3  <- mmap'd after start; not a library" in out
+    assert "0xffffffffff600000" not in out               # a lib mapping with 0 TBs is not listed
+    assert "hot (Ghidra addr × count, top 40):" in out
+    assert f"{ANON:#x} ×3" in out and "0x1001a0 ×3" in out
+    assert "sequence (image + anon, 10 TBs, repeats folded):" in out
+    assert f"0x100100 0x100140 0x100180 ({ANON:#x} 0x1001a0)×3 0x1001c0" in out
+    assert "head" not in out                              # short sequences are shown whole
+
+
+def test_summarize_cuts_long_sequences_and_marks_guessed_base_and_range():
+    t = parse_qemu_log(QEMU_LOG)
+    img = ImageInfo(lo=IMAGE, hi=IMAGE + 0x203000, is_pie=True, guessed=True, entry=IMAGE + E_ENTRY)
+    out = summarize(t, img, range_=(0x100180, 0x1001C0), head=1, tail=1)
+    assert "(base guessed: the entry point never executed)" in out
+    assert "sequence (range 0x100180..0x1001c0, 4 TBs, repeats folded):" in out
+    assert "  0x100180 (0x1001a0)×3" in out and "items shown" not in out   # 2 items <= head + tail: whole
+    out2 = summarize(t, img, head=1, tail=1)
+    assert "0x100100 ... 0x1001c0" in out2 and "[head 1 / tail 1 of 5 items shown]" in out2
+
+
+def test_render_non_pie_and_other_bucket():
+    img = ImageInfo(lo=0x400000, hi=0x402000, is_pie=False, guessed=False, entry=0x401000)
+    a = Analysis(regions=[Region("image", 0x400000, 0x402000, "", 5)], other=2, total=7, seq=[0x401000] * 5,
+                 hot=[(0x401000, 5)], range_=None, skipped_lib=True)
+    out = render(a, compress(a.seq), img)
+    assert out.splitlines()[0] == "image: 0x400000..0x402000 (non-PIE, addresses as in Ghidra)"
+    assert "[image]      0x400000..0x402000  5" in out and "[other]      (no mapping)  2" in out
+    assert "(0x401000)×5" in out
