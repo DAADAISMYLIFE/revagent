@@ -228,3 +228,27 @@ def test_analyze_timeout_guards_process_lookup_error(tmp_path, monkeypatch):
     with pytest.raises(GhidraError, match="timed out"):
         ghidra.analyze(binary, cache_dir, timeout=1)
     assert not list(cache_dir.glob("*.tmp"))
+
+
+def test_calls_no_imports():
+    db = FunctionDB.load(FIX)
+    assert db.calls_no_imports("check") is True          # no callees at all
+    assert db.calls_no_imports("main") is False          # printf is a thunk, fgets is not in the DB
+    assert db.calls_no_imports("0x4011a0") is True
+    assert db.calls_no_imports("nope") is None
+    funcs = [
+        {"name": "FUN_140001000", "entry": "0x140001000", "size": 10, "is_thunk": False,
+         "callers": [], "callees": [], "string_refs": [], "decompiled_c": "x"},
+        {"name": "FUN_140001100", "entry": "0x140001100", "size": 10, "is_thunk": False,
+         "callers": [], "callees": ["FUN_140001000", "thunk_FUN_140002000", "FUN_deadbeef"], "string_refs": [], "decompiled_c": "y"},
+        {"name": "FUN_140001200", "entry": "0x140001200", "size": 10, "is_thunk": False,
+         "callers": [], "callees": ["FUN_140001000", "strlen"], "string_refs": [], "decompiled_c": "z"},
+        {"name": "helper", "entry": "0x140001300", "size": 10, "is_thunk": False,
+         "callers": [], "callees": [], "string_refs": [], "decompiled_c": "h"},
+        {"name": "FUN_140001400", "entry": "0x140001400", "size": 10, "is_thunk": False,
+         "callers": [], "callees": ["helper"], "string_refs": [], "decompiled_c": "w"},
+    ]
+    db = FunctionDB(funcs)
+    assert db.calls_no_imports("FUN_140001100") is True  # FUN_/thunk_FUN_ names count as internal even when not in the DB
+    assert db.calls_no_imports("FUN_140001200") is False
+    assert db.calls_no_imports("FUN_140001400") is True  # a named non-thunk function in the DB is internal

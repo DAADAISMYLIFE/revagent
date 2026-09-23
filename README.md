@@ -4,7 +4,7 @@ Dreamhack 리버싱 문제를 혼자 푸는 에이전트. 모델은 직접 띄�
 
 문제 폴더(바이너리 + `desc.txt`)를 주면 트리아지 → Ghidra 디컴파일 → 체크 분류 → 풀이(z3 / angr / gdb / 재구현) → 바이너리로 검증 → `DH{...}` 제출까지 알아서 한다. 못 풀면 어디까지 갔는지 남긴다.
 
-**현황:** multipoint, revlogin, relativity 풀었음. captain-hook, damnida, ROVM, basic 미해결. 기록은 아래 벤치 표.
+**현황:** multipoint, revlogin, relativity, basic 풀었음. captain-hook, damnida, ROVM 미해결. 기록은 아래 벤치 표.
 
 ## 설치 (WSL, sudo 없이)
 ```bash
@@ -50,6 +50,8 @@ bash scripts/install_ghidra.sh         # --host 로 돌릴 때만 필요 (JDK 21
 
 `emulate`는 바이너리의 함수 하나를 unicorn으로 돌려 주는 오라클이다. 디컴파일된 변환을 파이썬으로 옮긴 뒤 `emulate`로 실제 함수와 같은 입력에서 비교하고, 맞으면 `solve_check`로 뒤집는다. basic이 두 번 죽은 "forward 모델 검증" 단계가 이걸로 끝난다. import를 부르면 거기서 멈추고 누구를 어떤 인자로 불렀는지 보고한다.
 
+`trace_run`은 프로그램을 qemu-user로 한 번 돌려 실행된 코드 주소의 시퀀스를 준다. 핸들러를 하나하나 읽는 대신 인터프리터가 어떤 핸들러를 몇 번 어떤 순서로 돌렸는지를 관찰하고, 서로 다른 핸들러 주소 N개만 디컴파일해서 시퀀스를 프로그램으로 읽는다. 전체 시퀀스와 원본 로그는 `.revagent/out/trace-N.txt`, `trace-N.log`에 남는다.
+
 ### 산출물 (`문제폴더/.revagent/`)
 | 파일 | 내용 |
 |---|---|
@@ -57,6 +59,7 @@ bash scripts/install_ghidra.sh         # --host 로 돌릴 때만 필요 (JDK 21
 | `case.md` | 에이전트 노트. Facts / Hypotheses / Todo / Log. 컨텍스트가 리셋돼도 남는 유일한 메모리 |
 | `transcript.jsonl` | 메시지, 도구 호출, 생각, 메타 이벤트 전부 |
 | `out/NNN.txt` | 12,000자 넘어 잘린 도구 출력 원본 |
+| `out/trace-N.log`, `out/trace-N.txt` | `trace_run`의 qemu 원본 로그와 접은 전체 시퀀스 |
 | `ghidra/` | 디컴파일 캐시 |
 | `screens/` | `run_gui` 캡처와 입력별 diff PNG |
 | `runbook.md` | 샌드박스가 실행 못 하는 대상일 때 사람용 절차 |
@@ -81,9 +84,10 @@ bash scripts/install_ghidra.sh         # --host 로 돌릴 때만 필요 (JDK 21
 - 에이전트 코드 고치면 `--dev`로 바로 돌리거나 `bash scripts/sandbox-build.sh`로 마지막 레이어만 재빌드(몇 분). Ghidra 스크립트를 고쳐도 Ghidra 레이어는 안 다시 빌드한다.
 
 ## 동작 원리
-- ReAct 루프 하나, 도구 열한 개: `bash`, `decompile`, `run_binary`, `run_gui`, `solve_check`, `emulate`, `notes`, `summarize`, `ask_user`, `submit_flag`, `handoff_runbook`.
+- ReAct 루프 하나, 도구 열두 개: `bash`, `decompile`, `run_binary`, `run_gui`, `solve_check`, `emulate`, `trace_run`, `notes`, `summarize`, `ask_user`, `submit_flag`, `handoff_runbook`.
 - `solve_check`: 모델이 forward 변환만 파이썬으로 쓰면 z3가 입력을 찾아 준다. 바이트 단위 체크용.
 - `emulate`: 함수 단위 오라클. PIE ELF는 0x100000, PE는 ImageBase에 로드해서 Ghidra 주소를 그대로 쓴다.
+- `trace_run`: qemu-user(`-d exec,nochain,page`)로 한 번 실행해 영역별·주소별 실행 횟수와 실행 주소 시퀀스(연속 반복 접음)를 준다. 이미지 안 주소는 Ghidra 기준(PIE 0x100000), 밖은 원본. 인터프리터/VM이 실제로 무엇을 어떤 순서로 돌렸는지 관찰하는 용도. x86-64 ELF만.
 - 메모리는 `case.md`. 프롬프트가 44k 토큰 넘으면 대화 중간을 요약해 여기 넣고, 시스템 프롬프트 + 작업 + case.md + 최근 도구 교환 4개로 컨텍스트를 다시 만든다.
 - thinking 켜 둠(`medium`). 출력 예산 16k 토큰, 넘치면 힌트 붙여 `low`로 한 번 재시도.
 - 응답은 스트리밍. RunPod 프록시가 100초 안에 응답 안 시작하면 524로 끊기 때문. 일시 장애는 3번 재시도하고 `llm_retries`에 센다.
@@ -114,6 +118,10 @@ bash scripts/install_ghidra.sh         # --host 로 돌릴 때만 필요 (JDK 21
 | quiz/damnida run2 (gates + emulate build, case file carried over from run 1, 120 min) | real | **unsolved** (time limit): 172 steps, 13 compactions, 186 Facts. Mapped the RWX VM further (output handler at rwx 0x52ee0, the `Wrong!` write via `call rax` at 0x60639, the `0xdeadbeef` gate) but the input path is still open. G3 blocked twice (34, 91); G4 fired at 105 and, as in ROVM, reasoning got longer afterwards (0.7k → 5.4k median). `emulate` unused |
 | quiz/captain-hook (overnight bench, fresh case file) | real | **error** at 0 steps: the host bench row failed with `[Errno 2] No such file or directory` before the container started — the DrvFs "stale cwd" failure (relative challenge path resolved after the working directory vanished underneath the process); rerun with an absolute path |
 | quiz/captain-hook run10 (gates + emulate build, fresh case file, absolute path) | real | **wrong**: submitted `DH{0}` at step 145 (62.5 min) with evidence `two_independent_readings` — both "readings" were of the same single on-screen glyph (screenshot pixels vs the proxy DLL's GdipDrawLineI log), so the rule was satisfied in form and bypassed in substance; caught by the ANSWERS.md check. The run never asked what the 18 432-char stream *is* (the nested-binary bullet) and never used `emulate` on the draw dispatcher. No G3 block (streak 2), G4 warned at 106. Same failure class as run 9: self-classified evidence. Candidate fix (content-free): `two_independent_readings` must describe two DIFFERENT observation tools (e.g. a run_gui capture AND a decoded file/log), not two views of one capture |
+| quiz/ROVM run5 (observe-nudges build, fresh case file then carried over after a docker-kill at step 17; 60 min) | real | **unsolved** (time limit): 35 steps, 60.8 min, 38 Facts, emulate 0, gate_blocks 0, long_reasoning_steps 13, 6 output truncations. Same shape as runs 2 and 4: the VM structure (mmap'd `opcode` handlers, `chain` records) is recovered by step 8 and the rest is gdb single-stepping and hand-written chain emulators that never produce the listing. CONTROL run for trace_run |
+| quiz/ROVM run6 (trace_run build, case file carried over from run 5; 60 min) | real | **unsolved** (time limit): 28 steps, 63.4 min, 2 compactions, long_reasoning_steps 13. `trace_run` was called ONCE (step 12) with EMPTY stdin: the program read 0 bytes and failed early, so the trace held 83 TBs (the mmap'd region ran 28 times; with a 35-byte input the same region runs 7 233 times and the per-byte loop folds visibly). Even that thin trace said "the 0x1224000 mmap executes, 0x1225000 does not", which contradicted the model's own Fact about which file sits where; it resolved the conflict by re-reading the disassembly instead of trusting the observation (evidence-ladder violation), then spent 15 steps on capstone, gdb stepping and its own `emul.py`. No second call with stdin or `range=`. Lessons (content-free): (1) a trace without input observes nothing about the check — the tool should say so when stdin is empty; (2) a single call that is not chained is not yet an observation; (3) when an observation contradicts a Fact, the Fact goes |
+| quiz/damnida run3 (trace_run build, case file carried over from run 2; 60 min) | real | **unsolved** (time limit): 93 steps, 61.1 min, 9 compactions, 3.47M prompt tokens, long_reasoning_steps 9, gate_blocks 0. `trace_run` was never called (bash 91 of 96 tool calls, notes 2). The inherited Fact "RWX region is self-modifying" is false (a hand solve found the runtime dump identical to the file bytes) and was never re-examined; the run kept disassembling the handler listing it wrote in run 2. Hand solution on file in quiz/ANSWERS.md (16-round mix over two qwords, unlocked by a qemu block trace + symbolic replay of the input-dependent compare). Lesson (content-free): an inherited case file is only as good as its first Fact; a run should re-observe before it re-reads |
+| quiz/basic run4 (trace_run build, fresh case file, 15 min; regression check for the new playbook) | real | **solved** `DH{Reverse__your__brain_;)}` in 16 steps, 6.7 min, 0 compactions (run 3: 43 steps, 11.2 min). G3 blocked once (step 14, 4th re-edit of the same script) and the next step ran the script; candidate verified with `run_binary` (`Input : Correct`) before submit. `emulate`/`trace_run` not needed this time. No regression from the interpreter rule or the trace_run tool line |
 | bench/mini/win_console (mingw PE, console) | plumbing test | **solved** in the sandbox (8 steps, 0.9 min; run_binary under wine) |
 | bench/mini/win_gui (mingw PE, GUI) | plumbing test | **solved** in the sandbox (9 steps, 1.2 min; run_gui screenshot + OCR read the flag) |
 | bench/mini/win_gui_key (mingw PE, GUI, one char per keypress) | generalization test | **solved** in the sandbox (14 steps, 2.1 min; no hint: agent saw one char, chose `actions` with clicks/keys by itself); evidence-ladder build: run 1 **wrong** flag `DH{k3y_driv3n_ui}` (read `1` from pixels, retyped it as `i` — now caught by the bench `ANSWERS.md` check and the assemble-in-code rule), run 2 solved (12 steps, 3.5 min, two readings) |

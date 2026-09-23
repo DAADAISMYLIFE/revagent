@@ -1,3 +1,4 @@
+import os
 """Tests for the bench answer-checking helper (revagent.__main__.check_answer).
 
 A bench run can "solve" a challenge with a wrong flag (e.g. misreading a glyph).
@@ -54,3 +55,35 @@ def test_row_missing_for_this_challenge_is_unchanged(tmp_path):
     status, note = check_answer(problem_dir, "solved", "DH{anything}")
     assert status == "solved"
     assert note is None
+
+
+def test_bench_resolves_relative_dirs_before_running(tmp_path, monkeypatch):
+    """Overnight bench and the bronze bench both failed every row after the first with [Errno 2] because
+    relative dirs were resolved late, after the working directory had gone stale (DrvFs). Paths must be
+    absolute before the first run."""
+    import revagent.__main__ as m
+    seen = []
+    (tmp_path / "a").mkdir(); (tmp_path / "b").mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(m, "_preflight", lambda *a, **k: object())
+    def fake_run_one(d, args, desc, ask, rt):
+        seen.append(d)
+        if len(seen) == 1:
+            os.chdir("/")          # the first run leaves the cwd behind, as a stale DrvFs cwd does
+        return {"status": "unsolved", "steps": 0, "minutes": 0}, 1
+    monkeypatch.setattr(m, "_run_one", fake_run_one)
+    monkeypatch.setattr(m, "_row", lambda d, r: (d.name, r["status"], "", 0, 0))
+    monkeypatch.setattr(m, "_print_bench_table", lambda rows: 0)
+    m.main(["bench", "a", "b"])
+    assert seen and all(d.is_absolute() for d in seen)
+    assert [d.name for d in seen] == ["a", "b"]
+
+
+def test_stale_cwd_gives_one_clear_message(tmp_path, monkeypatch, capsys):
+    import revagent.__main__ as m
+    monkeypatch.setattr(m, "_preflight", lambda *a, **k: object())
+    def boom(self, *a, **k):
+        raise FileNotFoundError(2, "No such file or directory")
+    monkeypatch.setattr(m.Path, "resolve", boom)
+    assert m.main(["bench", "x"]) == 2
+    assert "current directory no longer exists" in capsys.readouterr().err

@@ -100,12 +100,16 @@ class Agent:
         elif call.parse_error:
             result = f"[tool error] arguments were not valid JSON: {call.raw_args[:300]}"
         else:
+            ran = True
             try:
                 result = str(handler(self.ctx, **call.args))
             except TypeError as e:
+                ran = False   # the handler was never entered
                 result = f"[tool error] bad arguments for {call.name}: {e}"
             except Exception as e:  # tool bugs must not kill the session
                 result = f"[tool error] {type(e).__name__}: {e}"
+            if ran:
+                self.ctx.tools_used[call.name] = self.ctx.tools_used.get(call.name, 0) + 1
         return truncate(result, self.ctx.out_dir, self.ctx.next_out_id)
 
     def _run_tools(self, step: int, calls: list[ToolCall]) -> None:

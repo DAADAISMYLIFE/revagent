@@ -1085,3 +1085,34 @@ def test_signals_record_first_facts_step(tmp_path):
     (tmp_path / "b").mkdir()
     r2 = Agent(make_problem(tmp_path / "b"), "", llm2, max_steps=5, interactive=False).run()
     assert r2["signals"]["first_facts_step"] is None
+
+
+def test_agent_counts_tool_calls_that_reach_a_handler(tmp_path):
+    d = make_problem(tmp_path)
+    llm = ScriptedLLM([
+        [("nope", {})],
+        [("bash", {"cmd": "echo one"}), ("bash", {"cmd": "echo two"})],
+        [("notes", {"action": "add", "text": "x"})],
+        [("notes", {"zzz": 1})],   # bad arguments: the handler never ran, so it is not counted
+        [("submit_flag", {"flag": "DH{x}", "how_verified": "v"})],
+    ])
+    agent = Agent(d, "", llm, max_steps=10, interactive=False)
+    agent.run()
+    assert agent.ctx.tools_used == {"bash": 2, "notes": 1, "submit_flag": 1}
+    tools = [m["content"] for m in llm.seen[4] if m["role"] == "tool"]
+    assert tools[-1].startswith("[tool error] bad arguments for notes")
+
+
+def test_playbook_names_trace_run_for_the_interpreter_class():
+    p = load_system_prompt()
+    env = p[p.index("# Environment"):p.index("# Procedure")]
+    assert "`trace_run` runs the program ONCE under qemu-user" in env
+    sec3 = p[p.index("## 3."):p.index("## 4.")]
+    assert "**Interpreter / VM / dispatch loop**" in sec3
+    assert "the next deliverable is the LISTING of the interpreted program" in sec3
+    assert "`trace_run` with a range over the region the dispatch executes in" in sec3
+    assert sec3.index("**VM / interpreter:**") < sec3.index("**Interpreter / VM / dispatch loop**")
+    rule11 = p[p.index("11. **Evidence ladder."):p.index("# Environment")]
+    assert "trace/log (proxy DLL, strace, hooks, `trace_run`)" in rule11
+    for n in range(1, 12):
+        assert f"\n{n}. **" in p
