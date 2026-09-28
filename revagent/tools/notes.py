@@ -44,7 +44,11 @@ def _bullets(lines: list[str], start: int, end: int) -> list[tuple[int, int]]:
     """(first, last+1) line spans of the bullets between a section header and the next header."""
     spans, cur = [], None
     for k in range(start + 1, end):
-        if lines[k].startswith("- "):
+        if lines[k].startswith("#"):
+            if cur is not None:
+                spans.append((cur, k))
+            cur = None
+        elif lines[k].startswith("- "):
             if cur is not None:
                 spans.append((cur, k))
             cur = k
@@ -80,6 +84,8 @@ def _retract(ctx, text: str, reason: str) -> str:
         return f"[tool error] {len(hits)} bullets contain {needle[:80]!r}; pass a longer, unique piece"
     a, b = hits[0]
     gone = " ".join(" ".join(lines[a:b]).split())[2:]
+    if section_span(lines, "log") is None:
+        return "[tool error] the case file has no '## Log' section; nothing was retracted"
     del lines[a:b]
     ctx.casefile.write("\n".join(lines))
     ctx.casefile.add("log", f"[retracted step {ctx.step}] {gone[:300]} — because {' '.join(reason.split())[:200]}")

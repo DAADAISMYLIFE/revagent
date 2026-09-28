@@ -1119,6 +1119,6 @@ def test_playbook_names_trace_run_for_the_interpreter_class():
     assert "it is not the order of work" in rule11 and "(`notes` action `retract`)" in rule11
     assert "a bytecode blob)" not in p                   # rule 7 no longer sends VM bytecode to a static parser
     assert "finish the analysis statically" not in p     # the gdb fallback is observation, not static-only
-    assert "Ghidra 0x1008b3 is objdump 0x8b3" in p
+    assert "Ghidra 0x101234 is objdump 0x1234" in p
     for n in range(1, 12):
         assert f"\n{n}. **" in p

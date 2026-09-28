@@ -447,3 +447,8 @@ def test_work_files_list_trace_listings_but_not_spilled_outputs(tmp_path):
     names = [p for p, _ in list_work_files(tmp_path, 0)]
     assert ".revagent/out/trace-3.txt" in names
     assert ".revagent/out/001.txt" not in names
+
+
+def test_retractions_are_ledger_lines():
+    from revagent.context import _is_ledger_line
+    assert _is_ledger_line("- [retracted step 5] x — because y")

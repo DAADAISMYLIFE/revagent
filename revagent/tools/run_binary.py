@@ -113,7 +113,7 @@ def _run(ctx, path: str, args: list[str] | None = None, stdin: str = "", timeout
         if shutil.which("wine") is None:
             return (f"[cannot run here] {kind} — Windows PE and wine is not installed on the host. "
                     f"Run in the sandbox (the default; drop --host: the image has wine), or analyze statically / emulate with unicorn.")
-        if "80386" in kind or ("x86-64" not in kind and "PE32+" not in kind):
+        if _is_i386(kind) or ("x86-64" not in kind and "PE32+" not in kind):
             return ("[cannot run here] 32-bit Windows PE: the image has wine64 only. "
                      "Analyze statically / emulate with unicorn (x86 32-bit), or re-implement the check.")
         if not os.access(p, os.X_OK):
@@ -121,7 +121,7 @@ def _run(ctx, path: str, args: list[str] | None = None, stdin: str = "", timeout
         cmd = "WINEDEBUG=-all wine " + " ".join(shlex.quote(x) for x in [str(p), *(args or [])])
         return run_cmd(cmd, cwd=ctx.problem_dir, timeout=timeout, stdin_text=stdin)
     prefix: list[str] = []
-    if "ELF" in kind and "x86-64" not in kind and "80386" not in kind:
+    if "ELF" in kind and "x86-64" not in kind and not _is_i386(kind):
         qemu = _qemu_for(kind)
         if qemu is None:
             return (f"[cannot run here] {kind} — not x86; no qemu-<arch>-static for it in this image. "
@@ -133,22 +133,29 @@ def _run(ctx, path: str, args: list[str] | None = None, stdin: str = "", timeout
     return run_cmd(cmd, cwd=ctx.problem_dir, timeout=timeout, stdin_text=stdin)
 
 
-_QEMU_ARCH = (("aarch64", "aarch64"), ("ARM,", "arm"), ("RISC-V", "riscv64"), ("PowerPC64", "ppc64"),
-              ("PowerPC", "ppc"), ("S/390", "s390x"))
+def _is_i386(kind: str) -> bool:
+    return "80386" in kind or "Intel i386" in kind   # file 5.44 (sandbox) vs 5.46 (host) wording
 
 
 def _qemu_for(kind: str) -> str | None:
     """qemu-user binary for a non-x86 ELF, as `file` describes it. The image ships only the *-static names;
     a live run was told to look for `qemu-aarch64` and found nothing, and the [cannot run here] reply then
     opened the runbook gate for a program the sandbox could run."""
-    arch = None
-    if "MIPS" in kind:
-        arch = ("mips64" if "64-bit" in kind else "mips") + ("el" if "LSB" in kind else "")
+    lsb, wide = "LSB" in kind, "64-bit" in kind
+    if "aarch64" in kind:
+        arch = "aarch64" if lsb else "aarch64_be"
+    elif "ARM," in kind:
+        arch = "arm" if lsb else "armeb"
+    elif "MIPS" in kind:
+        arch = ("mips64" if wide else "mips") + ("el" if lsb else "")
+    elif "RISC-V" in kind:
+        arch = "riscv64" if wide else "riscv32"
+    elif "PowerPC" in kind:                              # file prints "64-bit PowerPC or cisco 7500" for ppc64/le
+        arch = ("ppc64le" if lsb else "ppc64") if wide else "ppc"
+    elif "S/390" in kind:
+        arch = "s390x"
     else:
-        for needle, a in _QEMU_ARCH:
-            if needle in kind:
-                arch = a
-                break
+        arch = None
     if arch is None:
         return None
     return shutil.which(f"qemu-{arch}-static") or shutil.which(f"qemu-{arch}")

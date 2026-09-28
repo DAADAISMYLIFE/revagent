@@ -173,8 +173,8 @@ def extract_unfinished(summary: str) -> str:
 
 def _is_ledger_line(line: str) -> bool:
     """True for an observation-ledger bullet appended by `casefile.add("log", ...)`:
-    `- [obs step N] ...`, `- [critic step N] ...` or `- [gate step N] ...`."""
-    return line.startswith("- [obs ") or line.startswith("- [critic ") or line.startswith("- [gate ")
+    `- [obs step N] ...`, `- [critic step N] ...`, `- [gate step N] ...` or `- [retracted step N] ...`."""
+    return line.startswith(("- [obs ", "- [critic ", "- [gate ", "- [retracted "))
 
 
 def _reduce_log_block(block: list[str]) -> tuple[list[str], bool]:

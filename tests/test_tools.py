@@ -2086,3 +2086,29 @@ def test_run_binary_runs_a_non_x86_elf_through_qemu_static(monkeypatch):
     assert run_binary._qemu_for("ELF 32-bit MSB executable, MIPS, MIPS32") is None
     monkeypatch.setattr(run_binary.shutil, "which", lambda n: "/usr/bin/" + n if n == "qemu-mipsel-static" else None)
     assert run_binary._qemu_for("ELF 32-bit LSB executable, MIPS, MIPS32 rel2") == "/usr/bin/qemu-mipsel-static"
+
+
+def test_qemu_for_maps_file_strings_of_the_sandbox(monkeypatch):
+    from revagent.tools import run_binary
+    monkeypatch.setattr(run_binary.shutil, "which", lambda n: "/usr/bin/" + n)
+    f = run_binary._qemu_for
+    assert f("ELF 64-bit MSB executable, 64-bit PowerPC or cisco 7500, version 1").endswith("qemu-ppc64-static")
+    assert f("ELF 64-bit LSB executable, 64-bit PowerPC or cisco 7500, OpenPOWER ELF V2 ABI").endswith("qemu-ppc64le-static")
+    assert f("ELF 32-bit LSB executable, UCB RISC-V, RVC").endswith("qemu-riscv32-static")
+    assert f("ELF 32-bit MSB executable, ARM, EABI5").endswith("qemu-armeb-static")
+    assert f("ELF 32-bit LSB executable, ARM, EABI5").endswith("qemu-arm-static")
+    assert run_binary._is_i386("ELF 32-bit LSB executable, Intel i386, version 1")
+    assert run_binary._is_i386("ELF 32-bit LSB executable, Intel 80386, version 1")
+
+
+def test_notes_retract_needs_a_log_section_and_stops_at_subheadings(ctx):
+    from revagent.tools import notes
+    notes.run(ctx, "add", text="alpha fact")
+    body = ctx.casefile.read().replace("## Facts\n", "## Facts\n### sub\n", 1)
+    ctx.casefile.write(body)
+    notes.run(ctx, "add", text="beta fact")
+    assert notes.run(ctx, "retract", text="alpha", reason="r") == "retracted; moved to the log"
+    assert "### sub" in ctx.casefile.read()
+    ctx.casefile.write(ctx.casefile.read().split("## Log")[0])
+    assert "no '## Log' section" in notes.run(ctx, "retract", text="beta", reason="r")
+    assert "beta fact" in ctx.casefile.read()

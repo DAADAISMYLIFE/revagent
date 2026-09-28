@@ -22,7 +22,7 @@ CRITIC_PROMPT = (
     "(e.g. run_gui with actions [...], run_binary with stdin ..., bash ...).\n"
     "4. Is there tool evidence that this environment cannot execute the target ('[cannot run here]', "
     "no window ever appeared, crash on start)? Quote it or say 'none'. If there is, say explicitly: "
-    "'the sandbox cannot run this program; handoff_runbook is allowed' (the tool accepts a handoff only after a tool printed [cannot run here]).\n"
+    "'the sandbox cannot run this program; handoff_runbook is allowed' (the tool accepts a handoff only after [cannot run here] or repeated start failures).\n"
     "Prefer observation over decompilation. If a byte stream is being displayed, ask what it decodes to.\n\n"
 )
 
