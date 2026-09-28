@@ -362,3 +362,74 @@ def test_suggest_next_is_silent_without_a_later_mapped_region_or_when_filtered()
     regs2 = regs + [Region("anon", 0x1224000, 0x1225000, "rw-", 9)]
     assert suggest_next(Analysis(regions=regs2, other=0, total=1, seq=[], hot=hot, range_=(0x101000, 0x102000),
                                  skipped_lib=False), img) is None
+
+
+# --- ops listing (-d in_asm,exec,cpu on a filtered range call) ----------------------------------------
+
+def _cpu(pc, **regs):
+    """One qemu `-d exec,cpu` record: the Trace line and the GPR dump (values before the block runs)."""
+    names = ["RAX", "RBX", "RCX", "RDX", "RSI", "RDI", "RBP", "RSP",
+             "R8 ", "R9 ", "R10", "R11", "R12", "R13", "R14", "R15"]
+    vals = {n.strip(): regs.get(n.strip().lower(), 0) for n in names}
+    rows = [" ".join(f"{n}={vals[n.strip()]:016x}" for n in names[i:i + 4]) for i in range(0, 16, 4)]
+    return (f"Trace 0: 0x7756fc003640 [0000000000000000/{pc:016x}/1040c0b3/00080200] \n" + "\n".join(rows) +
+            f"\nRIP={pc:016x} RFL=00000202 [-------] CPL=3 II=0 A20=1 SMM=0 HLT=0\n"
+            "CCS=0000000000000020 CCD=0000004002a02b58 CCO=ADDQ\nEFER=0000000000000500\n")
+
+
+OPS_LOG = (
+    "----------------\nIN: \n"
+    "0x01224001:  c9                       leave    \n"
+    "0x01224002:  c3                       retq     \n\n"
+    + _cpu(0x1224001, rbp=0x1225000, rsp=0x4002a02b60, rdi=5) +
+    "----------------\nIN: \n"
+    "0x01224003:  58                       popq     %rax\n"
+    "0x01224004:  c3                       retq     \n\n"
+    + _cpu(0x1224003, rbp=0xdeadbeef, rsp=0x1225010, rdi=5) +
+    "----------------\nIN: \n"
+    "0x0122400b:  0f 05                    syscall  \n\n"
+    + _cpu(0x122400b, rbp=0xdeadbeef, rsp=0x1225020, rdi=5) +
+    "----------------\nIN: \n"
+    "0x01224000:  c3                       retq     \n\n"
+    + _cpu(0x1224000, rax=0x41, rbp=0xdeadbeef, rsp=0x1225020, rdi=5)
+    + _cpu(0x1224000, rax=0x41, rbp=0xdeadbeef, rsp=0x1225028, rdi=5)
+    + _cpu(0x1224000, rax=0x41, rbp=0xdeadbeef, rsp=0x1225030, rdi=5)
+    + "----------------\nIN: \n"
+    "0x01224014:  40 28 f8                 subb     %dil, %al\n"
+    "0x01224017:  c3                       retq     \n\n"
+    + _cpu(0x1224014, rax=0x41, rbp=0xdeadbeef, rsp=0x1225038, rdi=5)
+    + _cpu(0x1224000, rax=0x3c, rbp=0xdeadbeef, rsp=0x1225040, rdi=5)
+)
+
+NON_PIE = ImageInfo(lo=0x400000, hi=0x401000, is_pie=False, guessed=False, entry=0x400000)
+
+
+def test_parse_ops_log_reads_block_text_and_register_states():
+    from revagent.trace import parse_ops_log
+    ops = parse_ops_log(OPS_LOG)
+    assert ops.asm[0x1224001] == "leave; retq"
+    assert ops.asm[0x1224014] == "subb %dil, %al; retq"
+    assert [pc for pc, _ in ops.states] == [0x1224001, 0x1224003, 0x122400b, 0x1224000, 0x1224000, 0x1224000,
+                                           0x1224014, 0x1224000]
+    assert ops.states[0][1]["rsp"] == 0x4002a02b60 and ops.states[0][1]["r8"] == 0
+    assert parse_ops_log(QEMU_LOG).states == []          # an exec-only log has no register dumps
+
+
+def test_ops_lines_show_named_and_changed_registers_after_each_block_and_fold_repeats():
+    from revagent.trace import ops_lines, parse_ops_log
+    lines = ops_lines(parse_ops_log(OPS_LOG), NON_PIE)
+    assert lines == [
+        "0x1224001  leave; retq                     rbp=0xdeadbeef rsp=0x1225010",   # leave: rsp shown
+        "0x1224003  popq %rax; retq                 rax=0x0",       # named, unchanged: still shown (the popped value)
+        "0x122400b  syscall                         rax=0x41",      # not named, changed
+        "(0x1224000  retq)×3",                                       # ret alone: rsp hidden, nothing else -> folded
+        "0x1224014  subb %dil, %al; retq            rax=0x3c rdi=0x5",
+        "0x1224000  retq                            (last block: effect not logged)",
+    ]
+
+
+def test_ops_lines_translate_image_addresses_to_ghidra():
+    from revagent.trace import ops_lines, parse_ops_log
+    pie = ImageInfo(lo=0x1224000, hi=0x1225000, is_pie=True, guessed=False, entry=0x1224000)
+    lines = ops_lines(parse_ops_log(OPS_LOG), pie)
+    assert lines[0].startswith("0x100001  leave; retq")

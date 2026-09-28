@@ -463,3 +463,99 @@ def suggest_next(a: Analysis, image: ImageInfo) -> str | None:
                 f"call trace_run again with the same stdin as this call and range=\"{r.start:#x}..{r.end:#x}\" to get that "
                 f"region's block sequence with repeats folded (the interpreted program, if it is an interpreter)")
     return None
+
+
+# --- ops listing: what each executed block did, from `-d in_asm,exec,cpu` --------------------------
+
+GPRS = ("rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp",
+        "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15")
+_LEGACY = {"rax": ("eax", "ax", "al", "ah"), "rbx": ("ebx", "bx", "bl", "bh"), "rcx": ("ecx", "cx", "cl", "ch"),
+           "rdx": ("edx", "dx", "dl", "dh"), "rsi": ("esi", "si", "sil"), "rdi": ("edi", "di", "dil"),
+           "rbp": ("ebp", "bp", "bpl"), "rsp": ("esp", "sp", "spl")}
+REG_ALIAS = {alias: full for full, aliases in _LEGACY.items() for alias in (full, *aliases)}
+REG_ALIAS.update({f"r{n}{sfx}": f"r{n}" for n in range(8, 16) for sfx in ("", "d", "w", "b")})
+OPS_ASM_WIDTH = 31
+
+_IN_INSN = re.compile(r"^0x([0-9a-fA-F]+):\s+(?:[0-9a-fA-F]{2} )+\s*(.*?)\s*$")
+_CPU_REG = re.compile(r"\b(R[A-Z0-9]{1,2})\s*=([0-9a-fA-F]{16})\b")
+_ASM_REG = re.compile(r"%([a-z0-9]+)")
+
+
+@dataclass
+class Ops:
+    asm: dict[int, str]                          # guest pc of a block start -> its instructions joined by '; '
+    states: list[tuple[int, dict[str, int]]]     # (guest pc, GPRs before the block ran) per executed block
+
+
+def parse_ops_log(text: str) -> Ops:
+    """The `IN:` blocks (qemu in_asm, printed once per translation) and the register dump qemu `cpu`
+    prints after every Trace line. A log without register dumps gives no states."""
+    asm: dict[int, str] = {}
+    states: list[tuple[int, dict[str, int]]] = []
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith("IN:"):
+            i += 1
+            start, insns = None, []
+            while i < len(lines):
+                m = _IN_INSN.match(lines[i])
+                if not m:
+                    break
+                if start is None:
+                    start = int(m.group(1), 16)
+                insns.append(re.sub(r"\s+", " ", m.group(2)))
+                i += 1
+            if start is not None:
+                asm[start] = "; ".join(insns)
+            continue
+        m = _TRACE_LINE.match(line)
+        if m:
+            regs: dict[str, int] = {}
+            j = i + 1
+            while j < len(lines) and not lines[j].startswith(("RIP=", "Trace ", "IN:", "----")):
+                for name, val in _CPU_REG.findall(lines[j]):
+                    if name.lower() in GPRS:
+                        regs[name.lower()] = int(val, 16)
+                j += 1
+            if regs:
+                states.append((int(m.group(1), 16), regs))
+            i = j
+            continue
+        i += 1
+    return Ops(asm=asm, states=states)
+
+
+def _named_regs(text: str) -> set[str]:
+    return {REG_ALIAS[r] for r in _ASM_REG.findall(text) if r in REG_ALIAS}
+
+
+def ops_lines(ops: Ops, image: ImageInfo) -> list[str]:
+    """One line per executed block: its address (Ghidra's inside the image), its instructions, and the
+    register values after it ran — every register the instructions name plus any other that changed.
+    rsp only when named or moved by `leave` (every ret moves it). Consecutive identical lines fold as
+    (line)×n. Memory writes are not visible here."""
+    out: list[str] = []
+    for k, (pc, before) in enumerate(ops.states):
+        text = ops.asm.get(pc, "?")
+        if k + 1 < len(ops.states):
+            after = ops.states[k + 1][1]
+            named = _named_regs(text)
+            if "leave" in text:
+                named.add("rsp")
+            shown = [g for g in GPRS if g in after and
+                     (g in named or (g != "rsp" and after[g] != before.get(g)))]
+            effect = " ".join(f"{g}={after[g]:#x}" for g in shown)
+        else:
+            effect = "(last block: effect not logged)"
+        out.append(f"{display_addr(pc, image):#x}  {text:<{OPS_ASM_WIDTH}} {effect}".rstrip())
+    folded: list[str] = []
+    i = 0
+    while i < len(out):
+        j = i
+        while j + 1 < len(out) and out[j + 1] == out[i]:
+            j += 1
+        folded.append(f"({out[i]})×{j - i + 1}" if j > i else out[i])
+        i = j + 1
+    return folded

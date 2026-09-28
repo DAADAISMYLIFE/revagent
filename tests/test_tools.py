@@ -1644,20 +1644,22 @@ def test_emulate_schema_says_hex_buffers_are_output_buffers():
 
 # --- trace_run -------------------------------------------------------------------------------------
 
-def _fake_qemu(tmp_path, monkeypatch, log_text, exit_code=3, stdout="Fail!"):
-    """A shell script named qemu-x86_64-static on PATH: records its argv, writes `log_text` to the -D
-    path, echoes stdin to its stdout and exits `exit_code`. Tests never need real qemu."""
+def _fake_qemu(tmp_path, monkeypatch, log_text, exit_code=3, stdout="Fail!", filtered_log=None):
+    """A shell script named qemu-x86_64-static on PATH: records its argv, writes `log_text` (or
+    `filtered_log` when called with -dfilter and one is given) to the -D path, echoes stdin to its stdout
+    and exits `exit_code`. Tests never need real qemu."""
     from tests.test_trace import QEMU_LOG  # noqa: F401  (documents where the fixture shape comes from)
     bindir = tmp_path / "fakebin"
     bindir.mkdir(exist_ok=True)
     (bindir / "trace.log").write_text(log_text)
+    (bindir / "filtered.log").write_text(log_text if filtered_log is None else filtered_log)
     script = bindir / "qemu-x86_64-static"
     script.write_text(
         "#!/bin/sh\n"
         f'echo "$@" > "{bindir}/argv.txt"\n'
-        'LOG=""\n'
-        'while [ $# -gt 0 ]; do case "$1" in -D) shift; LOG="$1";; esac; shift; done\n'
-        f'cat "{bindir}/trace.log" > "$LOG"\n'
+        'LOG=""; SRC=trace.log\n'
+        'while [ $# -gt 0 ]; do case "$1" in -D) shift; LOG="$1";; -dfilter) SRC=filtered.log;; esac; shift; done\n'
+        f'cat "{bindir}/$SRC" > "$LOG"\n'
         "cat\n"
         f"printf '{stdout}'\n"
         f"exit {exit_code}\n")
@@ -2046,6 +2048,59 @@ def test_start_observation_traces_elf_targets_with_probe_lengths(tmp_path, monke
     assert "The harness already made the range call over 0x4001100000..0x4001101000" in obs
     assert "trace_run chall range 0x4001100000..0x4001101000" in obs or "sequence (range 0x4001100000..0x4001101000" in obs
     assert ctx.start_range_auto is True and ctx.trace_range_calls == 0     # the model's own counters untouched
+
+
+def _ops_range_log():
+    """A -dfilter log over the anon region with in_asm + cpu records: the page layout of QEMU_LOG's second
+    block, then two blocks at 0x4001100000 / 0x4001100010."""
+    from tests.test_trace import QEMU_LOG, _cpu
+    layout = QEMU_LOG[QEMU_LOG.rindex("page layout changed"):QEMU_LOG.index("Trace 0", QEMU_LOG.rindex("page layout changed"))]
+    return (layout +
+            "----------------\nIN: \n0x4001100000:  58                       popq     %rax\n"
+            "0x4001100001:  c3                       retq     \n\n" + _cpu(0x4001100000, rsp=0x10) +
+            "----------------\nIN: \n0x4001100010:  48 01 c4                 addq     %rax, %rsp\n\n"
+            + _cpu(0x4001100010, rax=0x24, rsp=0x20) + _cpu(0x4001100000, rax=0x24, rsp=0x44))
+
+
+def test_trace_run_filtered_range_call_writes_the_ops_listing(tmp_path, monkeypatch):
+    """ROVM run 9: the start trace gave bare block addresses and the model rebuilt the machine state in
+    unicorn four times, wrong each time. A filtered range call also logs in_asm + cpu and shows what each
+    block did in the real run."""
+    from revagent.tools import trace_run
+    from tests.test_trace import QEMU_LOG
+    bindir = _fake_qemu(tmp_path, monkeypatch, QEMU_LOG, filtered_log=_ops_range_log())
+    ctx = _trace_ctx(tmp_path)
+    out = trace_run.run(ctx, binary="chall", stdin="aaaa\n")          # unfiltered: base learned, no ops
+    assert (bindir / "argv.txt").read_text().split()[1] == "exec,nochain,page"
+    assert "ops (" not in out and not (tmp_path / ".revagent/out/trace-1.ops.txt").exists()
+    out = trace_run.run(ctx, binary="chall", stdin="aaaa\n", range="0x4001100000..0x4001101000")
+    argv = (bindir / "argv.txt").read_text().split()
+    assert argv[1] == "in_asm,exec,nochain,page,cpu" and "-dfilter" in argv
+    ops = (tmp_path / ".revagent/out/trace-2.ops.txt").read_text()
+    assert ops == ("0x4001100000  popq %rax; retq                 rax=0x24\n"
+                   "0x4001100010  addq %rax, %rsp                 rax=0x24 rsp=0x44\n"
+                   "0x4001100000  popq %rax; retq                 (last block: effect not logged)\n")
+    assert "ops (the real run, 3 lines, all; full listing .revagent/out/trace-2.ops.txt)" in out
+    assert "0x4001100010  addq %rax, %rsp                 rax=0x24 rsp=0x44" in out
+    # a long listing shows its head and its tail (a failing run decided at its end)
+    monkeypatch.setattr(trace_run, "OPS_HEAD", 1)
+    monkeypatch.setattr(trace_run, "OPS_TAIL", 1)
+    out = trace_run.run(ctx, binary="chall", stdin="aaaa\n", range="0x4001100000..0x4001101000")
+    assert "3 lines, first 1 and last 1;" in out
+    assert "  0x4001100000  popq %rax; retq                 rax=0x24\n  ... [1 lines]\n  0x4001100000  popq %rax" in out
+
+
+def test_start_observation_carries_the_ops_listing_of_its_range_call(tmp_path, monkeypatch):
+    """The range call's ops listing has its own budget in the start observation: cutting the ranged output
+    at a fixed length would drop it (it comes last), and it is the part that answers what each block does."""
+    from revagent.tools import trace_run
+    from tests.test_trace import QEMU_LOG
+    _fake_qemu(tmp_path, monkeypatch, QEMU_LOG, filtered_log=_ops_range_log())
+    ctx = _trace_ctx(tmp_path)
+    obs = trace_run.start_observation(ctx)
+    assert "ops (the real run, 3 lines" in obs
+    assert "0x4001100010  addq %rax, %rsp                 rax=0x24 rsp=0x44" in obs
+    assert "read the ops listing as the program" in obs
 
 
 def test_start_observation_is_none_without_elf_or_qemu(tmp_path, monkeypatch):

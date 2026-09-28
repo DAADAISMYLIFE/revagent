@@ -13,7 +13,7 @@ import subprocess
 import time
 
 from ..trace import (TraceError, analyze, compress, from_ghidra, full_listing, is_ghidra_image_addr, locate_image,
-                     parse_elf_header, parse_qemu_log, render, suggest_next,
+                     ops_lines, parse_elf_header, parse_ops_log, parse_qemu_log, render, suggest_next,
 )
 from .base import PathError, resolve_inside
 from .bash import MAX_TIMEOUT, scrubbed_env
@@ -25,6 +25,10 @@ EMPTY_STDIN_NOTE = ("[note] stdin was empty: the program read no input, so this 
                     "before concluding anything about the check")
 POLL_SECONDS = 0.5
 OUTPUT_CHARS = 400
+OPS_HEAD, OPS_TAIL = 40, 30  # ops lines in the tool output; the whole listing is in trace-N.ops.txt. The tail
+                             # matters: a run that failed decided at its end
+OPS_FLAGS = "in_asm,exec,nochain,page,cpu"
+OPS_HEADER = "ops (the real run"
 QEMU_NAMES = ("qemu-x86_64-static", "qemu-x86_64")
 ELF_HEADER_BYTES = 0x10000     # header + program headers comfortably
 ELF64_PHENTSIZE = 56
@@ -235,6 +239,10 @@ def _run(ctx, binary: str, stdin: str, args: list[str] | None, range_text: str |
             cmd += ["-dfilter", f"{glo:#x}+{ghi - glo:#x}"]
     cmd += [str(p), *args]
     filtered = "-dfilter" in cmd
+    if filtered:
+        # only a filtered call logs instructions and registers: ~1.2 KB per block instead of ~60 bytes, affordable
+        # inside the range; unfiltered, the libraries alone would take most of the log cap
+        cmd[2] = OPS_FLAGS
 
     r = run_qemu(cmd, p.parent, stdin, log_path, timeout)
     try:   # the cap is polled while qemu runs; a fast exit past it is only visible in the final size
@@ -273,6 +281,21 @@ def _run(ctx, binary: str, stdin: str, args: list[str] | None, range_text: str |
         lines.append(EMPTY_STDIN_NOTE)
     lines.append(render(a, items, image, top=top))
     lines.append(f"  [full sequence: {_rel(ctx, txt_path)}, raw qemu log: {_rel(ctx, log_path)}]")
+    if filtered:
+        ops = parse_ops_log(log_text)
+        if ops.states:
+            ops_text = ops_lines(ops, image)
+            ops_path = ctx.out_dir / f"trace-{n}.ops.txt"
+            ops_path.write_text("\n".join(ops_text) + "\n")
+            cut = len(ops_text) > OPS_HEAD + OPS_TAIL
+            shown = f"first {OPS_HEAD} and last {OPS_TAIL}" if cut else "all"
+            lines.append(f"{OPS_HEADER}, {len(ops_text)} lines, {shown}; full listing {_rel(ctx, ops_path)}): each "
+                         f"executed block's instructions, then the register values after it ran (registers it "
+                         f"names, plus any other it changed; rsp only when named). Memory writes are not shown. "
+                         f"Repeats fold as (line)×n")
+            if cut:
+                ops_text = ops_text[:OPS_HEAD] + [f"... [{len(ops_text) - OPS_HEAD - OPS_TAIL} lines]"] + ops_text[-OPS_TAIL:]
+            lines.extend("  " + l for l in ops_text)
     nxt = suggest_next(a, image)
     if nxt:
         lines.append(nxt)
@@ -310,6 +333,7 @@ def _run(ctx, binary: str, stdin: str, args: list[str] | None, range_text: str |
 PROBE_LENGTHS = (8, 16, 24, 32, 48, 64)   # input lengths tried at start; the deepest trace hints at the length the check wants
 MAX_START_TARGETS = 2
 START_OUTPUT_CHARS = 3000
+START_OPS_CHARS = 5000      # the ops listing's own budget: it comes last in the ranged output and a shared cut dropped it
 START_RANGE_TOP = 60
 _NEXT_RANGE = re.compile(r'range="(0x[0-9a-f]+)\.\.(0x[0-9a-f]+)"')
 _DEPTH = re.compile(r"sequence \((?:image \+ anon|range [^,]*), (\d+) TBs")
@@ -364,16 +388,29 @@ def start_observation(ctx) -> str | None:
                     ctx.start_range_auto = True
                     if len(body) > START_OUTPUT_CHARS // 2:
                         body = body[:START_OUTPUT_CHARS // 2] + "\n  [cut; the full sequence file is named above]"
-                    if len(ranged) > START_OUTPUT_CHARS:
-                        ranged = ranged[:START_OUTPUT_CHARS] + "\n  [cut; the full sequence file is named above]"
+                    ranged, sep, ops = ranged.partition(OPS_HEADER)
+                    budget = START_OUTPUT_CHARS // 2 if sep else START_OUTPUT_CHARS   # the ops listing covers the sequence
+                    if len(ranged) > budget:
+                        ranged = ranged[:budget] + "\n  [cut; the full sequence file is named above]"
+                    if sep:
+                        ops = sep + ops
+                        if len(ops) > START_OPS_CHARS:
+                            ops = ops[:START_OPS_CHARS] + "\n  [cut; the full ops listing file is named above]"
+                        nxt_text = (f"NEXT: read the ops listing as the program: each line is one block the real run "
+                                    f"executed, its instructions and the register values it produced, so no handler "
+                                    f"needs disassembling and no machine state needs rebuilding in an emulator. Find "
+                                    f"where input bytes are loaded and what they are compared with; grep the ops "
+                                    f"file for later iterations.")
+                    else:
+                        nxt_text = (f"NEXT: map each distinct address to its operation ONCE (disassemble the bytes at "
+                                    f"that address, or decompile/emulate), then read the sequence as a program.")
                     blocks.append(
                         f"{head}\n{body}\n\n"
                         f"The harness already made the range call over {m.group(1)}..{m.group(2)}, the region mapped "
                         f"after start where the loop runs. Its `hot` line lists every distinct block address there "
                         f"with its count, and its sequence is the order they ran in, repeats folded: for an "
-                        f"interpreter, that is the interpreted program. NEXT: map each distinct address to its "
-                        f"operation ONCE (disassemble the bytes at that address, or decompile/emulate), then read "
-                        f"the sequence as a program.\n{ranged}")
+                        f"interpreter, that is the interpreted program. {nxt_text}\n{ranged.rstrip()}"
+                        + (f"\n{ops}" if sep else ""))
                     continue
             if len(body) > START_OUTPUT_CHARS:
                 body = body[:START_OUTPUT_CHARS] + "\n  [cut; the full sequence file is named above]"
