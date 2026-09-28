@@ -1079,8 +1079,10 @@ def test_signals_record_first_facts_step(tmp_path):
         [("submit_flag", {"flag": "DH{abc}", "how_verified": "v"})],
     ])
     r = Agent(d, "", llm, max_steps=5, interactive=False).run()
-    assert r["signals"] == {"gate_blocks": 0, "max_script_streak": 0, "long_reasoning_steps": 0,
-                            "first_facts_step": 2}
+    sig = r["signals"]
+    assert {k: sig[k] for k in ("gate_blocks", "max_script_streak", "long_reasoning_steps", "first_facts_step")} == \
+        {"gate_blocks": 0, "max_script_streak": 0, "long_reasoning_steps": 0, "first_facts_step": 2}
+    assert sig["notes_calls"] == 1 and sig["tool_calls"]["notes"] == 1 and sig["start_range_auto"] is False
     llm2 = ScriptedLLM([[("submit_flag", {"flag": "DH{abc}", "how_verified": "v"})]])
     (tmp_path / "b").mkdir()
     r2 = Agent(make_problem(tmp_path / "b"), "", llm2, max_steps=5, interactive=False).run()

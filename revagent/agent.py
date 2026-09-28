@@ -339,6 +339,7 @@ class Agent:
                     "max_script_streak": self.gate.max_streak,
                     "long_reasoning_steps": self.long_reasoning,
                     "first_facts_step": self.first_facts_step,
+                    **self._usage_signals(),
                 },
             }
             self._finish(result)
@@ -346,6 +347,29 @@ class Agent:
             self.transcript.close()
         self._report(result)
         return result
+
+    def _usage_signals(self) -> dict:
+        """What the model actually used, so a playbook or tool change can be judged by numbers: tool calls by
+        name, bash share, notes calls, bash-side revagent-trace/emulate calls, and whether trace_run proposals
+        were followed. Never raises."""
+        try:
+            used = dict(self.ctx.tools_used)
+            total = sum(used.values())
+            try:
+                cli = json.loads((self.work_dir / "cli_calls.json").read_text())
+            except Exception:
+                cli = {}
+            return {
+                "tool_calls": used,
+                "bash_share": round(used.get("bash", 0) / total, 2) if total else None,
+                "notes_calls": used.get("notes", 0),
+                "cli_calls": cli,
+                "start_range_auto": self.ctx.start_range_auto,
+                "trace_next_shown": self.ctx.trace_next_shown,
+                "trace_range_calls": self.ctx.trace_range_calls,
+            }
+        except Exception:
+            return {}
 
     def _finish(self, result: dict) -> None:
         (self.work_dir / "result.json").write_text(json.dumps(result, indent=2, ensure_ascii=False))

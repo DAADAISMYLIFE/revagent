@@ -7,6 +7,8 @@ dependencies = ["openai>=1.40"]
 
 [project.scripts]
 revagent = "revagent.__main__:main"
+revagent-trace = "revagent.cli_tools:main_trace"
+revagent-emulate = "revagent.cli_tools:main_emulate"
 
 [build-system]
 requires = ["setuptools>=68"]

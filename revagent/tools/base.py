@@ -49,6 +49,9 @@ class ToolContext:
     emulate_images: dict = field(default_factory=dict)   # (path, mtime_ns, size) -> revagent.emulate.Image (cle+unicorn image cache per run)
     trace_bases: dict = field(default_factory=dict)     # (path, mtime_ns, size) -> qemu guest base of its PIE image (from a previous trace_run; lets range= become -dfilter)
     trace_regions: dict = field(default_factory=dict)   # same key -> {(start, end): kind} of the unfiltered trace (a -dfilter trace lacks the entry TB and cannot tell libraries from later mmaps)
+    start_range_auto: bool = False     # the harness made the range trace itself at start (trace_run.start_observation)
+    trace_next_shown: int = 0          # trace_run outputs that carried a `next:` proposal
+    trace_range_calls: int = 0         # trace_run calls with range= made by the model
     tools_used: dict = field(default_factory=dict)       # tool name -> calls whose handler actually ran (not unknown tools, bad JSON, bad arguments or G3-blocked calls); submit_flag checks readings against it
 
     def clamp_timeout(self, seconds: int) -> int:

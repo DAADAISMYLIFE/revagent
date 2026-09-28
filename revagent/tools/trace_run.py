@@ -276,6 +276,9 @@ def _run(ctx, binary: str, stdin: str, args: list[str] | None, range_text: str |
     nxt = suggest_next(a, image)
     if nxt:
         lines.append(nxt)
+    if ctx.step > 0:                                   # step 0 = the harness's own start probe
+        ctx.trace_next_shown += bool(nxt)
+        ctx.trace_range_calls += range_ is not None
     if r["truncated"]:
         lines.append(f"[trace truncated at {MAX_LOG_BYTES // (1024 * 1024)} MB] the program ran past the log cap; "
                      "the summary covers the log written until then — narrow it with range= or a shorter input")
@@ -307,6 +310,8 @@ def _run(ctx, binary: str, stdin: str, args: list[str] | None, range_text: str |
 PROBE_LENGTHS = (8, 16, 24, 32, 48, 64)   # input lengths tried at start; the deepest trace hints at the length the check wants
 MAX_START_TARGETS = 2
 START_OUTPUT_CHARS = 3000
+START_RANGE_TOP = 60
+_NEXT_RANGE = re.compile(r'range="(0x[0-9a-f]+)\.\.(0x[0-9a-f]+)"')
 _DEPTH = re.compile(r"sequence \((?:image \+ anon|range [^,]*), (\d+) TBs")
 
 
@@ -346,11 +351,32 @@ def start_observation(ctx) -> str | None:
             if best is None:
                 continue
             body = best[2]
+            probe = "A" * best[1] + "\n"
             nxt = next((l for l in body.splitlines() if l.startswith("next: ")), None)
-            if len(body) > START_OUTPUT_CHARS:
-                body = body[:START_OUTPUT_CHARS] + "\n  [cut; the full sequence file is named above]"
+            m = _NEXT_RANGE.search(nxt or "")
             head = (f"probe input lengths -> TBs outside libraries: {', '.join(depths)} "
                     f"(showing the deepest, {best[1]} x 'A' + newline)")
+            if m:
+                # an interpreter-shaped trace: make the range call for the model instead of proposing it
+                # (ROVM runs 7-8 read the proposal and went back to objdump)
+                ranged = run(ctx, p.name, stdin=probe, range=f"{m.group(1)}..{m.group(2)}", top=START_RANGE_TOP)
+                if ranged.startswith("trace_run "):
+                    ctx.start_range_auto = True
+                    if len(body) > START_OUTPUT_CHARS // 2:
+                        body = body[:START_OUTPUT_CHARS // 2] + "\n  [cut; the full sequence file is named above]"
+                    if len(ranged) > START_OUTPUT_CHARS:
+                        ranged = ranged[:START_OUTPUT_CHARS] + "\n  [cut; the full sequence file is named above]"
+                    blocks.append(
+                        f"{head}\n{body}\n\n"
+                        f"The harness already made the range call over {m.group(1)}..{m.group(2)}, the region mapped "
+                        f"after start where the loop runs. Its `hot` line lists every distinct block address there "
+                        f"with its count, and its sequence is the order they ran in, repeats folded: for an "
+                        f"interpreter, that is the interpreted program. NEXT: map each distinct address to its "
+                        f"operation ONCE (disassemble the bytes at that address, or decompile/emulate), then read "
+                        f"the sequence as a program.\n{ranged}")
+                    continue
+            if len(body) > START_OUTPUT_CHARS:
+                body = body[:START_OUTPUT_CHARS] + "\n  [cut; the full sequence file is named above]"
             if nxt:
                 head += "\n" + nxt                        # kept above the cut: it is the call to make next
             blocks.append(f"{head}\n{body}")

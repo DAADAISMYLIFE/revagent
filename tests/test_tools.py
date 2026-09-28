@@ -2042,8 +2042,10 @@ def test_start_observation_traces_elf_targets_with_probe_lengths(tmp_path, monke
     assert obs.startswith("[start observation]")
     assert "probe input lengths -> TBs outside libraries: 8:" in obs
     assert "64:" in obs and "trace_run chall (stdin" in obs
-    assert "next: " in obs
-    assert obs.index("next: ") < obs.index("trace_run chall (stdin")   # survives the output cut
+    # an interpreter-shaped trace: the harness makes the range call itself (ROVM runs 7-8 never did)
+    assert "The harness already made the range call over 0x4001100000..0x4001101000" in obs
+    assert "trace_run chall range 0x4001100000..0x4001101000" in obs or "sequence (range 0x4001100000..0x4001101000" in obs
+    assert ctx.start_range_auto is True and ctx.trace_range_calls == 0     # the model's own counters untouched
 
 
 def test_start_observation_is_none_without_elf_or_qemu(tmp_path, monkeypatch):
@@ -2124,3 +2126,19 @@ def test_notes_retract_also_strikes_copies_in_compaction_summaries(ctx):
     assert "- region is self-modifying\n" not in body          # the summary copy is gone
     assert "[obs step 3] run_binary x: region is self-modifying? no" in body   # ledger lines stay
     assert "[retracted step" in body
+
+
+def test_cli_trace_and_emulate_print_the_tool_output_and_count_calls(tmp_path, monkeypatch, capsys):
+    import json as _json
+    from revagent import cli_tools
+    from tests.test_trace import QEMU_LOG
+    _fake_qemu(tmp_path, monkeypatch, QEMU_LOG)
+    _trace_ctx(tmp_path)                                   # writes the fake ELF "chall" into tmp_path
+    monkeypatch.chdir(tmp_path)
+    assert cli_tools.main_trace(["chall", "--stdin", "AAAA"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("trace_run chall (stdin 4 bytes)")
+    assert _json.loads((tmp_path / ".revagent" / "cli_calls.json").read_text()) == {"revagent-trace": 1}
+    assert cli_tools.main_emulate(["chall", "0x100100", "hex:00"]) == 0
+    assert capsys.readouterr().out.strip()                 # the tool's text, whatever it reports for the fake
+    assert _json.loads((tmp_path / ".revagent" / "cli_calls.json").read_text())["revagent-emulate"] == 1
