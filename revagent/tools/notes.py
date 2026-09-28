@@ -87,6 +87,12 @@ def _retract(ctx, text: str, reason: str) -> str:
     if section_span(lines, "log") is None:
         return "[tool error] the case file has no '## Log' section; nothing was retracted"
     del lines[a:b]
+    # earlier compaction summaries in the Log may repeat the Fact as confirmed; drop those copies too
+    log = section_span(lines, "log")
+    if log is not None:
+        s0, e0 = log
+        keep = [l for l in lines[s0 + 1:e0] if l.startswith("- [") or needle not in l]
+        lines[s0 + 1:e0] = keep
     ctx.casefile.write("\n".join(lines))
     ctx.casefile.add("log", f"[retracted step {ctx.step}] {gone[:300]} — because {' '.join(reason.split())[:200]}")
     return "retracted; moved to the log"

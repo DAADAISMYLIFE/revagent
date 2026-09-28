@@ -19,7 +19,8 @@ RESET_TEXT = ("[CONTEXT RESET] Your context was compacted. The case file below i
 SUMMARY_PROMPT = (
     "Below is a log of an autonomous reverse-engineering session (assistant tool calls and tool outputs). "
     "Extract, as terse bullets under four headings:\n"
-    "(a) FACTS confirmed by tool output: addresses, constants (hex), function roles, check logic, file layout\n"
+    "(a) FACTS confirmed by tool output: addresses, constants (hex), function roles, check logic, file layout; "
+    "leave out anything a '[retracted' line says was wrong\n"
     "(b) FAILED attempts and why they failed\n"
     "(c) UNFINISHED work / concrete next steps\n"
     "(d) ARTIFACTS: every file the assistant created or wrote (scripts, JSON/pickle tables, dumps) with its "

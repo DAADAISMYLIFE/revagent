@@ -2112,3 +2112,15 @@ def test_notes_retract_needs_a_log_section_and_stops_at_subheadings(ctx):
     ctx.casefile.write(ctx.casefile.read().split("## Log")[0])
     assert "no '## Log' section" in notes.run(ctx, "retract", text="beta", reason="r")
     assert "beta fact" in ctx.casefile.read()
+
+
+def test_notes_retract_also_strikes_copies_in_compaction_summaries(ctx):
+    from revagent.tools import notes
+    notes.run(ctx, "add", text="region is self-modifying")
+    ctx.casefile.add("log", "### compaction 1\n(a) FACTS\n- region is self-modifying", bullet=False)
+    ctx.casefile.add("log", "[obs step 3] run_binary x: region is self-modifying? no")
+    assert notes.run(ctx, "retract", text="self-modifying", reason="dump == file") == "retracted; moved to the log"
+    body = ctx.casefile.read()
+    assert "- region is self-modifying\n" not in body          # the summary copy is gone
+    assert "[obs step 3] run_binary x: region is self-modifying? no" in body   # ledger lines stay
+    assert "[retracted step" in body

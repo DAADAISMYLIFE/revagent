@@ -45,7 +45,8 @@ SCHEMA = {
             "in (libraries are then left out of the sequence), then call again with range=start..end over that "
             "region to get the handler sequence alone. Granularity is one translation block (a straight-line "
             "run of instructions up to the next branch), so single instructions inside a block are not listed. "
-            "The full folded sequence and the raw qemu log are saved under .revagent/out/ (paths in the output) "
+            "The full folded sequence is saved under .revagent/out/ and the raw qemu log in a local temp dir (both paths "
+            "in the output) "
             "and can be grepped or diffed with bash; run twice with different stdin and diff the two .txt files "
             "to see input-dependent branches. x86-64 ELF only; a PE or a script returns [cannot trace] "
             "(use run_binary/run_gui for those). The log is capped at 200 MB ([trace truncated])."
@@ -356,7 +357,7 @@ def start_observation(ctx) -> str | None:
         if not blocks:
             return None
         return ("[start observation] Before your first step the harness ran trace_run on each x86-64 ELF here with "
-                "probe inputs of several lengths. This is an observation (evidence ladder: trace/log). Compare the "
+                "probe inputs of several lengths. This is an observation of a real execution (evidence ladder: Observation). Compare the "
                 "counts: where they stop growing, the program stops consuming input; if they keep growing, every "
                 "input byte is processed.\n\n" + "\n\n".join(blocks))
     except Exception:
