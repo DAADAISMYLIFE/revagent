@@ -13,6 +13,10 @@ from .sandbox import (build_sandbox_cmd, check_docker, container_desc_arg, is_in
                       run_sandbox)
 
 
+STALE_CWD_MSG = ("error: the shell's current directory no longer exists (a stale DrvFs handle on /mnt/c). "
+                 "Run `cd \"$PWD\"` (or cd into the directory again) and retry, or pass absolute paths.")
+
+
 def _read_desc(problem_dir: Path, desc_arg: str | None) -> str:
     if desc_arg:
         return Path(desc_arg).read_text(encoding="utf-8")
@@ -241,7 +245,11 @@ def main(argv=None) -> int:
         return 2
 
     solve = args.cmd == "solve"
-    d = Path(args.dir) if solve else None
+    try:
+        d = Path(args.dir).resolve() if solve else None   # absolute before anything can change the cwd
+    except FileNotFoundError:
+        print(STALE_CWD_MSG, file=sys.stderr)
+        return 2
     if solve and not d.is_dir():
         print(f"error: {d} is not a directory", file=sys.stderr)
         return 2
@@ -258,7 +266,12 @@ def main(argv=None) -> int:
         return rc
 
     rows = []
-    for d in map(Path, args.dirs):
+    try:
+        dirs = [Path(x).resolve() for x in args.dirs]   # ALL resolved before the first run; a lazy generator resolved after the cwd went stale
+    except FileNotFoundError:
+        print(STALE_CWD_MSG, file=sys.stderr)
+        return 2
+    for d in dirs:
         try:
             r, _ = _run_one(d, args, None, False, rt)
             rows.append(_row(d, r))

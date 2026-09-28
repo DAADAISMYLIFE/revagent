@@ -153,10 +153,13 @@ def run(ctx, binary: str, function: str, args: list[str], out_lens: list[int] | 
     for i, b in enumerate(r.buffers):
         lines.append(f"arg{hex_idx[i]} ({len(b)} bytes): {b.hex()}  |{_printable(b)}|")
     if r.stopped:
-        regs = ("rcx", "rdx", "r8", "r9") if image.is_pe else ("rdi", "rsi", "rdx", "rcx", "r8", "r9")
+        regs = (("arg1/rcx", "arg2/rdx", "arg3/r8", "arg4/r9", "arg5", "arg6") if image.is_pe
+                else ("rdi", "rsi", "rdx", "rcx", "r8", "r9"))
         regtxt = ", ".join(f"{n}=0x{v:x}" for n, v in zip(regs, r.stopped["arg_regs"]))
+        if r.stopped["reason"] != "import":        # stack slots are call arguments only at a call
+            regtxt = ", ".join(f"{n}=0x{v:x}" for n, v in zip(regs[:4] if image.is_pe else regs, r.stopped["arg_regs"]))
         if r.stopped["reason"] == "import":
-            lines.append(f"[emulation stopped] called {r.stopped['symbol']} at 0x{r.stopped['rip']:x}; arg registers: {regtxt}")
+            lines.append(f"[emulation stopped] called {r.stopped['symbol']} at 0x{r.stopped['rip']:x}; arguments: {regtxt}")
             lines.append("Imports are not emulated: target the inner function that does the arithmetic (the FUN_ the "
                          "decompiler shows around this call), or treat this call and its registers as the observation.")
         elif r.stopped["reason"] == "limit":

@@ -19,7 +19,8 @@ RESET_TEXT = ("[CONTEXT RESET] Your context was compacted. The case file below i
 SUMMARY_PROMPT = (
     "Below is a log of an autonomous reverse-engineering session (assistant tool calls and tool outputs). "
     "Extract, as terse bullets under four headings:\n"
-    "(a) FACTS confirmed by tool output: addresses, constants (hex), function roles, check logic, file layout\n"
+    "(a) FACTS confirmed by tool output: addresses, constants (hex), function roles, check logic, file layout; "
+    "leave out anything a '[retracted' line says was wrong\n"
     "(b) FAILED attempts and why they failed\n"
     "(c) UNFINISHED work / concrete next steps\n"
     "(d) ARTIFACTS: every file the assistant created or wrote (scripts, JSON/pickle tables, dumps) with its "
@@ -28,16 +29,17 @@ SUMMARY_PROMPT = (
 )
 
 SHRINK_PROMPT = (
-    "Rewrite this case file to about half its length. Keep EVERY concrete fact (addresses, constants, "
+    "Rewrite this case file to about half its length. Keep EVERY concrete fact that is not retracted (addresses, constants, "
     "algorithms, verified inputs) and every open todo; drop repetition and narrative. Keep the exact "
     "markdown structure: '# Case: ...' then sections '## Facts', '## Hypotheses', '## Todo', '## Log'. "
-    "Lines starting with '- [obs', '- [critic' or '- [gate' are the observation ledger: never delete them, only merge "
+    "Lines starting with '- [obs', '- [critic', '- [gate' or '- [retracted' are the observation ledger: never delete them, only merge "
     "exact duplicates. Output only the rewritten file.\n\n"
 )
 
 
 EXCLUDED_DIR_NAMES = {".git", "__pycache__"}
-EXCLUDED_SUBTREES = {Path(".revagent/out"), Path(".revagent/ghidra"), Path(".revagent/screens")}
+EXCLUDED_SUBTREES = {Path(".revagent/ghidra"), Path(".revagent/screens")}
+OUT_DIR = Path(".revagent/out")   # spilled tool outputs (NNN.txt) stay unlisted; trace-N.txt listings are listed
 EXCLUDED_FILE_NAMES = {"case.md", "case.md.bak", "transcript.jsonl", "result.json"}
 
 
@@ -54,6 +56,8 @@ def list_work_files(problem_dir: Path, since_ns: int, limit: int = 40) -> list[t
         ]
         for name in filenames:
             if name in EXCLUDED_FILE_NAMES:
+                continue
+            if rel_root == OUT_DIR and not (name.startswith("trace-") and name.endswith(".txt")):
                 continue
             full = Path(root) / name
             try:
@@ -170,8 +174,8 @@ def extract_unfinished(summary: str) -> str:
 
 def _is_ledger_line(line: str) -> bool:
     """True for an observation-ledger bullet appended by `casefile.add("log", ...)`:
-    `- [obs step N] ...`, `- [critic step N] ...` or `- [gate step N] ...`."""
-    return line.startswith("- [obs ") or line.startswith("- [critic ") or line.startswith("- [gate ")
+    `- [obs step N] ...`, `- [critic step N] ...`, `- [gate step N] ...` or `- [retracted step N] ...`."""
+    return line.startswith(("- [obs ", "- [critic ", "- [gate ", "- [retracted "))
 
 
 def _reduce_log_block(block: list[str]) -> tuple[list[str], bool]:
