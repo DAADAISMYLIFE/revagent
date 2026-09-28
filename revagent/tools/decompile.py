@@ -1,4 +1,7 @@
+from pathlib import Path
+
 from ..ghidra import FunctionDB, GhidraError, analyze
+from ..globals import describe
 from .base import PathError, resolve_inside
 
 SCHEMA = {
@@ -93,6 +96,10 @@ def run(ctx, action: str, target: str = "", binary: str = "", limit: int = 200, 
     if action == "get":
         text = db.get_text(target)
         f = db.find(target)
+        if f and f["decompiled_c"]:
+            glob = describe(Path(ctx.current_binary), f["decompiled_c"])
+            if glob:
+                text = glob + text           # before the C: truncate() cuts the tail of a long function
         if f and f["decompiled_c"] and db.calls_no_imports(target):
             text = _emulate_hint(ctx, f) + text
         return text
