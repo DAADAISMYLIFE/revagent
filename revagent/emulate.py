@@ -207,7 +207,15 @@ def emulate_call(image: Image, func: int, args: list[Arg], out_lens: "list[int] 
     fault: "tuple[int, int] | None" = None   # (access kind, address) of the first unmapped access
 
     def arg_regs_now() -> list[int]:
-        return [mu.reg_read(reg_ids[n]) for n in regs]
+        vals = [mu.reg_read(reg_ids[n]) for n in regs]
+        if len(regs) == 4:   # Win64: args 5 and 6 sit above the return address and the 32-byte shadow space
+            rsp = mu.reg_read(X.UC_X86_REG_RSP)
+            for off in (0x28, 0x30):
+                try:
+                    vals.append(int.from_bytes(mu.mem_read(rsp + off, 8), "little"))
+                except UcError:
+                    break
+        return vals
 
     def on_unmapped(uc, access, addr, size, value, user):
         nonlocal fault

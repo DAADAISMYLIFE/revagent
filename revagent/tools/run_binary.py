@@ -120,10 +120,35 @@ def _run(ctx, path: str, args: list[str] | None = None, stdin: str = "", timeout
             p.chmod(p.stat().st_mode | 0o111)
         cmd = "WINEDEBUG=-all wine " + " ".join(shlex.quote(x) for x in [str(p), *(args or [])])
         return run_cmd(cmd, cwd=ctx.problem_dir, timeout=timeout, stdin_text=stdin)
-    if "ELF" in kind and "x86-64" not in kind:
-        return (f"[cannot run here] {kind} — not x86-64. Try `which qemu-aarch64 qemu-arm` via bash, "
-                f"otherwise static analysis / unicorn.")
+    prefix: list[str] = []
+    if "ELF" in kind and "x86-64" not in kind and "80386" not in kind:
+        qemu = _qemu_for(kind)
+        if qemu is None:
+            return (f"[cannot run here] {kind} — not x86; no qemu-<arch>-static for it in this image. "
+                    f"Analyze statically / emulate with unicorn.")
+        prefix = [qemu]
     if not os.access(p, os.X_OK):
         p.chmod(p.stat().st_mode | 0o111)
-    cmd = " ".join(shlex.quote(x) for x in [str(p), *(args or [])])
+    cmd = " ".join(shlex.quote(x) for x in [*prefix, str(p), *(args or [])])
     return run_cmd(cmd, cwd=ctx.problem_dir, timeout=timeout, stdin_text=stdin)
+
+
+_QEMU_ARCH = (("aarch64", "aarch64"), ("ARM,", "arm"), ("RISC-V", "riscv64"), ("PowerPC64", "ppc64"),
+              ("PowerPC", "ppc"), ("S/390", "s390x"))
+
+
+def _qemu_for(kind: str) -> str | None:
+    """qemu-user binary for a non-x86 ELF, as `file` describes it. The image ships only the *-static names;
+    a live run was told to look for `qemu-aarch64` and found nothing, and the [cannot run here] reply then
+    opened the runbook gate for a program the sandbox could run."""
+    arch = None
+    if "MIPS" in kind:
+        arch = ("mips64" if "64-bit" in kind else "mips") + ("el" if "LSB" in kind else "")
+    else:
+        for needle, a in _QEMU_ARCH:
+            if needle in kind:
+                arch = a
+                break
+    if arch is None:
+        return None
+    return shutil.which(f"qemu-{arch}-static") or shutil.which(f"qemu-{arch}")

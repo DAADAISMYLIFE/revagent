@@ -284,7 +284,7 @@ def _run(ctx, binary: str, stdin: str, args: list[str] | None, range_text: str |
     ledger = f"trace_run {binary}"
     if range_ is not None:
         ledger += f" range {range_[0]:#x}..{range_[1]:#x}"
-    ledger += f": {a.total} TBs"
+    ledger += f": {a.total} TBs, listing {_rel(ctx, txt_path)}"
     if range_ is not None:
         ledger += f", {len(a.seq)} in range"
     non_image = [(addr, c) for addr, c in a.hot if not (image.ghidra_lo <= addr < image.ghidra_hi)]

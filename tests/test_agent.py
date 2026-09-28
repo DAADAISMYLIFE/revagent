@@ -1115,6 +1115,10 @@ def test_playbook_names_trace_run_for_the_interpreter_class():
     assert "whether the bytecode is a file on disk or built at run time" in sec3
     assert sec3.index("(1) observe first") < sec3.index("(3) Only then")
     rule11 = p[p.index("11. **Evidence ladder."):p.index("# Environment")]
-    assert "trace/log (proxy DLL, strace, hooks, `trace_run`)" in rule11
+    assert "a `trace_run` of a real execution" in rule11
+    assert "it is not the order of work" in rule11 and "(`notes` action `retract`)" in rule11
+    assert "a bytecode blob)" not in p                   # rule 7 no longer sends VM bytecode to a static parser
+    assert "finish the analysis statically" not in p     # the gdb fallback is observation, not static-only
+    assert "Ghidra 0x1008b3 is objdump 0x8b3" in p
     for n in range(1, 12):
         assert f"\n{n}. **" in p

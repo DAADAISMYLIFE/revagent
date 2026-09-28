@@ -28,16 +28,17 @@ SUMMARY_PROMPT = (
 )
 
 SHRINK_PROMPT = (
-    "Rewrite this case file to about half its length. Keep EVERY concrete fact (addresses, constants, "
+    "Rewrite this case file to about half its length. Keep EVERY concrete fact that is not retracted (addresses, constants, "
     "algorithms, verified inputs) and every open todo; drop repetition and narrative. Keep the exact "
     "markdown structure: '# Case: ...' then sections '## Facts', '## Hypotheses', '## Todo', '## Log'. "
-    "Lines starting with '- [obs', '- [critic' or '- [gate' are the observation ledger: never delete them, only merge "
+    "Lines starting with '- [obs', '- [critic', '- [gate' or '- [retracted' are the observation ledger: never delete them, only merge "
     "exact duplicates. Output only the rewritten file.\n\n"
 )
 
 
 EXCLUDED_DIR_NAMES = {".git", "__pycache__"}
-EXCLUDED_SUBTREES = {Path(".revagent/out"), Path(".revagent/ghidra"), Path(".revagent/screens")}
+EXCLUDED_SUBTREES = {Path(".revagent/ghidra"), Path(".revagent/screens")}
+OUT_DIR = Path(".revagent/out")   # spilled tool outputs (NNN.txt) stay unlisted; trace-N.txt listings are listed
 EXCLUDED_FILE_NAMES = {"case.md", "case.md.bak", "transcript.jsonl", "result.json"}
 
 
@@ -54,6 +55,8 @@ def list_work_files(problem_dir: Path, since_ns: int, limit: int = 40) -> list[t
         ]
         for name in filenames:
             if name in EXCLUDED_FILE_NAMES:
+                continue
+            if rel_root == OUT_DIR and not (name.startswith("trace-") and name.endswith(".txt")):
                 continue
             full = Path(root) / name
             try:

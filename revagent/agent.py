@@ -41,7 +41,7 @@ Directory: {dir}
 ## Rules
 - Flag format: PREFIX{{...}} using the prefix stated in the description (Dreamhack default DH{{...}}). Verify before submit_flag.
 - Write conclusions to notes as you go; your context will be reset when it grows.
-- Start with triage, then locate and classify the check. Go."""
+- Start with triage (a [start observation] message, when present, is part of it), then locate and classify the check. Go."""
 
 
 def load_system_prompt() -> str:

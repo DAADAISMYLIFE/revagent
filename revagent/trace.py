@@ -460,13 +460,6 @@ def suggest_next(a: Analysis, image: ImageInfo) -> str | None:
     if later:
         r = max(later, key=lambda r: r.count)
         return (f"next: {r.count} TBs ran in [{r.kind}] {r.start:#x}..{r.end:#x}, a region mapped after start; "
-                f"call trace_run again with the same stdin and range=\"{r.start:#x}..{r.end:#x}\" to get that "
+                f"call trace_run again with the same stdin as this call and range=\"{r.start:#x}..{r.end:#x}\" to get that "
                 f"region's block sequence with repeats folded (the interpreted program, if it is an interpreter)")
-    hot_image = [addr for addr, _ in a.hot if image.ghidra_lo <= addr < image.ghidra_hi][:5]
-    if hot_image:
-        lo = min(hot_image) & ~0xff
-        hi = ((max(hot_image) + 1 + 0xff) & ~0xff)
-        return (f"next: the hottest code is inside the image around {lo:#x}..{hi:#x}; call trace_run again with "
-                f"the same stdin and range=\"{lo:#x}..{hi:#x}\" for its folded sequence, or decompile the "
-                f"function containing those addresses")
     return None

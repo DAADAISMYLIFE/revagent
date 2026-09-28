@@ -1696,7 +1696,7 @@ def test_trace_run_summary_files_and_ledger(tmp_path, monkeypatch):
     argv = (bindir / "argv.txt").read_text().split()
     assert argv[:3] == ["-d", "exec,nochain,page", "-D"] and argv[3] == log_path
     assert "-dfilter" not in argv and argv[-1] == str(tmp_path / "chall")
-    assert ("- [obs step 9] trace_run chall: 14 TBs, hot [anon rwx] 0x4001100000 ×3, image top 0x1001a0 ×3"
+    assert ("- [obs step 9] trace_run chall: 14 TBs, listing .revagent/out/trace-1.txt, hot [anon rwx] 0x4001100000 ×3, image top 0x1001a0 ×3"
             in ctx.casefile.read())
     st = (tmp_path / "chall").stat()
     assert not ctx.env_blocked and ctx.trace_bases[(str(tmp_path / "chall"), st.st_mtime_ns, st.st_size)] == 0x4000000000
@@ -1726,7 +1726,7 @@ def test_trace_run_range_is_translated_to_dfilter_once_the_base_is_known(tmp_pat
     trace_run.run(ctx2, binary="chall", range="0x4001100000..0x4001101000")
     argv = (bindir / "argv.txt").read_text().split()
     assert argv[argv.index("-dfilter") + 1] == "0x4001100000+0x1000"
-    assert "trace_run chall range 0x4001100000..0x4001101000: 14 TBs, 3 in range, hot [anon rwx] 0x4001100000 ×3" in ctx2.casefile.read()
+    assert "trace_run chall range 0x4001100000..0x4001101000: 14 TBs, listing .revagent/out/trace-2.txt, 3 in range, hot [anon rwx] 0x4001100000 ×3" in ctx2.casefile.read()
 
 
 def test_trace_run_args_stdin_cwd_and_files_numbering(tmp_path, monkeypatch):
@@ -1884,7 +1884,7 @@ def test_trace_run_range_straddling_the_image_end_gets_no_dfilter(tmp_path, monk
     assert "-dfilter" not in argv
     assert "sequence (range 0x100000..0x400000, 7 TBs, repeats folded):" in out
     assert "0x100100 0x100140 0x100180 (0x1001a0)×3 0x1001c0" in out
-    assert "trace_run chall range 0x100000..0x400000: 14 TBs, 7 in range, image top 0x1001a0 ×3" in ctx.casefile.read()
+    assert "trace_run chall range 0x100000..0x400000: 14 TBs, listing .revagent/out/trace-2.txt, 7 in range, image top 0x1001a0 ×3" in ctx.casefile.read()
 
 
 def test_trace_run_log_over_the_cap_from_a_fast_exit_is_marked_truncated(tmp_path, monkeypatch):
@@ -1897,7 +1897,7 @@ def test_trace_run_log_over_the_cap_from_a_fast_exit_is_marked_truncated(tmp_pat
     ctx = _trace_ctx(tmp_path)
     out = trace_run.run(ctx, binary="chall")
     assert "[trace truncated at 0 MB]" in out
-    assert "trace_run chall: 14 TBs, hot [anon rwx] 0x4001100000 ×3, image top 0x1001a0 ×3 [truncated]" in ctx.casefile.read()
+    assert "trace_run chall: 14 TBs, listing .revagent/out/trace-1.txt, hot [anon rwx] 0x4001100000 ×3, image top 0x1001a0 ×3 [truncated]" in ctx.casefile.read()
 
 
 def test_trace_run_base_cache_is_dropped_when_the_binary_changes(tmp_path, monkeypatch):
@@ -2054,3 +2054,35 @@ def test_start_observation_is_none_without_elf_or_qemu(tmp_path, monkeypatch):
             p.unlink()
     (tmp_path / "chall.exe").write_bytes(b"MZ" + b"\0" * 100)
     assert trace_run.start_observation(ctx) is None
+
+
+def test_notes_retract_moves_one_fact_to_the_log(ctx):
+    from revagent.tools import notes
+    notes.run(ctx, "add", text="region at 0x5000 is self-modifying")
+    notes.run(ctx, "add", text="input is 16 bytes")
+    notes.run(ctx, "add", section="hypotheses", text="the key is at 0x3000")
+    ctx.step = 7
+    assert notes.run(ctx, "retract", text="self-modifying", reason="runtime dump equals the file bytes") == "retracted; moved to the log"
+    body = ctx.casefile.read()
+    facts = body[body.index("## Facts"):body.index("## Hypotheses")]
+    assert "self-modifying" not in facts and "input is 16 bytes" in facts
+    assert "- [retracted step 7] region at 0x5000 is self-modifying — because runtime dump equals the file bytes" in body
+    assert notes.run(ctx, "retract", text="key is at", reason="x") == "retracted; moved to the log"
+
+
+def test_notes_retract_refuses_missing_ambiguous_or_unexplained(ctx):
+    from revagent.tools import notes
+    notes.run(ctx, "add", text="table A at 0x10")
+    notes.run(ctx, "add", text="table B at 0x20")
+    assert notes.run(ctx, "retract", text="nothing like this", reason="r").startswith("[tool error] no Facts")
+    assert "2 bullets contain" in notes.run(ctx, "retract", text="table", reason="r")
+    assert notes.run(ctx, "retract", text="table A", reason="").startswith("[tool error] reason is empty")
+
+
+def test_run_binary_runs_a_non_x86_elf_through_qemu_static(monkeypatch):
+    from revagent.tools import run_binary
+    monkeypatch.setattr(run_binary.shutil, "which", lambda n: "/usr/bin/" + n if n == "qemu-aarch64-static" else None)
+    assert run_binary._qemu_for("ELF 64-bit LSB executable, ARM aarch64, version 1") == "/usr/bin/qemu-aarch64-static"
+    assert run_binary._qemu_for("ELF 32-bit MSB executable, MIPS, MIPS32") is None
+    monkeypatch.setattr(run_binary.shutil, "which", lambda n: "/usr/bin/" + n if n == "qemu-mipsel-static" else None)
+    assert run_binary._qemu_for("ELF 32-bit LSB executable, MIPS, MIPS32 rel2") == "/usr/bin/qemu-mipsel-static"
