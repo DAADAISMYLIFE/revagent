@@ -2197,3 +2197,21 @@ def test_cli_trace_and_emulate_print_the_tool_output_and_count_calls(tmp_path, m
     assert cli_tools.main_emulate(["chall", "0x100100", "hex:00"]) == 0
     assert capsys.readouterr().out.strip()                 # the tool's text, whatever it reports for the fake
     assert _json.loads((tmp_path / ".revagent" / "cli_calls.json").read_text())["revagent-emulate"] == 1
+
+
+def test_bash_run_cmd_kills_a_runaway_printer_before_it_fills_memory(tmp_path, monkeypatch):
+    """bronze chall2 (2026-09-28): a parse loop with `off += 0` printed forever; communicate() buffered it
+    until the container was OOM-killed. Output now goes to a file and the command dies past the limit."""
+    monkeypatch.setattr(bash, "MAX_OUTPUT_BYTES", 2 * 2**20)
+    t0 = time.monotonic()
+    out = bash.run_cmd("yes 'Block RVA=0x0000 Size=0x0'", cwd=tmp_path, timeout=60)
+    assert time.monotonic() - t0 < 30
+    assert out.startswith("[output limit: killed after ")
+    assert "Block RVA=0x0000" in out[:500] and len(out) <= bash.READ_BYTES + 400
+
+
+def test_bash_run_cmd_keeps_exit_timeout_and_stdin_behaviour(tmp_path):
+    assert bash.run_cmd("printf 'a\\nb'; exit 3", cwd=tmp_path, timeout=5) == "[exit 3]\na\nb"
+    assert bash.run_cmd("cat; echo err >&2", cwd=tmp_path, timeout=5, stdin_text="in\n") == "[exit 0]\nin\nerr\n"
+    out = bash.run_cmd("echo start; sleep 30", cwd=tmp_path, timeout=1)
+    assert out == "[timeout after 1s]\nstart\n"
