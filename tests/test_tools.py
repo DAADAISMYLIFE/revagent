@@ -1,3 +1,4 @@
+import re
 import os
 import stat
 import subprocess
@@ -1685,12 +1686,15 @@ def test_trace_run_summary_files_and_ledger(tmp_path, monkeypatch):
     assert "[lib?]       0x4001000000..0x4001040000  4  (skipped in sequence; pass range= to include)" in out
     assert "[anon rwx]   0x4001100000..0x4001101000  3  <- mmap'd after start; not a library" in out
     assert "0x100100 0x100140 0x100180 (0x4001100000 0x1001a0)×3 0x1001c0" in out
-    assert "[full sequence: .revagent/out/trace-1.txt, raw qemu log: .revagent/out/trace-1.log]" in out
-    assert (tmp_path / ".revagent/out/trace-1.log").read_text() == QEMU_LOG
+    assert "[full sequence: .revagent/out/trace-1.txt, raw qemu log: " in out
+    assert re.search(r"raw qemu log: /\S*/revagent-trace-\d+/trace-1\.log\]", out)   # local temp dir, not the challenge dir
+    assert not (tmp_path / ".revagent/out/trace-1.log").exists()
+    log_path = re.search(r"raw qemu log: (\S+\.log)\]", out).group(1)
+    assert open(log_path).read() == QEMU_LOG
     assert (tmp_path / ".revagent/out/trace-1.txt").read_text() == (
         "0x100100\n0x100140\n0x100180\n(0x4001100000 0x1001a0)×3\n0x1001c0\n")
     argv = (bindir / "argv.txt").read_text().split()
-    assert argv[:4] == ["-d", "exec,nochain,page", "-D", str(tmp_path / ".revagent/out/trace-1.log")]
+    assert argv[:3] == ["-d", "exec,nochain,page", "-D"] and argv[3] == log_path
     assert "-dfilter" not in argv and argv[-1] == str(tmp_path / "chall")
     assert ("- [obs step 9] trace_run chall: 14 TBs, hot [anon rwx] 0x4001100000 ×3, image top 0x1001a0 ×3"
             in ctx.casefile.read())
@@ -1738,7 +1742,7 @@ def test_trace_run_args_stdin_cwd_and_files_numbering(tmp_path, monkeypatch):
     out = trace_run.run(ctx, binary="dir/prog", args=["-x", "1"], top=1)
     argv = (bindir / "argv.txt").read_text().split()
     assert argv[-3:] == [str(sub / "prog"), "-x", "1"]
-    assert "trace-5.txt" in out and (tmp_path / ".revagent/out/trace-5.log").exists()
+    assert "trace-5.txt" in out and "/trace-5.log" in out
     assert "hot (addr, Ghidra inside the image, × count, top 1):" in out and "0x1001a0 ×3" not in out
 
 
@@ -1789,7 +1793,7 @@ def test_trace_run_no_trace_lines(tmp_path, monkeypatch):
     ctx = _trace_ctx(tmp_path)
     out = trace_run.run(ctx, binary="chall")
     assert out.startswith("[no trace] program did not execute (exit 127)")
-    assert "raw qemu log: .revagent/out/trace-1.log" in out
+    assert re.search(r"raw qemu log: /\S*/revagent-trace-\d+/trace-1\.log", out)
     assert "trace_run chall: [no trace] exit 127" in ctx.casefile.read()
 
 

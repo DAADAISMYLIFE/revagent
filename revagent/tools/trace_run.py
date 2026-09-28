@@ -4,6 +4,8 @@ The observation the model lacked for interpreters, VMs and self-modifying code: 
 how many times — without reading every handler."""
 import os
 import re
+from pathlib import Path
+import tempfile
 import shutil
 import signal
 import struct
@@ -204,7 +206,11 @@ def _run(ctx, binary: str, stdin: str, args: list[str] | None, range_text: str |
 
     n = ctx.next_out_id()
     ctx.out_dir.mkdir(parents=True, exist_ok=True)
-    log_path = ctx.out_dir / f"trace-{n}.log"
+    # the raw log goes to a local temp dir, not the challenge dir: the challenge dir is often a bind mount of a
+    # Windows drive (DrvFs), where writing a 2 MB qemu log took >10 s per call and stalled the start probe
+    log_dir = Path(tempfile.gettempdir()) / f"revagent-trace-{os.getpid()}"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"trace-{n}.log"
     txt_path = ctx.out_dir / f"trace-{n}.txt"
     st = p.stat()
     cache_key = (str(p), st.st_mtime_ns, st.st_size)   # a rebuilt binary at the same path gets no stale base
