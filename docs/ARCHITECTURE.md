@@ -73,6 +73,8 @@ agent._finish: result.json(덮어씀) + results.jsonl(한 줄 누적) + transcri
 
 `CaseFile`(case.md)은 고정 4섹션 `## Facts / ## Hypotheses / ## Todo / ## Log`다. 모델은 `notes` 도구로 불릿을 추가하고, 도구·게이트·비평가는 Log에 `- [obs step N]`, `- [gate step N]`, `- [critic step N]` 줄을 직접 쓴다. 이 세 접두어는 `context._is_ledger_line`이 인식해 `prune_log`가 지우지 않고 `SHRINK_PROMPT`도 병합만 허용한다. 모델이 노트를 안 써도 실행 관찰은 남는다(evidence-ladder spec §3.2 "관찰 원장").
 
+릴레이(`revagent/relay.py`, `--relay N`)는 압축과 다른 축의 기억 관리다. 한 문제를 N개의 짧은 세션(새 `Agent`, 빈 대화)으로 나누고 세션 사이엔 case.md만 넘긴다. 사이마다 `audit`이 Facts를 관찰 기록(그 세션 transcript의 도구 출력 + `[obs` 원장)과 대조한다: 불릿별로 상수·이름이 겹치는 증거 줄을 결정적으로 골라 붙이고, 모델은 판정과 인용만 내고, 인용이 실제 출력에 있는지는 코드가 본다. 반박된 Fact와 근거 없는 새 Fact가 `notes._retract`로 Log의 `[retracted audit K]`가 된다. 잘못된 Fact가 다음 실행으로 상속된 damnida run 3 / ROVM run 6을 세션 경계에서 끊으려는 장치다.
+
 `truncate`는 모든 도구 결과에 적용된다. `LIMIT = 12_000`자를 넘으면 원문을 `.revagent/out/NNN.txt`에 저장하고 `sed -n`/`grep` 안내를 붙인다. 끝에 `ENV_NOTE_PREFIX`로 시작하는 `FOOTER_MAX = 512`자 이하 꼬리말(`ToolContext.env_note`)이 있으면 그것만은 잘라내지 않는다.
 
 | 파일 | 줄 수 | 역할 한 줄 | 들어가야 할 때 |
@@ -239,6 +241,7 @@ agent._finish: result.json(덮어씀) + results.jsonl(한 줄 누적) + transcri
 | `tests/test_tools.py` | 열두 도구 각각의 스키마·정상 경로·오류 문구·경로 탈출 거부·원장 줄·타임아웃 클램프; `submit_flag` 증거 규칙; `solve_check` sat/unsat/비기호 줄/시간 제한; `emulate`/`trace_run` 도구 텍스트 |
 | `tests/test_trace.py` | qemu 로그 파서, 베이스 판별, Ghidra 환산, 영역 분류, 반복 접기, 요약 형식 |
 | `tests/test_trace_vm_loop.py` | 실제 qemu로 `vm_loop`을 추적해 핸들러가 바이트코드 순서로 나오고 반복이 접히는지 |
+| `tests/test_relay.py` | 감사: 판정 파싱, 증거 줄 선택, 인용 확인(공백·대소문자·이스케이프 무시, 지어낸 인용 거부), 새 Fact/이전 Fact 철회 규칙, 실패 시 무철회, 8개 상한; 릴레이: 예산 N등분, 세션 2부터 case.md 전달, 마지막 세션 뒤엔 감사 없음, solved/runbook/0스텝 조기 종료, 합계 result.json, 실제 Agent로 두 세션; CLI `--relay` 전달·기본 끔·음수 거부 |
 | `tests/test_truncate.py` | 12,000자 경계, `[env]` 꼬리말 보존, 가짜 `[env]` 줄은 보존 대상이 아님 |
 
 ## 8. 알려진 한계와 다음 일

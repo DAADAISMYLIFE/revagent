@@ -60,9 +60,11 @@ def _bullets(lines: list[str], start: int, end: int) -> list[tuple[int, int]]:
     return spans
 
 
-def _retract(ctx, text: str, reason: str) -> str:
+def _retract(ctx, text: str, reason: str, where: str | None = None) -> str:
     """Observation beats Fact: remove one Facts/Hypotheses bullet and log why. Live runs kept a wrong Fact
-    for a whole run and passed it on to the next one because nothing could remove it."""
+    for a whole run and passed it on to the next one because nothing could remove it. The needle matches
+    with whitespace collapsed, so a multi-line bullet can be named by its flattened text. `where` labels
+    the ledger line (default `step N`; the relay audit passes `audit K`)."""
     from ..casefile import section_span
     needle = (text or "").strip()
     if not needle:
@@ -70,14 +72,20 @@ def _retract(ctx, text: str, reason: str) -> str:
     if not (reason or "").strip():
         return "[tool error] reason is empty: name the observation that contradicts it"
     lines = ctx.casefile.read().split("\n")
-    hits = []
+    flat = " ".join(needle.split())
+    hits, loose = [], []
     for sec in ("facts", "hypotheses"):
         span = section_span(lines, sec)
         if span is None:
             continue
         for a, b in _bullets(lines, *span):
-            if needle in "\n".join(lines[a:b]):
+            body = "\n".join(lines[a:b])
+            if needle in body:
                 hits.append((a, b))
+            elif flat in " ".join(body.split()):
+                loose.append((a, b))
+    collapsed = not hits
+    hits = hits or loose
     if not hits:
         return f"[tool error] no Facts/Hypotheses bullet contains {needle[:80]!r}"
     if len(hits) > 1:
@@ -91,8 +99,9 @@ def _retract(ctx, text: str, reason: str) -> str:
     log = section_span(lines, "log")
     if log is not None:
         s0, e0 = log
-        keep = [l for l in lines[s0 + 1:e0] if l.startswith("- [") or needle not in l]
+        keep = [l for l in lines[s0 + 1:e0]
+                if l.startswith("- [") or (flat not in " ".join(l.split()) if collapsed else needle not in l)]
         lines[s0 + 1:e0] = keep
     ctx.casefile.write("\n".join(lines))
-    ctx.casefile.add("log", f"[retracted step {ctx.step}] {gone[:300]} — because {' '.join(reason.split())[:200]}")
+    ctx.casefile.add("log", f"[retracted {where or f'step {ctx.step}'}] {gone[:300]} — because {' '.join(reason.split())[:200]}")
     return "retracted; moved to the log"

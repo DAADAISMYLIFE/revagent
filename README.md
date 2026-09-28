@@ -27,6 +27,7 @@ bash scripts/install_ghidra.sh         # --host 로 돌릴 때만 필요 (JDK 21
 ~/.revagent-venv/bin/revagent solve 문제폴더 --ask           # 막히면 나한테 물어보게
 ~/.revagent-venv/bin/revagent solve 문제폴더 --host          # 도커 없이 이 머신에서 (wine 없음)
 ~/.revagent-venv/bin/revagent bench 문제1 문제2 ...          # 여러 개, 안 묻고, 표로
+~/.revagent-venv/bin/revagent bench 문제1 --relay 4          # 문제마다 짧은 세션 4번, 사이엔 노트만 넘김
 ```
 출력은 터미널에 나오면서 `문제폴더/.revagent/console.log`에도 쌓인다. `| tee` 필요 없음. (`--ask`를 터미널에서 쓸 때만 로그 꺼짐.)
 
@@ -39,6 +40,7 @@ bash scripts/install_ghidra.sh         # --host 로 돌릴 때만 필요 (JDK 21
 | `--max-steps N` | 스텝 예산 | 300 |
 | `--max-minutes N` | 시간 예산(분). 도구 타임아웃도 여기 맞춰 잘림 | 120 |
 | `--show-thinking` | 생각 출력 | 끔 |
+| `--relay N` | 릴레이: 한 문제를 짧은 세션 N번으로 (스텝·시간 예산을 N등분). 세션 사이엔 case.md만 넘어가고, 사이마다 Fact 감사 | 0 (끔) |
 | `--secure PATH` | `.secure` 경로 | 위 탐색 순서 |
 | `--sandbox-ca PATH` | 샌드박스용 CA | env → `~/.revagent/sandbox-ca.crt` |
 
@@ -51,6 +53,8 @@ bash scripts/install_ghidra.sh         # --host 로 돌릴 때만 필요 (JDK 21
 `emulate`는 바이너리의 함수 하나를 unicorn으로 돌려 주는 오라클이다. 디컴파일된 변환을 파이썬으로 옮긴 뒤 `emulate`로 실제 함수와 같은 입력에서 비교하고, 맞으면 `solve_check`로 뒤집는다. basic이 두 번 죽은 "forward 모델 검증" 단계가 이걸로 끝난다. import를 부르면 거기서 멈추고 누구를 어떤 인자로 불렀는지 보고한다.
 
 `trace_run`은 프로그램을 qemu-user로 한 번 돌려 실행된 코드 주소의 시퀀스를 준다. 핸들러를 하나하나 읽는 대신 인터프리터가 어떤 핸들러를 몇 번 어떤 순서로 돌렸는지를 관찰하고, 서로 다른 핸들러 주소 N개만 디컴파일해서 시퀀스를 프로그램으로 읽는다. 전체 시퀀스와 원본 로그는 `.revagent/out/trace-N.txt`, `trace-N.log`에 남는다.
+
+릴레이(`--relay N`, `solve`에도 됨)는 세션마다 새 `Agent`를 띄운다. 대화는 안 넘어가고 `case.md`만 남는다. 세션 1에는 "이 세션은 K스텝 뒤 끝나고 다음 세션은 노트만 받는다"는 `[RELAY]` 메시지가, 세션 2부터는 거기에 case.md 전문이 붙는다. 세션 사이 감사(`revagent/relay.py`의 `audit`)는 Facts 불릿마다 방금 끝난 세션의 도구 출력과 `[obs ...]` 원장에서 상수·이름이 겹치는 줄을 골라 붙이고, low effort 호출 한 번으로 `SUPPORTED "인용"` / `CONTRADICTED "인용"` / `UNSUPPORTED`를 받는다. 인용이 실제 출력에 있고 그 Fact와 상수·이름을 하나 이상 공유하는지는 코드가 확인한다(노트를 읽은 출력은 증거에서 빠진다: Fact가 자기 자신을 인용 못 하게). 철회 규칙: 인용이 확인된 CONTRADICTED는 무조건, 이번 세션에 새로 생긴 Fact는 확인된 SUPPORTED 인용이 없으면 철회. 이전 감사를 통과했거나 릴레이 전부터 있던 Fact(문구가 조금 바뀐 것 포함)는 반박될 때만 철회한다. 철회는 `notes retract`와 같은 길로 Log에 `[retracted audit K]`, 요약은 `[audit K]` 한 줄. 감사 호출이 실패하면 아무것도 안 지운다. 한 번에 최대 8개. 풀리거나 runbook이거나 0스텝으로 끝난 세션(서버 다운)에서 멈춘다. `result.json`은 전 세션 합계에 `relay`(세션별 상태, 감사별 철회 목록)가 붙는다.
 
 ### 산출물 (`문제폴더/.revagent/`)
 | 파일 | 내용 |

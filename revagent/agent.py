@@ -50,13 +50,16 @@ def load_system_prompt() -> str:
 
 class Agent:
     def __init__(self, problem_dir: Path, description: str, llm, max_steps: int = 300,
-                 max_minutes: int = 120, interactive: bool = True, show_thinking: bool = False):
+                 max_minutes: int = 120, interactive: bool = True, show_thinking: bool = False,
+                 relay_note: str | None = None):
         self.problem_dir = Path(problem_dir).resolve()
         self.description = description or ""
         self.llm = llm
         self.max_steps = max_steps
         self.max_minutes = max_minutes
         self.show_thinking = show_thinking
+        self.relay_note = relay_note     # relay.run_relay: session k of n, plus the carried case file from k=2 on
+        self.relay_session: int | None = None   # set by relay.run_relay; tags this session's result lines
         self.work_dir = self.problem_dir / ".revagent"
         self.work_dir.mkdir(exist_ok=True)
         self.run_start_ns = time.time_ns()
@@ -221,6 +224,8 @@ class Agent:
                 start_obs = start_observation(self.ctx)
                 if start_obs:
                     self._append({"role": "user", "content": start_obs})
+                if self.relay_note:
+                    self._append({"role": "user", "content": self.relay_note})
                 for step in range(1, self.max_steps + 1):
                     steps = step
                     self.ctx.step = step
@@ -342,6 +347,8 @@ class Agent:
                     **self._usage_signals(),
                 },
             }
+            if self.relay_session:
+                result["relay_session"] = self.relay_session
             self._finish(result)
         finally:
             self.transcript.close()

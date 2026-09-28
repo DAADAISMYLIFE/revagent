@@ -32,7 +32,7 @@ SHRINK_PROMPT = (
     "Rewrite this case file to about half its length. Keep EVERY concrete fact that is not retracted (addresses, constants, "
     "algorithms, verified inputs) and every open todo; drop repetition and narrative. Keep the exact "
     "markdown structure: '# Case: ...' then sections '## Facts', '## Hypotheses', '## Todo', '## Log'. "
-    "Lines starting with '- [obs', '- [critic', '- [gate' or '- [retracted' are the observation ledger: never delete them, only merge "
+    "Lines starting with '- [obs', '- [critic', '- [gate', '- [audit' or '- [retracted' are the observation ledger: never delete them, only merge "
     "exact duplicates. Output only the rewritten file.\n\n"
 )
 
@@ -174,8 +174,9 @@ def extract_unfinished(summary: str) -> str:
 
 def _is_ledger_line(line: str) -> bool:
     """True for an observation-ledger bullet appended by `casefile.add("log", ...)`:
-    `- [obs step N] ...`, `- [critic step N] ...`, `- [gate step N] ...` or `- [retracted step N] ...`."""
-    return line.startswith(("- [obs ", "- [critic ", "- [gate ", "- [retracted "))
+    `- [obs step N] ...`, `- [critic step N] ...`, `- [gate step N] ...`, `- [retracted ...] ...` or a relay
+    `- [audit K] ...` summary."""
+    return line.startswith(("- [obs ", "- [critic ", "- [gate ", "- [retracted ", "- [audit "))
 
 
 def _reduce_log_block(block: list[str]) -> tuple[list[str], bool]:
