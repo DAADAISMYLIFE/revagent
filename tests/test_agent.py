@@ -1110,8 +1110,10 @@ def test_playbook_names_trace_run_for_the_interpreter_class():
     sec3 = p[p.index("## 3."):p.index("## 4.")]
     assert "**Interpreter / VM / dispatch loop**" in sec3
     assert "the next deliverable is the LISTING of the interpreted program" in sec3
-    assert "`trace_run` with a range over the region the dispatch executes in" in sec3
-    assert sec3.index("**VM / interpreter:**") < sec3.index("**Interpreter / VM / dispatch loop**")
+    assert "then again with `range=` over the region the dispatch executes in" in sec3
+    assert "**VM / interpreter:**" not in sec3          # one VM route only (ROVM run 7 took the static one)
+    assert "whether the bytecode is a file on disk or built at run time" in sec3
+    assert sec3.index("(1) observe first") < sec3.index("(3) Only then")
     rule11 = p[p.index("11. **Evidence ladder."):p.index("# Environment")]
     assert "trace/log (proxy DLL, strace, hooks, `trace_run`)" in rule11
     for n in range(1, 12):

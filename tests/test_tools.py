@@ -2024,3 +2024,29 @@ def test_trace_run_empty_stdin_note_is_skipped_when_args_carry_the_input(tmp_pat
     out = trace_run.run(ctx, "chall", args=["AAAA"])
     assert trace_run.EMPTY_STDIN_NOTE not in out
     assert "next: " in out
+
+
+def test_start_observation_traces_elf_targets_with_probe_lengths(tmp_path, monkeypatch):
+    """ROVM run 7: trace_run never called from a blank start. The harness now runs it once per x86-64 ELF
+    before step 1 and hands over the deepest probe."""
+    from revagent.tools import trace_run
+    from tests.test_trace import QEMU_LOG
+    _fake_qemu(tmp_path, monkeypatch, QEMU_LOG)
+    ctx = _trace_ctx(tmp_path)
+    (tmp_path / "notes.txt").write_text("not a binary")
+    obs = trace_run.start_observation(ctx)
+    assert obs.startswith("[start observation]")
+    assert "probe input lengths -> TBs outside libraries: 8:" in obs
+    assert "64:" in obs and "trace_run chall (stdin" in obs
+    assert "next: " in obs
+    assert obs.index("next: ") < obs.index("trace_run chall (stdin")   # survives the output cut
+
+
+def test_start_observation_is_none_without_elf_or_qemu(tmp_path, monkeypatch):
+    from revagent.tools import trace_run
+    ctx = _trace_ctx(tmp_path)
+    for p in list(tmp_path.iterdir()):
+        if p.is_file():
+            p.unlink()
+    (tmp_path / "chall.exe").write_bytes(b"MZ" + b"\0" * 100)
+    assert trace_run.start_observation(ctx) is None

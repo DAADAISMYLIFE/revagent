@@ -295,3 +295,63 @@ def _run(ctx, binary: str, stdin: str, args: list[str] | None, range_text: str |
         ledger += " [timeout]"
     ctx.observe(ledger)
     return "\n".join(lines)
+
+
+PROBE_LENGTHS = (8, 16, 24, 32, 48, 64)   # input lengths tried at start; the deepest trace hints at the length the check wants
+MAX_START_TARGETS = 2
+START_OUTPUT_CHARS = 3000
+_DEPTH = re.compile(r"sequence \((?:image \+ anon|range [^,]*), (\d+) TBs")
+
+
+def _is_x86_64_elf_exec(path) -> bool:
+    try:
+        with open(path, "rb") as f:
+            head = f.read(20)
+    except OSError:
+        return False
+    if len(head) < 20 or head[:4] != b"\x7fELF" or head[4] != 2:
+        return False
+    e_type, e_machine = struct.unpack_from("<HH", head, 16)
+    return e_machine == 62 and e_type in (2, 3) and ".so" not in path.name
+
+
+def start_observation(ctx) -> str | None:
+    """Run by the harness once, before step 1: trace every x86-64 ELF executable at the top of the challenge
+    directory with probe inputs of several lengths and hand the deepest trace to the model as its first
+    observation. Live runs showed the model never calling trace_run on its own from a blank start (ROVM run 7:
+    bash 35 of 40 calls); showing the observation does not depend on the model choosing the tool.
+    Returns None when there is nothing to trace or qemu is absent. Never raises."""
+    try:
+        targets = sorted(p for p in ctx.problem_dir.iterdir()
+                         if p.is_file() and not p.name.startswith(".") and _is_x86_64_elf_exec(p))[:MAX_START_TARGETS]
+        blocks = []
+        for p in targets:
+            depths, best = [], None
+            for n in PROBE_LENGTHS:
+                out = run(ctx, p.name, stdin="A" * n + "\n", timeout=20)
+                if not out.startswith("trace_run "):
+                    break                                   # qemu absent, [cannot trace], [no trace]
+                m = _DEPTH.search(out)
+                d = int(m.group(1)) if m else 0
+                depths.append(f"{n}:{d}")
+                if best is None or d > best[0]:
+                    best = (d, n, out)
+            if best is None:
+                continue
+            body = best[2]
+            nxt = next((l for l in body.splitlines() if l.startswith("next: ")), None)
+            if len(body) > START_OUTPUT_CHARS:
+                body = body[:START_OUTPUT_CHARS] + "\n  [cut; the full sequence file is named above]"
+            head = (f"probe input lengths -> TBs outside libraries: {', '.join(depths)} "
+                    f"(showing the deepest, {best[1]} x 'A' + newline)")
+            if nxt:
+                head += "\n" + nxt                        # kept above the cut: it is the call to make next
+            blocks.append(f"{head}\n{body}")
+        if not blocks:
+            return None
+        return ("[start observation] Before your first step the harness ran trace_run on each x86-64 ELF here with "
+                "probe inputs of several lengths. This is an observation (evidence ladder: trace/log). Compare the "
+                "counts: where they stop growing, the program stops consuming input; if they keep growing, every "
+                "input byte is processed.\n\n" + "\n\n".join(blocks))
+    except Exception:
+        return None

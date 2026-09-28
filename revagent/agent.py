@@ -14,6 +14,7 @@ from .llm import ContextOverflow, ToolCall
 from .tools import load_tools
 from .tools.base import ToolContext
 from .tools.bash import run_cmd
+from .tools.trace_run import start_observation
 from .truncate import truncate
 
 TRUNCATED_RETRY_EFFORT = "low"  # the retry step only; normal steps keep the client default (medium)
@@ -217,6 +218,9 @@ class Agent:
             try:
                 self._append({"role": "system", "content": load_system_prompt()})
                 self._append({"role": "user", "content": self._task_message()})
+                start_obs = start_observation(self.ctx)
+                if start_obs:
+                    self._append({"role": "user", "content": start_obs})
                 for step in range(1, self.max_steps + 1):
                     steps = step
                     self.ctx.step = step
