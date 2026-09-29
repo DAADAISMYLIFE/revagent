@@ -1,4 +1,7 @@
 import re
+import subprocess
+
+from . import run_binary
 
 FLAG_RE = re.compile(r"^[A-Za-z0-9_]+\{.+\}$")  # PREFIX{...}; the prefix comes from the challenge description (Dreamhack: DH)
 EVIDENCE_KINDS = ("program_accepted", "two_independent_readings", "reimplementation_matches")
@@ -12,6 +15,7 @@ _CIRCLED = "①②③④⑤⑥⑦⑧⑨"
 # Format check only (spec §3.4): splits on separators a human would use to list steps, e.g. prose
 # like "step 2)" counts as a separator too — this is not a semantic check of what the methods are.
 _METHOD_SPLIT = re.compile(r"(?:\n|[①②③④⑤⑥⑦⑧⑨]|(?<!\d)\d\)\s)")
+REPLAY_TIMEOUT = 20
 
 SCHEMA = {
     "type": "function",
@@ -26,7 +30,11 @@ SCHEMA = {
             "matching constants; two_independent_readings = the flag is DISPLAYED by the program (drawn, printed, "
             "dumped) and you read it by TWO DIFFERENT METHODS that agree (e.g. screenshot diff read + coordinate log "
             "rebuilt; or screen read + decoded from the file). For two_independent_readings, how_verified must "
-            "describe both methods, one per line. Reading the same glyph table twice is one method."
+            "describe both methods, one per line. Reading the same glyph table twice is one method. "
+            "For program_accepted the harness replays your input on a PLAIN run of the program (no debugger, no "
+            "LD_PRELOAD, no patched memory) and rejects the flag if that run answers exactly as it does for a wrong "
+            "input; pass the accepted stdin as `input` when it is not the flag body (e.g. a password that makes "
+            "the program print the flag)."
         ),
         "parameters": {
             "type": "object",
@@ -34,6 +42,9 @@ SCHEMA = {
                 "flag": {"type": "string"},
                 "how_verified": {"type": "string", "description": "what you ran and what it showed; for two_independent_readings: method ① on one line, method ② on the next; for two_independent_readings, name the tool of each reading (① run_gui: ... ② bash: ...); the first tool named in a reading is the one that counts"},
                 "evidence": {"type": "string", "enum": list(EVIDENCE_KINDS)},
+                "input": {"type": "string", "description": "program_accepted: the exact stdin the program accepted (default: the flag body plus a newline)"},
+                "args": {"type": "array", "items": {"type": "string"}, "description": "program_accepted: argv of that run (default [])"},
+                "binary": {"type": "string", "description": "program_accepted: the program that accepted it (default: the only executable in the challenge dir)"},
             },
             "required": ["flag", "how_verified", "evidence"],
         },
@@ -95,7 +106,78 @@ def _check_readings(ctx, how_verified: str) -> str | None:
     return None
 
 
-def run(ctx, flag: str, how_verified: str = "", evidence: str = "program_accepted") -> str:
+def _target(ctx, binary: str) -> str | None:
+    """The program a program_accepted claim is replayed on: `binary`, else the only executable (ELF, PE, #! script)
+    at the top of the challenge dir, else the one decompile analyzed. None when it cannot be told."""
+    if binary:
+        return binary
+    found = []
+    for q in sorted(ctx.problem_dir.iterdir()):
+        if not q.is_file() or q.name.startswith(".") or q.name == "desc.txt":
+            continue
+        try:
+            with q.open("rb") as f:
+                head = f.read(4)
+        except OSError:
+            continue
+        if head == b"\x7fELF" or head[:2] == b"MZ" or head[:2] == b"#!":
+            found.append(q.name)
+    if len(found) == 1:
+        return found[0]
+    rel = ctx.current_binary_rel
+    return rel if rel and (ctx.problem_dir / rel).is_file() else None
+
+
+def _masked(out: str, *texts: str) -> str:
+    """Run output with the fed input masked (a program that echoes its input must not look accepted)."""
+    for t in texts:
+        t = t.strip()
+        if t:
+            out = out.replace(t, "<INPUT>")
+    return out.strip()
+
+
+def replay(ctx, flag: str, input_text: str | None, args: list[str] | None, binary: str) -> tuple[str | None, str]:
+    """Replay a program_accepted claim on a plain run. Returns (rejection text or None, note for how_verified).
+    Undecidable cases (no target, GUI, cannot run here, a tool error) pass with an empty note: the replay only
+    ever blocks on a clear negative: the plain run answers the claimed input exactly as it answers a wrong one,
+    and does not print the flag."""
+    target = _target(ctx, binary)
+    if target is None:
+        return None, ""
+    try:
+        kind = subprocess.run(["file", "-b", str(ctx.problem_dir / target)], capture_output=True, text=True,
+                              timeout=10).stdout
+    except Exception:
+        kind = ""
+    if "(GUI)" in kind:
+        return None, ""                               # run_gui territory: no stdin to replay
+    body = flag[flag.index("{") + 1:-1]
+    given = input_text is not None and input_text != ""
+    text = input_text if given else body + "\n"
+    wrong = "".join("B" if ch == "A" else "A" for ch in text.rstrip("\n")) + "\n"
+    got = run_binary._run(ctx, target, args, text, REPLAY_TIMEOUT)
+    if got.startswith(("[cannot run here]", "[tool error]", "[timeout")):
+        return None, ""
+    if flag in got:
+        return None, f"replay: a plain run of {target} with this input prints the flag"
+    base = run_binary._run(ctx, target, args, wrong, REPLAY_TIMEOUT)
+    if base.startswith(("[cannot run here]", "[tool error]", "[timeout")):
+        return None, ""
+    if _masked(got, text, body) != _masked(base, wrong):
+        return None, f"replay: a plain run of {target} answers this input differently from a wrong one"
+    shown = _masked(got, text, body)[:300]
+    hint = "" if given else (" If the program accepted some other stdin (a password that prints the flag), "
+                             "pass it as `input`.")
+    return (f"[rejected] replay failed: a plain run of {target} (no debugger, no LD_PRELOAD, no patched memory) "
+            f"answers your input exactly as it answers a wrong input of the same length:\n{shown}\n"
+            "A success seen only under gdb, with memory patched, or with a preloaded library is not the program "
+            "accepting the input: anti-debug and environment checks change what it computes. Find the input that "
+            "a plain run_binary accepts." + hint), ""
+
+
+def run(ctx, flag: str, how_verified: str = "", evidence: str = "program_accepted", input: str | None = None,
+        args: list[str] | None = None, binary: str = "") -> str:
     flag = flag.strip()
     if not FLAG_RE.match(flag):
         return (f"[rejected] {flag!r} does not look like PREFIX{{...}}. Use the prefix the description "
@@ -113,6 +195,17 @@ def run(ctx, flag: str, how_verified: str = "", evidence: str = "program_accepte
                 return "[rejected] same flag 3× — change approach"
             ctx.flag_attempts[flag] = attempts + 1
             return rejection
+    note = ""
+    if evidence == "program_accepted":
+        try:
+            rejection, note = replay(ctx, flag, input, args, binary)
+        except Exception:                  # a replay bug must never block a verified flag
+            rejection, note = None, ""
+        if rejection:
+            attempts = ctx.flag_attempts.get(flag, 0)
+            ctx.flag_attempts[flag] = attempts + 1
+            ctx.observe(f"submit_flag replay rejected {flag[:40]}")
+            return rejection if attempts < SAME_FLAG_LIMIT else "[rejected] same flag 3× — change approach"
     ctx.flag = flag
-    ctx.how_verified = how_verified.strip()
+    ctx.how_verified = how_verified.strip() + (f" [{note}]" if note else "")
     return "[accepted] flag recorded; the session will end now."

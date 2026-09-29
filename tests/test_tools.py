@@ -2215,3 +2215,64 @@ def test_bash_run_cmd_keeps_exit_timeout_and_stdin_behaviour(tmp_path):
     assert bash.run_cmd("cat; echo err >&2", cwd=tmp_path, timeout=5, stdin_text="in\n") == "[exit 0]\nin\nerr\n"
     out = bash.run_cmd("echo start; sleep 30", cwd=tmp_path, timeout=1)
     assert out == "[timeout after 1s]\nstart\n"
+
+
+# ---- submit_flag: program_accepted is replayed on a plain run ----------------------------------------------
+
+def _script(tmp_path, body: str, name: str = "chal"):
+    p = tmp_path / name
+    p.write_text("#!/bin/bash\n" + body + "\n")
+    p.chmod(0o755)
+    return p
+
+
+def test_program_accepted_passes_when_a_plain_run_accepts_the_input(tmp_path):
+    _script(tmp_path, 'read x; [ "$x" = abc ] && echo Correct || echo Wrong')
+    c = ctx_for(tmp_path)
+    assert submit_flag.run(c, flag="DH{abc}", how_verified="run_binary printed Correct").startswith("[accepted]")
+    assert "answers this input differently from a wrong one" in c.how_verified
+
+
+def test_program_accepted_is_rejected_when_only_a_modified_run_accepted_it(tmp_path):
+    """relativity 2026-09-29: the model patched the input buffer under gdb, saw 'Congrats ... if you didn't
+    cheat!', and submitted; a plain run printed the same rejection as for any wrong input."""
+    _script(tmp_path, 'read x; [ "$x" = abc ] && echo Correct || echo "Key: Hmm..."')
+    c = ctx_for(tmp_path)
+    out = submit_flag.run(c, flag="DH{abd}", how_verified="gdb: patched buffer, printed Congrats")
+    assert out.startswith("[rejected] replay failed: a plain run of chal") and "Key: Hmm..." in out
+    assert c.flag is None
+    assert "- [obs step 0] submit_flag replay rejected DH{abd}" in c.casefile.read()
+    for _ in range(3):
+        out = submit_flag.run(c, flag="DH{abd}", how_verified="again")
+    assert out == "[rejected] same flag 3× — change approach"
+
+
+def test_program_accepted_replays_the_given_input_for_a_program_that_prints_the_flag(tmp_path):
+    _script(tmp_path, 'read x; [ "$x" = s3cret ] && echo "DH{printed_flag}" || echo Wrong')
+    c = ctx_for(tmp_path)
+    out = submit_flag.run(c, flag="DH{printed_flag}", how_verified="run_binary printed it")
+    assert out.startswith("[rejected]") and "pass it as `input`" in out
+    assert submit_flag.run(c, flag="DH{printed_flag}", how_verified="run_binary printed it",
+                           input="s3cret\n").startswith("[accepted]")
+    assert "prints the flag" in c.how_verified
+
+
+def test_program_accepted_does_not_count_an_echo_of_the_input_as_acceptance(tmp_path):
+    _script(tmp_path, 'read x; echo "you typed $x"; echo Wrong')
+    assert submit_flag.run(ctx_for(tmp_path), flag="DH{zzz}", how_verified="v").startswith("[rejected]")
+
+
+def test_program_accepted_passes_when_the_replay_cannot_decide(tmp_path):
+    c = ctx_for(tmp_path)                                      # no executable at all
+    assert submit_flag.run(c, flag="DH{x}", how_verified="v").startswith("[accepted]")
+    _script(tmp_path, "echo one", "a")
+    _script(tmp_path, "echo two", "b")                          # two candidates, no binary named
+    c = ctx_for(tmp_path)
+    assert submit_flag.run(c, flag="DH{x}", how_verified="v").startswith("[accepted]")
+
+
+def test_other_evidence_kinds_are_not_replayed(tmp_path):
+    _script(tmp_path, 'read x; echo Wrong')
+    c = ctx_for(tmp_path)
+    assert submit_flag.run(c, flag="DH{abc}", how_verified="model matches traced value",
+                           evidence="reimplementation_matches").startswith("[accepted]")

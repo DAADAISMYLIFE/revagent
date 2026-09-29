@@ -1004,13 +1004,15 @@ def test_tool_timeouts_are_clamped_to_the_run_budget(tmp_path, monkeypatch):
 
 def test_results_jsonl_keeps_every_run(tmp_path):
     d = make_problem(tmp_path)
-    for flag in ("DH{a}", "DH{b}"):
-        llm = ScriptedLLM([[("submit_flag", {"flag": flag, "how_verified": "v"})]])
+    # make_problem's chal accepts "abc": program_accepted is replayed on a plain run, so the flags must pass it
+    for flag, inp in (("DH{abc}", None), ("DH{b}", "abc\n")):
+        args = {"flag": flag, "how_verified": "v", **({"input": inp} if inp else {})}
+        llm = ScriptedLLM([[("submit_flag", args)]])
         Agent(d, "", llm, max_steps=3, interactive=False).run()
     latest = json.loads((d / ".revagent" / "result.json").read_text())
     assert latest["flag"] == "DH{b}"
     rows = [json.loads(l) for l in (d / ".revagent" / "results.jsonl").read_text().splitlines()]
-    assert [r["flag"] for r in rows] == ["DH{a}", "DH{b}"]
+    assert [r["flag"] for r in rows] == ["DH{abc}", "DH{b}"]
     assert all("time" in r and r["status"] == "solved" for r in rows)
     assert "llm_retries" in latest and latest["llm_retries"] == 0
 
