@@ -435,3 +435,20 @@ def test_prune_log_keeps_obs_and_critic_bullets(tmp_path):
 def test_shrink_prompt_mentions_obs_lines():
     from revagent.context import SHRINK_PROMPT
     assert "[obs" in SHRINK_PROMPT and "[critic" in SHRINK_PROMPT
+
+
+def test_work_files_list_trace_listings_but_not_spilled_outputs(tmp_path):
+    """Rule 9 promises the file list after a reset; the VM listing (trace-N.txt) must be on it."""
+    from revagent.context import list_work_files
+    out = tmp_path / ".revagent" / "out"
+    out.mkdir(parents=True)
+    (out / "trace-3.txt").write_text("0x101000\n")
+    (out / "001.txt").write_text("spilled tool output\n")
+    names = [p for p, _ in list_work_files(tmp_path, 0)]
+    assert ".revagent/out/trace-3.txt" in names
+    assert ".revagent/out/001.txt" not in names
+
+
+def test_retractions_are_ledger_lines():
+    from revagent.context import _is_ledger_line
+    assert _is_ledger_line("- [retracted step 5] x — because y")

@@ -1004,13 +1004,15 @@ def test_tool_timeouts_are_clamped_to_the_run_budget(tmp_path, monkeypatch):
 
 def test_results_jsonl_keeps_every_run(tmp_path):
     d = make_problem(tmp_path)
-    for flag in ("DH{a}", "DH{b}"):
-        llm = ScriptedLLM([[("submit_flag", {"flag": flag, "how_verified": "v"})]])
+    # make_problem's chal accepts "abc": program_accepted is replayed on a plain run, so the flags must pass it
+    for flag, inp in (("DH{abc}", None), ("DH{b}", "abc\n")):
+        args = {"flag": flag, "how_verified": "v", **({"input": inp} if inp else {})}
+        llm = ScriptedLLM([[("submit_flag", args)]])
         Agent(d, "", llm, max_steps=3, interactive=False).run()
     latest = json.loads((d / ".revagent" / "result.json").read_text())
     assert latest["flag"] == "DH{b}"
     rows = [json.loads(l) for l in (d / ".revagent" / "results.jsonl").read_text().splitlines()]
-    assert [r["flag"] for r in rows] == ["DH{a}", "DH{b}"]
+    assert [r["flag"] for r in rows] == ["DH{abc}", "DH{b}"]
     assert all("time" in r and r["status"] == "solved" for r in rows)
     assert "llm_retries" in latest and latest["llm_retries"] == 0
 
@@ -1079,9 +1081,48 @@ def test_signals_record_first_facts_step(tmp_path):
         [("submit_flag", {"flag": "DH{abc}", "how_verified": "v"})],
     ])
     r = Agent(d, "", llm, max_steps=5, interactive=False).run()
-    assert r["signals"] == {"gate_blocks": 0, "max_script_streak": 0, "long_reasoning_steps": 0,
-                            "first_facts_step": 2}
+    sig = r["signals"]
+    assert {k: sig[k] for k in ("gate_blocks", "max_script_streak", "long_reasoning_steps", "first_facts_step")} == \
+        {"gate_blocks": 0, "max_script_streak": 0, "long_reasoning_steps": 0, "first_facts_step": 2}
+    assert sig["notes_calls"] == 1 and sig["tool_calls"]["notes"] == 1 and sig["start_range_auto"] is False
     llm2 = ScriptedLLM([[("submit_flag", {"flag": "DH{abc}", "how_verified": "v"})]])
     (tmp_path / "b").mkdir()
     r2 = Agent(make_problem(tmp_path / "b"), "", llm2, max_steps=5, interactive=False).run()
     assert r2["signals"]["first_facts_step"] is None
+
+
+def test_agent_counts_tool_calls_that_reach_a_handler(tmp_path):
+    d = make_problem(tmp_path)
+    llm = ScriptedLLM([
+        [("nope", {})],
+        [("bash", {"cmd": "echo one"}), ("bash", {"cmd": "echo two"})],
+        [("notes", {"action": "add", "text": "x"})],
+        [("notes", {"zzz": 1})],   # bad arguments: the handler never ran, so it is not counted
+        [("submit_flag", {"flag": "DH{x}", "how_verified": "v"})],
+    ])
+    agent = Agent(d, "", llm, max_steps=10, interactive=False)
+    agent.run()
+    assert agent.ctx.tools_used == {"bash": 2, "notes": 1, "submit_flag": 1}
+    tools = [m["content"] for m in llm.seen[4] if m["role"] == "tool"]
+    assert tools[-1].startswith("[tool error] bad arguments for notes")
+
+
+def test_playbook_names_trace_run_for_the_interpreter_class():
+    p = load_system_prompt()
+    env = p[p.index("# Environment"):p.index("# Procedure")]
+    assert "`trace_run` runs the program ONCE under qemu-user" in env
+    sec3 = p[p.index("## 3."):p.index("## 4.")]
+    assert "**Interpreter / VM / dispatch loop**" in sec3
+    assert "the next deliverable is the LISTING of the interpreted program" in sec3
+    assert "then again with `range=` over the region the dispatch executes in" in sec3
+    assert "**VM / interpreter:**" not in sec3          # one VM route only (ROVM run 7 took the static one)
+    assert "whether the bytecode is a file on disk or built at run time" in sec3
+    assert sec3.index("(1) observe first") < sec3.index("(3) Only then")
+    rule11 = p[p.index("11. **Evidence ladder."):p.index("# Environment")]
+    assert "a `trace_run` of a real execution" in rule11
+    assert "it is not the order of work" in rule11 and "(`notes` action `retract`)" in rule11
+    assert "a bytecode blob)" not in p                   # rule 7 no longer sends VM bytecode to a static parser
+    assert "finish the analysis statically" not in p     # the gdb fallback is observation, not static-only
+    assert "Ghidra 0x101234 is objdump 0x1234" in p
+    for n in range(1, 12):
+        assert f"\n{n}. **" in p

@@ -146,3 +146,8 @@ def test_run_critic_ledger_write_failure_is_swallowed(tmp_path):
     cf = CaseFile(tmp_path / "c.md", "p", "d")
     cf.read = lambda: (_ for _ in ()).throw(OSError("gone"))
     assert run_critic(FakeLLM(reply=MEMO), cf, [], step=6) is None
+
+
+def test_critic_prompt_asks_which_fact_an_observation_retracts():
+    assert "an observation beats a Fact" in CRITIC_PROMPT
+    assert "name the Fact that must be retracted" in CRITIC_PROMPT

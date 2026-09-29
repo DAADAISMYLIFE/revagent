@@ -14,6 +14,7 @@ from .llm import ContextOverflow, ToolCall
 from .tools import load_tools
 from .tools.base import ToolContext
 from .tools.bash import run_cmd
+from .tools.trace_run import start_observation
 from .truncate import truncate
 
 TRUNCATED_RETRY_EFFORT = "low"  # the retry step only; normal steps keep the client default (medium)
@@ -40,7 +41,7 @@ Directory: {dir}
 ## Rules
 - Flag format: PREFIX{{...}} using the prefix stated in the description (Dreamhack default DH{{...}}). Verify before submit_flag.
 - Write conclusions to notes as you go; your context will be reset when it grows.
-- Start with triage, then locate and classify the check. Go."""
+- Start with triage (a [start observation] message, when present, is part of it), then locate and classify the check. Go."""
 
 
 def load_system_prompt() -> str:
@@ -49,13 +50,16 @@ def load_system_prompt() -> str:
 
 class Agent:
     def __init__(self, problem_dir: Path, description: str, llm, max_steps: int = 300,
-                 max_minutes: int = 120, interactive: bool = True, show_thinking: bool = False):
+                 max_minutes: int = 120, interactive: bool = True, show_thinking: bool = False,
+                 relay_note: str | None = None):
         self.problem_dir = Path(problem_dir).resolve()
         self.description = description or ""
         self.llm = llm
         self.max_steps = max_steps
         self.max_minutes = max_minutes
         self.show_thinking = show_thinking
+        self.relay_note = relay_note     # relay.run_relay: session k of n, plus the carried case file from k=2 on
+        self.relay_session: int | None = None   # set by relay.run_relay; tags this session's result lines
         self.work_dir = self.problem_dir / ".revagent"
         self.work_dir.mkdir(exist_ok=True)
         self.run_start_ns = time.time_ns()
@@ -100,12 +104,16 @@ class Agent:
         elif call.parse_error:
             result = f"[tool error] arguments were not valid JSON: {call.raw_args[:300]}"
         else:
+            ran = True
             try:
                 result = str(handler(self.ctx, **call.args))
             except TypeError as e:
+                ran = False   # the handler was never entered
                 result = f"[tool error] bad arguments for {call.name}: {e}"
             except Exception as e:  # tool bugs must not kill the session
                 result = f"[tool error] {type(e).__name__}: {e}"
+            if ran:
+                self.ctx.tools_used[call.name] = self.ctx.tools_used.get(call.name, 0) + 1
         return truncate(result, self.ctx.out_dir, self.ctx.next_out_id)
 
     def _run_tools(self, step: int, calls: list[ToolCall]) -> None:
@@ -213,6 +221,11 @@ class Agent:
             try:
                 self._append({"role": "system", "content": load_system_prompt()})
                 self._append({"role": "user", "content": self._task_message()})
+                start_obs = start_observation(self.ctx)
+                if start_obs:
+                    self._append({"role": "user", "content": start_obs})
+                if self.relay_note:
+                    self._append({"role": "user", "content": self.relay_note})
                 for step in range(1, self.max_steps + 1):
                     steps = step
                     self.ctx.step = step
@@ -331,13 +344,39 @@ class Agent:
                     "max_script_streak": self.gate.max_streak,
                     "long_reasoning_steps": self.long_reasoning,
                     "first_facts_step": self.first_facts_step,
+                    **self._usage_signals(),
                 },
             }
+            if self.relay_session:
+                result["relay_session"] = self.relay_session
             self._finish(result)
         finally:
             self.transcript.close()
         self._report(result)
         return result
+
+    def _usage_signals(self) -> dict:
+        """What the model actually used, so a playbook or tool change can be judged by numbers: tool calls by
+        name, bash share, notes calls, bash-side revagent-trace/emulate calls, and whether trace_run proposals
+        were followed. Never raises."""
+        try:
+            used = dict(self.ctx.tools_used)
+            total = sum(used.values())
+            try:
+                cli = json.loads((self.work_dir / "cli_calls.json").read_text())
+            except Exception:
+                cli = {}
+            return {
+                "tool_calls": used,
+                "bash_share": round(used.get("bash", 0) / total, 2) if total else None,
+                "notes_calls": used.get("notes", 0),
+                "cli_calls": cli,
+                "start_range_auto": self.ctx.start_range_auto,
+                "trace_next_shown": self.ctx.trace_next_shown,
+                "trace_range_calls": self.ctx.trace_range_calls,
+            }
+        except Exception:
+            return {}
 
     def _finish(self, result: dict) -> None:
         (self.work_dir / "result.json").write_text(json.dumps(result, indent=2, ensure_ascii=False))

@@ -90,3 +90,7 @@ def test_gate_never_raises(monkeypatch):
     verdicts, events = g.check(1, [_bash("x = 1")])
     assert verdicts[0].allowed
     assert events == [{"event": "gate_error", "gate": "G3", "step": 1, "error": "RuntimeError: boom"}]
+
+
+def test_g3_text_offers_emulate_before_run_binary():
+    assert "emulate" in G3_TEXT and G3_TEXT.index("emulate") < G3_TEXT.index("run_binary")

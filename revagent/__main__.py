@@ -9,8 +9,13 @@ from pathlib import Path
 from .agent import Agent
 from .console import tee_console
 from .llm import LLM, Secure, load_secure
+from .relay import run_relay
 from .sandbox import (build_sandbox_cmd, check_docker, container_desc_arg, is_interactive_tty,
                       run_sandbox)
+
+
+STALE_CWD_MSG = ("error: the shell's current directory no longer exists (a stale DrvFs handle on /mnt/c). "
+                 "Run `cd \"$PWD\"` (or cd into the directory again) and retry, or pass absolute paths.")
 
 
 def _read_desc(problem_dir: Path, desc_arg: str | None) -> str:
@@ -40,6 +45,10 @@ def _add_limits(p: argparse.ArgumentParser) -> None:
     p.add_argument("--max-minutes", type=int, default=120)
     p.add_argument("--secure", help="path to .secure (default: search order in llm.load_secure)")
     p.add_argument("--show-thinking", action="store_true")
+    p.add_argument("--relay", type=int, default=0, metavar="N",
+                   help="split the run into N short sessions (the step and minute limits are divided evenly); "
+                        "only the notes carry over, and between sessions an audit retracts Facts no tool output "
+                        "supports (default 0: one ordinary session)")
     p.add_argument("--sandbox-ca",
                    help="trust this CA cert (.crt) at runtime inside the sandbox, for TLS-inspecting "
                         "proxies (default: env REVAGENT_SANDBOX_CA, then ~/.revagent/sandbox-ca.crt)")
@@ -55,6 +64,8 @@ def _sandbox_passthrough(args, desc_in_container: str | None, ask: bool) -> list
         out.append("--ask")
     if args.show_thinking:
         out.append("--show-thinking")
+    if args.relay:
+        out += ["--relay", str(args.relay)]
     if desc_in_container:
         out += ["--desc", desc_in_container]
     return out
@@ -119,8 +130,12 @@ def _run_one(d: Path, args, desc_arg: str | None, ask: bool, rt: _Runtime) -> tu
     interactive sandbox run (`--ask` on a terminal), whose container owns the terminal."""
     if not rt.sandbox:
         with _console(d, rt):
-            r = Agent(d, _read_desc(d, desc_arg), rt.llm, max_steps=args.max_steps,
-                      max_minutes=args.max_minutes, interactive=ask, show_thinking=args.show_thinking).run()
+            if args.relay:
+                r = run_relay(d, _read_desc(d, desc_arg), rt.llm, args.relay, max_steps=args.max_steps,
+                              max_minutes=args.max_minutes, interactive=ask, show_thinking=args.show_thinking)
+            else:
+                r = Agent(d, _read_desc(d, desc_arg), rt.llm, max_steps=args.max_steps,
+                          max_minutes=args.max_minutes, interactive=ask, show_thinking=args.show_thinking).run()
         return r, {"solved": 0, "runbook": 3}.get(r["status"], 1)
     interactive = ask and is_interactive_tty()
     cmd = build_sandbox_cmd(d, _sandbox_passthrough(args, container_desc_arg(d, desc_arg), ask), rt.secure,
@@ -236,12 +251,19 @@ def main(argv=None) -> int:
     if args.host and args.sandbox:
         print("error: --host cannot be combined with --sandbox", file=sys.stderr)
         return 2
+    if args.relay < 0:
+        print("error: --relay takes a number of sessions (1 or more; 0 = off)", file=sys.stderr)
+        return 2
     if args.sandbox_ca and args.host:
         print("error: --sandbox-ca applies to the sandbox; it cannot be combined with --host", file=sys.stderr)
         return 2
 
     solve = args.cmd == "solve"
-    d = Path(args.dir) if solve else None
+    try:
+        d = Path(args.dir).resolve() if solve else None   # absolute before anything can change the cwd
+    except FileNotFoundError:
+        print(STALE_CWD_MSG, file=sys.stderr)
+        return 2
     if solve and not d.is_dir():
         print(f"error: {d} is not a directory", file=sys.stderr)
         return 2
@@ -258,7 +280,12 @@ def main(argv=None) -> int:
         return rc
 
     rows = []
-    for d in map(Path, args.dirs):
+    try:
+        dirs = [Path(x).resolve() for x in args.dirs]   # ALL resolved before the first run; a lazy generator resolved after the cwd went stale
+    except FileNotFoundError:
+        print(STALE_CWD_MSG, file=sys.stderr)
+        return 2
+    for d in dirs:
         try:
             r, _ = _run_one(d, args, None, False, rt)
             rows.append(_row(d, r))
