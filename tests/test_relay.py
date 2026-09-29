@@ -108,19 +108,24 @@ def test_retract_matches_a_flattened_multiline_bullet_and_labels_the_audit(ctx):
 
 # ---- the audit ----------------------------------------------------------------------------------
 
-def test_audit_keeps_supported_and_retracts_unsupported_and_fake_quotes(tmp_path):
+def test_audit_keeps_supported_and_demotes_unsupported_and_fake_quotes(tmp_path):
     cf = _case(tmp_path, ["check compares each byte with 0x55 (cmp at 401136)",
                           "the flag is DH{guessed_in_head}",
                           "program prints Correct on success"])
     llm = FakeLLM('F1 SUPPORTED "cmp al,0x55"\nF2 UNSUPPORTED\nF3 SUPPORTED "stdout: Correct"')
     rec = audit(llm, cf, EVIDENCE, earlier=set(), after_session=1)
     assert rec["facts"] == 3 and rec["error"] is None
-    assert rec["retracted"] == ["the flag is DH{guessed_in_head}", "program prints Correct on success"]
+    # unverified is not refuted: both leave Facts but survive as Hypotheses (relativity run 9 lost a correct one)
+    assert rec["retracted"] == []
+    assert rec["demoted"] == ["the flag is DH{guessed_in_head}", "program prints Correct on success"]
     body = cf.read()
     assert fact_bullets(body) == ["check compares each byte with 0x55 (cmp at 401136)"]
-    assert "[retracted audit 1] the flag is DH{guessed_in_head} — because audit after session 1: no tool output" in body
+    hyp = body[body.index("## Hypotheses"):body.index("## Todo")]
+    assert "[unverified after session 1] the flag is DH{guessed_in_head}" in hyp
+    assert "[unverified after session 1] program prints Correct on success" in hyp
+    assert "no tool output supports it; kept as a Hypothesis" in body
     assert "its quoted support is not in the tool outputs" in body
-    assert "- [audit 1] 3 Facts checked, 2 retracted, 1 kept" in body
+    assert "- [audit 1] 3 Facts checked, 0 retracted, 2 moved to Hypotheses, 1 kept" in body
     assert "F1: check compares" in llm.prompts[0] and "| 401136: 3c 55" in llm.prompts[0]
     assert llm.kw == {"max_tokens": relay.AUDIT_MAX_TOKENS, "reasoning_effort": "low"}
 
@@ -150,7 +155,7 @@ def test_audit_does_not_let_a_fact_quote_itself(tmp_path):
     llm = FakeLLM(f'F1 SUPPORTED "{fact}"')
     rec = audit(llm, cf, [f"## Facts\n- {fact}"], set(), 1)   # e.g. a `cat` of a copy of the notes
     assert "| - the flag check" not in llm.prompts[0]
-    assert rec["retracted"] == [fact]
+    assert rec["retracted"] == [] and rec["demoted"] == [fact]
 
 
 def test_audit_ignores_grep_hits_in_the_notes_and_pieces_of_multiline_facts(tmp_path):
@@ -160,7 +165,7 @@ def test_audit_ignores_grep_hits_in_the_notes_and_pieces_of_multiline_facts(tmp_
     llm = FakeLLM(f'F1 SUPPORTED "{fact}"\nF2 SUPPORTED "and writes each result into buffer_403000"')
     ev = [f"./.revagent/case.md:7:- {fact}", "notes_copy.txt:9:  and writes each result into buffer_403000"]
     rec = audit(llm, cf, ev, set(), 1)
-    assert len(rec["retracted"]) == 2
+    assert len(rec["demoted"]) == 2 and rec["retracted"] == []
 
 
 def test_audit_keeps_a_fact_copied_from_the_obs_ledger(tmp_path):
@@ -195,7 +200,7 @@ def test_audit_that_fails_retracts_nothing_but_leaves_a_ledger_line(tmp_path):
         rec = audit(llm, cf, EVIDENCE, set(), 1)
         assert rec["retracted"] == [] and rec["error"]
         assert fact_bullets(cf.read()) == ["unverified claim"]
-        assert "- [audit 1] 1 Facts checked, 0 retracted, 1 kept (audit failed:" in cf.read()
+        assert "- [audit 1] 1 Facts checked, 0 retracted, 0 moved to Hypotheses, 1 kept (audit failed:" in cf.read()
 
 
 def test_audit_without_facts_makes_no_call(tmp_path):
@@ -210,7 +215,7 @@ def test_audit_caps_retractions(tmp_path):
     cf = _case(tmp_path, facts)
     llm = FakeLLM("\n".join(f"F{i + 1} UNSUPPORTED" for i in range(len(facts))))
     rec = audit(llm, cf, EVIDENCE, set(), 1)
-    assert len(rec["retracted"]) == relay.AUDIT_MAX_RETRACT and rec["skipped_over_cap"] == 3
+    assert len(rec["demoted"]) == relay.AUDIT_MAX_RETRACT and rec["skipped_over_cap"] == 3
 
 
 def test_audit_sees_the_observation_ledger(tmp_path):
@@ -251,7 +256,7 @@ def _relay(tmp_path, script, sessions=3, llm=None, **kw):
 
 def test_relay_splits_budget_carries_notes_and_audits_between_sessions(tmp_path, monkeypatch):
     audits = []
-    monkeypatch.setattr(relay, "audit", lambda llm, cf, ev, earlier, k: audits.append((k, set(earlier))) or
+    monkeypatch.setattr(relay, "audit", lambda llm, cf, ev, earlier, k, *rest: audits.append((k, set(earlier))) or
                         {"after_session": k, "facts": 1, "retracted": ["x"], "error": None})
     add = lambda a: a.casefile.add("facts", "found the check at 0x401136")
     out = _relay(tmp_path, [(_result(status="unsolved", flag=None, reason="step limit", steps=10), add),
@@ -318,7 +323,7 @@ def test_relay_with_no_time_left_still_reports_session_one(tmp_path):
 def test_relay_treats_inherited_facts_as_earlier(tmp_path, monkeypatch):
     _case(tmp_path, ["fact from an older run"])
     seen = []
-    monkeypatch.setattr(relay, "audit", lambda llm, cf, ev, earlier, k: seen.append(set(earlier)) or
+    monkeypatch.setattr(relay, "audit", lambda llm, cf, ev, earlier, k, *rest: seen.append(set(earlier)) or
                         {"after_session": k, "facts": 1, "retracted": [], "error": None})
     _relay(tmp_path, [(_result(status="unsolved", flag=None, steps=3), None), (_result(), None)], sessions=2)
     assert seen == [{"fact from an older run"}]
@@ -348,7 +353,7 @@ def test_relay_end_to_end_with_the_real_agent(tmp_path):
     assert [m["role"] for m in second] == ["system", "user", "user"]
     assert second[2]["content"].startswith("[RELAY] This is session 2 of 2")
     assert "chal prints Correct when stdin equals abc" in second[2]["content"]
-    assert "[audit 1] 1 Facts checked, 0 retracted, 1 kept" in second[2]["content"]
+    assert "[audit 1] 1 Facts checked, 0 retracted, 0 moved to Hypotheses, 1 kept" in second[2]["content"]
     assert json.loads((d / ".revagent" / "result.json").read_text())["relay"]["planned"] == 2
 
 
@@ -399,3 +404,33 @@ def test_relay_off_by_default_and_negative_rejected(tmp_path, monkeypatch, capsy
     assert "--relay" not in cmds[0]
     assert main_mod.main(["bench", str(d), "--relay", "-1"]) == 2
     assert "--relay" in capsys.readouterr().err
+
+
+def test_a_contradiction_must_come_after_the_fact_was_written(tmp_path):
+    """relativity run 9: audit 1 retracted a correct Fact on the output of the buggy parser the model had already
+    replaced (step 7) before writing the Fact (step 15)."""
+    fact = "rela.tivity has 300 PC32 entries whose addends point into rodata 0x6798"
+    cf = _case(tmp_path, [fact])
+    docs = ["total 0 | pc32: 0 | addends in rodata: 0",            # buggy script, seen before the Fact
+            "total 400 | pc32: 300 | first: ('0x778', '0x6798')"]  # fixed script, the Fact's source
+    adds = [(2, fact)]                                             # written after both outputs
+    llm = FakeLLM('F1 CONTRADICTED "addends in rodata: 0"')
+    assert audit(llm, cf, docs, {relay._norm(fact)}, 1, adds)["retracted"] == []
+    later = docs + ["recheck: addends in rodata: 0 (parsed properly this time)"]
+    cf2 = _case(tmp_path / "b", [fact])
+    assert audit(FakeLLM('F1 CONTRADICTED "addends in rodata: 0 (parsed properly"'), cf2, later,
+                 {relay._norm(fact)}, 1, adds)["retracted"] == [fact]
+
+
+def test_session_record_notes_when_each_fact_was_written(tmp_path):
+    t = tmp_path / "transcript.jsonl"
+    call = lambda i, name, args: {"id": i, "function": {"name": name, "arguments": json.dumps(args)}}
+    rows = [{"role": "assistant", "tool_calls": [call("a", "bash", {"cmd": "x"})]},
+            {"role": "tool", "tool_call_id": "a", "content": "out1"},
+            {"role": "assistant", "tool_calls": [call("b", "notes", {"action": "add", "text": "key is 0x55"}),
+                                                 call("c", "notes", {"action": "add", "section": "todo", "text": "t"})]},
+            {"role": "tool", "tool_call_id": "b", "content": "added to facts"}]
+    t.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    docs, adds = relay.session_record(t, 0)
+    assert docs == ["out1"] and adds == [(1, "key is 0x55")]
+    assert relay.written_after("key is 0x55", adds) == 1 and relay.written_after("other", adds) == 0

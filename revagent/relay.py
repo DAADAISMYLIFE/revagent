@@ -85,13 +85,18 @@ def _reads_case_file(name: str, args: str) -> bool:
 def session_evidence(transcript: Path, offset: int) -> list[str]:
     """Tool outputs (and the harness's [start observation]) logged to transcript.jsonl after byte `offset`,
     except the outputs of calls that read the case file."""
-    docs, calls = [], {}
+    return session_record(transcript, offset)[0]
+
+
+def session_record(transcript: Path, offset: int) -> tuple[list[str], list[tuple[int, str]]]:
+    """(evidence docs in order, notes adds as (number of docs already seen when it was written, text))."""
+    docs, adds, calls = [], [], {}
     try:
         with open(transcript, "rb") as f:
             f.seek(offset)
             raw = f.read().decode("utf-8", errors="replace")
     except OSError:
-        return docs
+        return docs, adds
     for line in raw.splitlines():
         try:
             m = json.loads(line)
@@ -102,6 +107,14 @@ def session_evidence(transcript: Path, offset: int) -> list[str]:
         if m.get("role") == "assistant":
             # tool messages follow the assistant message that made the calls; ids are only unique within it
             calls = {tc.get("id"): tc.get("function") or {} for tc in m.get("tool_calls") or []}
+            for fn in calls.values():
+                if fn.get("name") == "notes":
+                    try:
+                        a = json.loads(fn.get("arguments") or "{}")
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(a, dict) and a.get("action") == "add" and a.get("section", "facts") == "facts":
+                        adds.append((len(docs), str(a.get("text") or "")))
             continue
         content = m.get("content")
         if not isinstance(content, str) or not content:
@@ -112,7 +125,21 @@ def session_evidence(transcript: Path, offset: int) -> list[str]:
                 docs.append(content)
         elif m.get("role") == "user" and content.startswith("[start observation]"):
             docs.append(content)
-    return docs
+    return docs, adds
+
+
+def written_after(fact: str, adds: list[tuple[int, str]]) -> int:
+    """How many of the session's evidence docs the model had already seen when it wrote `fact` (0 when the Fact
+    was not written by a notes add in this session). Only later docs may contradict it: an output the model had
+    in front of it when it wrote the Fact, typically the output of a script it then fixed, is no refutation
+    (relativity run 9: a correct Fact retracted on the output of the buggy parser it replaced)."""
+    f = _norm(fact)
+    seen = 0
+    for n, text in adds:
+        t = _norm(text.lstrip("- "))
+        if t and (t in f or f in t):
+            seen = n
+    return seen
 
 
 def evidence_for(fact: str, lines: list[str], limit: int = EVIDENCE_LINES_PER_FACT) -> list[str]:
@@ -217,27 +244,28 @@ class _AuditCtx:
         self.step = 0
 
 
-def audit(llm, casefile, evidence_docs: list[str], earlier: set[str], after_session: int) -> dict:
+def audit(llm, casefile, evidence_docs: list[str], earlier: set[str], after_session: int,
+          adds: list[tuple[int, str]] | None = None) -> dict:
     """One audit between sessions. Retracts (via notes' retract, so the Log keeps '[retracted ...]' lines):
     a Fact whose CONTRADICTED quote is found in the evidence, and a Fact new since the last audit that has no
     SUPPORTED quote found in the evidence. Facts in `earlier` are only ever retracted on a contradiction. A failed
     or unparseable audit call retracts nothing. Leaves one '[audit K]' ledger line. Returns a summary dict;
     never raises."""
-    rec = {"after_session": after_session, "facts": 0, "retracted": [], "skipped_over_cap": 0, "error": None}
+    rec = {"after_session": after_session, "facts": 0, "retracted": [], "demoted": [], "skipped_over_cap": 0, "error": None}
     try:
-        _audit(llm, casefile, evidence_docs, earlier, after_session, rec)
+        _audit(llm, casefile, evidence_docs, earlier, after_session, rec, adds or [])
     except Exception as e:   # the audit is advisory bookkeeping: it must never end the relay
         rec["error"] = f"{type(e).__name__}: {e}"[:200]
     try:
         kept = len(fact_bullets(casefile.read()))
         casefile.add("log", f"[audit {after_session}] {rec['facts']} Facts checked, {len(rec['retracted'])} "
-                            f"retracted, {kept} kept" + (f" (audit failed: {rec['error']})" if rec["error"] else ""))
+                            f"retracted, {len(rec.get('demoted', []))} moved to Hypotheses, {kept} kept" + (f" (audit failed: {rec['error']})" if rec["error"] else ""))
     except Exception:
         pass
     return rec
 
 
-def _audit(llm, casefile, evidence_docs, earlier, after_session, rec) -> None:
+def _audit(llm, casefile, evidence_docs, earlier, after_session, rec, adds) -> None:
     text = casefile.read()
     facts = fact_bullets(text)
     rec["facts"] = len(facts)
@@ -264,24 +292,39 @@ def _audit(llm, casefile, evidence_docs, earlier, after_session, rec) -> None:
     if not verdicts:
         rec["error"] = "no verdict lines in the reply"
         return
-    drop = []
+    drop, demote = [], []
     for i, f in enumerate(facts, 1):
         verdict, cands = verdicts.get(i, (None, []))
         if verdict is None:
             continue                                    # no answer for this Fact: keep it
         fuzzy = verdict == "SUPPORTED"
-        found = next((q for q in cands if quote_found(q, f, corpus_norm, packs[i - 1], fuzzy)), None)
+        corpus = corpus_norm
+        if verdict == "CONTRADICTED":
+            seen = written_after(f, adds)
+            if seen:                          # only output that came after the Fact was written can refute it
+                later = [l for d in evidence_docs[seen:] for l in d.splitlines() if l.strip() and not _is_notes_copy(l, own)]
+                corpus = _norm("\n".join(later))
+        found = next((q for q in cands if quote_found(q, f, corpus, packs[i - 1], fuzzy)), None)
         if verdict == "CONTRADICTED" and found:
             drop.append((f, f"audit after session {after_session}: contradicted by \"{found[:150]}\""))
         elif not old[i - 1] and not (verdict == "SUPPORTED" and found):
+            # unverified is not refuted: a Fact the model derived from an output (a summary of a readelf table,
+            # a decoded structure) often has no quotable line. Keep it as a Hypothesis instead of losing it
+            # (relativity run 9 lost its key mechanism this way).
             why = ("its quoted support is not in the tool outputs" if verdict == "SUPPORTED"
                    else "no tool output supports it")
-            drop.append((f, f"audit after session {after_session}: {why}"))
+            demote.append((f, f"audit after session {after_session}: {why}; kept as a Hypothesis"))
     ctx = _AuditCtx(casefile)
+    rec.setdefault("demoted", [])
     for f, reason in drop[:AUDIT_MAX_RETRACT]:
         if _retract(ctx, f, reason, where=f"audit {after_session}").startswith("retracted"):
             rec["retracted"].append(f[:200])
-    rec["skipped_over_cap"] = max(0, len(drop) - AUDIT_MAX_RETRACT)
+    room = max(0, AUDIT_MAX_RETRACT - len(rec["retracted"]))
+    for f, reason in demote[:room]:
+        if _retract(ctx, f, reason, where=f"audit {after_session}").startswith("retracted"):
+            casefile.add("hypotheses", f"[unverified after session {after_session}] {' '.join(f.split())}")
+            rec["demoted"].append(f[:200])
+    rec["skipped_over_cap"] = max(0, len(drop) + len(demote) - len(rec["retracted"]) - len(rec["demoted"]))
 
 
 def _seed_out_counter(agent, work: Path) -> None:
@@ -348,9 +391,11 @@ def run_relay(problem_dir: Path, description: str, llm, sessions: int, max_steps
         results.append(r)
         if r["status"] in ("solved", "runbook") or _dead_server(r) or k == sessions:
             break
-        rec = audit(llm, agent.casefile, session_evidence(transcript, offset), earlier, k)
+        docs, adds = session_record(transcript, offset)
+        rec = audit(llm, agent.casefile, docs, earlier, k, adds)
         audits.append(rec)
-        print(f"=== audit after session {k}: {rec['facts']} Facts, {len(rec['retracted'])} retracted"
+        print(f"=== audit after session {k}: {rec['facts']} Facts, {len(rec['retracted'])} retracted, "
+              f"{len(rec.get('demoted', []))} to Hypotheses"
               + (f" (failed: {rec['error']})" if rec["error"] else "") + " ===", flush=True)
         earlier = {_norm(f) for f in fact_bullets(agent.casefile.read())}
     calls = _sum_counts([(x.get("signals") or {}).get("tool_calls") for x in results])
